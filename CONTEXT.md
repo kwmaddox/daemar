@@ -37,7 +37,7 @@ A deterministic Workflow stage that evaluates generated changes by executing one
 _Avoid_: Model review, agent review
 
 **Validation Operation**:
-One deterministic invocation of a code-validation tool with a typed result. The first Workflow gives formatting, Clippy, and tests separate sequential Validation Stages rather than bundling their operations into one stage.
+One deterministic invocation of a code-validation tool with a typed result. The first Workflow gives each selected Validation Operation its own sequential Validation Stage rather than bundling multiple operations into one stage.
 _Avoid_: Validation task, check
 
 **Run Record**:
