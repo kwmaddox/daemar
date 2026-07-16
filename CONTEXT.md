@@ -44,6 +44,10 @@ _Avoid_: Validation task, check
 The append-only JSONL event record of a Workflow Run, including every model request and response and every Model Tool request and result.
 _Avoid_: Log, transcript
 
+**Context Surface**:
+The instructions, skills, Model Tool definitions, history, and evidence exposed to a model for a request. Because additional context can impair model performance, every addition is a deliberate design choice; all else being equal, Daemar prefers on-demand repeated operations over adding or retaining context when both accomplish the same objective.
+_Avoid_: Context dump, maximal context
+
 **Context Entry**:
-An item deliberately admitted into a model request with its source, size, and reason recorded in the Run Record. Source code and prior history are retrieved on demand rather than preloaded.
+An item of evidence included in the Context Surface with its source, size, and reason recorded in the Run Record. A Context Entry records exposure; it is not a per-entry runtime approval gate.
 _Avoid_: Context blob, repository dump
