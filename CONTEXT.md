@@ -33,8 +33,12 @@ A strongly typed, deterministic operation exposed to a model by Daemar. In the f
 _Avoid_: Shell command, plugin
 
 **Validation Stage**:
-A deterministic Workflow stage that evaluates generated changes with configured static-analysis and linting tools after the Generation Stage. In the first Workflow, its results are not fed back into the model.
+A deterministic Workflow stage that evaluates generated changes by executing one or more Validation Operations after the Generation Stage. The first Workflow deliberately assigns exactly one Validation Operation to each Validation Stage so their boundaries can be observed and evolved independently; results are not fed back into the model.
 _Avoid_: Model review, agent review
+
+**Validation Operation**:
+One deterministic invocation of a code-validation tool with a typed result. The first Workflow gives formatting, Clippy, and tests separate sequential Validation Stages rather than bundling their operations into one stage.
+_Avoid_: Validation task, check
 
 **Run Record**:
 The append-only JSONL event record of a Workflow Run, including every model request and response and every Model Tool request and result.
