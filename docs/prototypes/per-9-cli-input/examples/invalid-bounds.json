@@ -1,0 +1,9 @@
+{
+  "schema": "change_request.v2",
+  "id": "x",
+  "objective": "   ",
+  "acceptance_criteria": [
+    "",
+    "A second, adequate criterion."
+  ]
+}

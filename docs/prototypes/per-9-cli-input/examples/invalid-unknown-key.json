@@ -1,0 +1,9 @@
+{
+  "schema": "change_request.v1",
+  "id": "Add Run Inspection",
+  "objective": "Add a runs list command.",
+  "priority": "high",
+  "acceptance_criteria": [
+    "It works."
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "change-request.schema.json",
+  "title": "Change Request",
+  "description": "PROTOTYPE hand-draft. The real artifact is GENERATED from Daemar's canonical Rust types (schemars) and checked in; a test regenerates and compares, so the schema cannot drift from the types. Bounds shown here mirror PER-11.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "objective", "acceptance_criteria"],
+  "properties": {
+    "$schema": {
+      "description": "Optional editor hint pointing at this schema. Allowed but not interpreted by Daemar.",
+      "type": "string"
+    },
+    "schema": {
+      "description": "Contract version. Exact match required; no negotiation.",
+      "const": "change_request.v1"
+    },
+    "id": {
+      "description": "Human-authored slug identifying this Change Request. Appears in the Run Record, commit trailers, and PR body.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "objective": {
+      "description": "What the Workflow Run should achieve. Shown to the model as a Context Entry.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "acceptance_criteria": {
+      "description": "How a human reviewer judges success. Shown to the model as Context Entries; never machine-checked by Daemar.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    }
+  }
+}
