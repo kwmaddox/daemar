@@ -1,0 +1,8 @@
+{
+  "schema": "change_request.v1",
+  "id": "bump-deps",
+  "objective": "Bump the serde dependency to the latest compatible release.",
+  "acceptance_criteria": [
+    "cargo tree shows the new serde version."
+  ]
+}
