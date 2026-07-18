@@ -1,0 +1,4 @@
+{"schema": "run-record.v1", "run_id": "0197e1d6-44d4-7004-8c04-aa0000000004", "seq": 1, "ts": "2026-07-18T04:31:09Z", "kind": "run_initialized.v1", "payload": {"change_request_id": "bump-deps", "base_branch": "main", "base_commit": "17af896c0d4e", "git_identity": "Kendall Maddox <kendall@example.com>"}}
+{"schema": "run-record.v1", "run_id": "0197e1d6-44d4-7004-8c04-aa0000000004", "seq": 2, "ts": "2026-07-18T04:31:09Z", "kind": "branch_create_intent.v1", "payload": {"branch": "daemar/run/0197e1d6"}}
+{"schema": "run-record.v1", "run_id": "0197e1d6-44d4-7004-8c04-aa0000000004", "seq": 3, "ts": "2026-07-18T04:31:10Z", "kind": "branch_created.v1", "payload": {"branch": "daemar/run/0197e1d6"}}
+{"schema": "run-record.v1", "run_id": "0197e1d6-44d4-7004-8c04-aa0000000004", "seq": 4, "ts": "2026-07-18T04:31:10Z", "kind": "worktree_create_intent.v1", "payload": {"path": ".daemar/worktrees/0197e1d6"}}

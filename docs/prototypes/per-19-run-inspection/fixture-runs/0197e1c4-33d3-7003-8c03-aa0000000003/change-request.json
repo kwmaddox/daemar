@@ -1,0 +1,8 @@
+{
+  "schema": "change_request.v1",
+  "id": "add-run-inspection",
+  "objective": "Add a `daemar runs list` command that prints recent Workflow Runs with their terminal outcomes, reading the Run Records under .daemar/runs/ without modifying them.",
+  "acceptance_criteria": [
+    "Running `daemar runs list` prints one line per Run Record, newest first, showing the run ID and terminal outcome."
+  ]
+}

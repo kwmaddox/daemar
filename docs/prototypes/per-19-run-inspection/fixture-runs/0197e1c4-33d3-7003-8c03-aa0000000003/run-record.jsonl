@@ -1,0 +1,7 @@
+{"schema": "run-record.v1", "run_id": "0197e1c4-33d3-7003-8c03-aa0000000003", "seq": 1, "ts": "2026-07-18T04:02:31Z", "kind": "run_initialized.v1", "payload": {"change_request_id": "add-run-inspection", "base_branch": "main", "base_commit": "17af896c0d4e", "git_identity": "Kendall Maddox <kendall@example.com>"}}
+{"schema": "run-record.v1", "run_id": "0197e1c4-33d3-7003-8c03-aa0000000003", "seq": 2, "ts": "2026-07-18T04:02:31Z", "kind": "branch_create_intent.v1", "payload": {"branch": "daemar/run/0197e1c4"}}
+{"schema": "run-record.v1", "run_id": "0197e1c4-33d3-7003-8c03-aa0000000003", "seq": 3, "ts": "2026-07-18T04:02:32Z", "kind": "branch_created.v1", "payload": {"branch": "daemar/run/0197e1c4"}}
+{"schema": "run-record.v1", "run_id": "0197e1c4-33d3-7003-8c03-aa0000000003", "seq": 4, "ts": "2026-07-18T04:02:32Z", "kind": "worktree_create_intent.v1", "payload": {"path": ".daemar/worktrees/0197e1c4"}}
+{"schema": "run-record.v1", "run_id": "0197e1c4-33d3-7003-8c03-aa0000000003", "seq": 5, "ts": "2026-07-18T04:02:33Z", "kind": "worktree_created.v1", "payload": {"path": ".daemar/worktrees/0197e1c4"}}
+{"schema": "run-record.v1", "run_id": "0197e1c4-33d3-7003-8c03-aa0000000003", "seq": 6, "ts": "2026-07-18T04:02:33Z", "kind": "sandbox_create_intent.v1", "payload": {}}
+{"schema": "run-record.v1", "run_id": "0197e1c4-33d3-7003-8c03-aa0000000003", "seq": 7, "ts": "2026-07-18T04:02:45Z", "kind": "run_terminated.v1", "payload": {"outcome": "failed", "cause": {"kind": "sandbox_create_failed", "detail": "guest boot timed out after 10s"}}}
