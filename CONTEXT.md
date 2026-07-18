@@ -17,8 +17,12 @@ One execution of a Workflow, including its trusted setup, sandboxed execution, a
 _Avoid_: Job, workflow execution
 
 **Change Request**:
-The human-approved input describing the objective and acceptance criteria for a Workflow Run. Operational policy belongs to the repository and Workflow Definition rather than to the requester.
+The human-approved input describing the objective and acceptance criteria for a Workflow Run, identified by a human-authored slug. Operational policy belongs to the repository and Workflow Definition rather than to the requester.
 _Avoid_: Ticket, prompt, task
+
+**Preflight**:
+The pure, deterministic gate that validates a Change Request's shape and bounds before a Workflow Run begins. A Change Request that fails Preflight produces no Workflow Run.
+_Avoid_: Validation, input check, startup check
 
 **Sandboxed Execution**:
 The portion of a Workflow Run confined by an enforceable, deny-by-default capability policy. It can access only explicitly granted filesystem, network, credential, process, time, and resource capabilities.
