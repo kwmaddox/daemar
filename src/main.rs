@@ -1,6 +1,8 @@
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use daemar::{PreflightError, preflight};
 
 #[derive(Parser)]
 #[command(name = "daemar", about = "Execute and inspect Daemar Workflows")]
@@ -28,6 +30,44 @@ enum DaemarCommand {
     },
 }
 
-fn main() {
-    let _cli = Cli::parse();
+fn main() -> ExitCode {
+    match Cli::parse().command {
+        DaemarCommand::Run {
+            change_request_path,
+        } => run(change_request_path),
+        DaemarCommand::Runs { .. } | DaemarCommand::Show { .. } => ExitCode::SUCCESS,
+    }
+}
+
+fn run(change_request_path: PathBuf) -> ExitCode {
+    let raw = match std::fs::read(&change_request_path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            report_invalid_request(
+                &change_request_path,
+                std::slice::from_ref(&PreflightError::io_error(&error)),
+            );
+            return ExitCode::from(1);
+        }
+    };
+
+    match preflight(&raw) {
+        Ok(_change_request) => ExitCode::SUCCESS,
+        Err(diagnostics) => {
+            report_invalid_request(&change_request_path, &diagnostics);
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn report_invalid_request(path: &std::path::Path, diagnostics: &[PreflightError]) {
+    eprintln!(
+        "error: invalid Change Request - {} problem(s) in {}\n",
+        diagnostics.len(),
+        path.display()
+    );
+    for diagnostic in diagnostics {
+        eprintln!("{diagnostic}");
+    }
+    eprintln!("\nno Workflow Run created");
 }
