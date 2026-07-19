@@ -34,18 +34,21 @@ Commit these inputs with the Rust bootstrap:
 ```toml
 # rust-toolchain.toml
 [toolchain]
-channel = "1.97.1-aarch64-apple-darwin"
+channel = "1.97.1"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
+targets = ["aarch64-apple-darwin"]
 ```
 
 Also commit `Cargo.lock` and a `rustfmt.toml` that explicitly sets both
-`edition = "2024"` and `style_edition = "2024"`. Rustup supports fully
-specified versioned toolchain names, checked-in toolchain files, component
-declarations, and minimal profiles; its documentation also recommends tracking
-`Cargo.lock` with a release-pinned toolchain. [Rustup toolchains][rustup-toolchains]
-[Rustup overrides][rustup-overrides] Rustfmt recommends an explicit style
-edition so formatting does not depend on an inferred default.
+`edition = "2024"` and `style_edition = "2024"`. Rustup toolchain files support
+versioned channel pins, component and target declarations, and minimal profiles;
+the explicit target and Apple Silicon CI runner keep the platform contract
+visible without putting a host tuple in the toolchain file's `channel` field.
+Rustup's documentation also recommends tracking `Cargo.lock` with a
+release-pinned toolchain. [Rustup toolchains][rustup-toolchains]
+[Rustup overrides][rustup-overrides] Rustfmt recommends an explicit style edition
+so formatting does not depend on an inferred default.
 [Rustfmt configuration][rustfmt]
 
 Trusted setup must install that exact toolchain and its components before the

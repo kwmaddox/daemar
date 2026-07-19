@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked --target aarch64-apple-darwin --manifest-path Cargo.toml
+
+      - name: Check formatting
+        run: cargo fmt --all --manifest-path Cargo.toml -- --check
+
+      - name: Run Clippy with warnings denied
+        run: >-
+          cargo clippy --workspace --all-targets --all-features
+          --target aarch64-apple-darwin --locked --offline
+          --manifest-path Cargo.toml --message-format=json --color=never
+          -- -D warnings
+
+      - name: Run tests
+        run: >-
+          cargo test --workspace --all-features
+          --target aarch64-apple-darwin --locked --offline
+          --manifest-path Cargo.toml --no-fail-fast
+          --message-format=json --color=never
+          -- --test-threads=1 --color=never
