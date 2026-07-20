@@ -1,6 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use daemar::{PreflightProblem, PreflightRule, preflight};
 
 #[derive(Parser)]
 #[command(name = "daemar", about = "Execute and inspect Daemar Workflows")]
@@ -28,6 +30,47 @@ enum DaemarCommand {
     },
 }
 
-fn main() {
-    let _cli = Cli::parse();
+fn main() -> ExitCode {
+    match Cli::parse().command {
+        DaemarCommand::Run {
+            change_request_path,
+        } => run(&change_request_path),
+        DaemarCommand::Runs { .. } | DaemarCommand::Show { .. } => ExitCode::SUCCESS,
+    }
+}
+
+fn run(path: &Path) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return report_invalid_request(
+                path,
+                &[PreflightProblem {
+                    code: PreflightRule::IoError,
+                    pointer: "/".to_owned(),
+                    message: format!("cannot read file: {error}"),
+                }],
+            );
+        }
+    };
+    match preflight(&bytes) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(problems) => report_invalid_request(path, &problems),
+    }
+}
+
+fn report_invalid_request(path: &Path, problems: &[PreflightProblem]) -> ExitCode {
+    eprintln!(
+        "error: invalid Change Request - {} problem(s) in {}\n",
+        problems.len(),
+        path.display()
+    );
+    for problem in problems {
+        eprintln!(
+            "  [{}] {} (at {})",
+            problem.code, problem.message, problem.pointer
+        );
+    }
+    eprintln!("\nno Workflow Run created");
+    ExitCode::from(1)
 }
