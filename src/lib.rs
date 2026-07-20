@@ -15,21 +15,39 @@ const REQUIRED_FIELDS: [&str; 4] = ["schema", "id", "objective", "acceptance_cri
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ChangeRequest {
-    pub schema: String,
-    pub id: String,
-    pub objective: String,
-    pub acceptance_criteria: Vec<String>,
+    schema: String,
+    id: String,
+    objective: String,
+    acceptance_criteria: Vec<String>,
+}
+
+impl ChangeRequest {
+    pub fn schema(&self) -> &str {
+        &self.schema
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn objective(&self) -> &str {
+        &self.objective
+    }
+
+    pub fn acceptance_criteria(&self) -> &[String] {
+        &self.acceptance_criteria
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct PreflightProblem {
-    pub code: PreflightRule,
+pub struct ChangeRequestProblem {
+    pub code: ChangeRequestRule,
     pub pointer: String,
     pub message: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PreflightRule {
+pub enum ChangeRequestRule {
     IoError,
     DocumentTooLarge,
     InvalidEncoding,
@@ -46,7 +64,7 @@ pub enum PreflightRule {
     BlankField,
 }
 
-impl PreflightRule {
+impl ChangeRequestRule {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::IoError => "io_error",
@@ -67,34 +85,34 @@ impl PreflightRule {
     }
 }
 
-impl fmt::Display for PreflightRule {
+impl fmt::Display for ChangeRequestRule {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
 
-pub fn preflight(bytes: &[u8]) -> Result<ChangeRequest, Vec<PreflightProblem>> {
+pub fn preflight(bytes: &[u8]) -> Result<ChangeRequest, Vec<ChangeRequestProblem>> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(one_problem(
-            PreflightRule::DocumentTooLarge,
+            ChangeRequestRule::DocumentTooLarge,
             "document is larger than 16 KiB",
         ));
     }
     let text = std::str::from_utf8(bytes).map_err(|_| {
         one_problem(
-            PreflightRule::InvalidEncoding,
+            ChangeRequestRule::InvalidEncoding,
             "document is not valid UTF-8",
         )
     })?;
     let document: RawDocument = serde_json::from_str(text).map_err(|error| {
         one_problem(
-            PreflightRule::InvalidJson,
+            ChangeRequestRule::InvalidJson,
             format!("not valid JSON: {error}"),
         )
     })?;
     let Some(object) = document.object else {
         return Err(one_problem(
-            PreflightRule::NotAnObject,
+            ChangeRequestRule::NotAnObject,
             "top level must be a JSON object",
         ));
     };
@@ -102,19 +120,26 @@ pub fn preflight(bytes: &[u8]) -> Result<ChangeRequest, Vec<PreflightProblem>> {
     validate_object(object)
 }
 
-fn validate_object(object: RawObject) -> Result<ChangeRequest, Vec<PreflightProblem>> {
+pub fn execute_run<T>(
+    change_request_bytes: &[u8],
+    initialize_workflow_run: impl FnOnce(ChangeRequest) -> T,
+) -> Result<T, Vec<ChangeRequestProblem>> {
+    preflight(change_request_bytes).map(initialize_workflow_run)
+}
+
+fn validate_object(object: RawObject) -> Result<ChangeRequest, Vec<ChangeRequestProblem>> {
     let mut problems = Vec::new();
 
     for field in &object.fields {
         if field.repeated {
             problems.push(problem(
-                PreflightRule::DuplicateField,
+                ChangeRequestRule::DuplicateField,
                 pointer_for_key(&field.name),
                 format!("duplicate field `{}`", field.name),
             ));
         } else if !is_known_or_ignored(&field.name) {
             problems.push(problem(
-                PreflightRule::UnknownField,
+                ChangeRequestRule::UnknownField,
                 pointer_for_key(&field.name),
                 format!(
                     "unknown field `{}`; {SCHEMA_VERSION} accepts exactly: {}",
@@ -125,22 +150,12 @@ fn validate_object(object: RawObject) -> Result<ChangeRequest, Vec<PreflightProb
         }
     }
 
-    for field in REQUIRED_FIELDS {
-        if object.value(field).is_none() {
-            problems.push(problem(
-                PreflightRule::MissingField,
-                format!("/{field}"),
-                format!("missing required field `{field}`"),
-            ));
-        }
-    }
-
     let schema = string_field(&object, "schema", &mut problems);
     if let Some(schema) = schema.as_deref()
         && schema != SCHEMA_VERSION
     {
         problems.push(problem(
-            PreflightRule::UnsupportedVersion,
+            ChangeRequestRule::UnsupportedVersion,
             "/schema",
             format!("`schema` is {schema:?}; this Daemar accepts exactly {SCHEMA_VERSION:?}"),
         ));
@@ -151,14 +166,14 @@ fn validate_object(object: RawObject) -> Result<ChangeRequest, Vec<PreflightProb
         let characters = id.chars().count();
         if !(1..=MAX_ID_CHARACTERS).contains(&characters) {
             problems.push(problem(
-                PreflightRule::FieldTooLong,
+                ChangeRequestRule::FieldTooLong,
                 "/id",
                 format!("`id` is {characters} characters, allowed 1-{MAX_ID_CHARACTERS}"),
             ));
         }
         if !is_lowercase_kebab_case(id) {
             problems.push(problem(
-                PreflightRule::BadSlug,
+                ChangeRequestRule::BadSlug,
                 "/id",
                 "`id` must be lowercase kebab-case (a-z, 0-9, single dashes)",
             ));
@@ -169,7 +184,7 @@ fn validate_object(object: RawObject) -> Result<ChangeRequest, Vec<PreflightProb
     if let Some(objective) = objective.as_deref() {
         if objective.trim().is_empty() {
             problems.push(problem(
-                PreflightRule::BlankField,
+                ChangeRequestRule::BlankField,
                 "/objective",
                 "`objective` must not be blank",
             ));
@@ -177,7 +192,7 @@ fn validate_object(object: RawObject) -> Result<ChangeRequest, Vec<PreflightProb
         let characters = objective.chars().count();
         if characters > MAX_OBJECTIVE_CHARACTERS {
             problems.push(problem(
-                PreflightRule::FieldTooLong,
+                ChangeRequestRule::FieldTooLong,
                 "/objective",
                 format!(
                     "`objective` is {characters} characters, maximum is {MAX_OBJECTIVE_CHARACTERS}"
@@ -203,14 +218,21 @@ fn validate_object(object: RawObject) -> Result<ChangeRequest, Vec<PreflightProb
 fn string_field(
     object: &RawObject,
     name: &str,
-    problems: &mut Vec<PreflightProblem>,
+    problems: &mut Vec<ChangeRequestProblem>,
 ) -> Option<String> {
-    let value = object.value(name)?;
+    let Some(value) = object.value(name) else {
+        problems.push(problem(
+            ChangeRequestRule::MissingField,
+            format!("/{name}"),
+            format!("missing required field `{name}`"),
+        ));
+        return None;
+    };
     match value.as_str() {
         Some(value) => Some(value.to_owned()),
         None => {
             problems.push(problem(
-                PreflightRule::WrongType,
+                ChangeRequestRule::WrongType,
                 format!("/{name}"),
                 format!("`{name}` must be a string"),
             ));
@@ -219,11 +241,21 @@ fn string_field(
     }
 }
 
-fn criteria_field(object: &RawObject, problems: &mut Vec<PreflightProblem>) -> Option<Vec<String>> {
-    let value = object.value("acceptance_criteria")?;
+fn criteria_field(
+    object: &RawObject,
+    problems: &mut Vec<ChangeRequestProblem>,
+) -> Option<Vec<String>> {
+    let Some(value) = object.value("acceptance_criteria") else {
+        problems.push(problem(
+            ChangeRequestRule::MissingField,
+            "/acceptance_criteria",
+            "missing required field `acceptance_criteria`",
+        ));
+        return None;
+    };
     let Some(items) = value.as_array() else {
         problems.push(problem(
-            PreflightRule::WrongType,
+            ChangeRequestRule::WrongType,
             "/acceptance_criteria",
             "`acceptance_criteria` must be an array of strings",
         ));
@@ -232,7 +264,7 @@ fn criteria_field(object: &RawObject, problems: &mut Vec<PreflightProblem>) -> O
 
     if !(1..=MAX_ACCEPTANCE_CRITERIA).contains(&items.len()) {
         problems.push(problem(
-            PreflightRule::BadItemCount,
+            ChangeRequestRule::BadItemCount,
             "/acceptance_criteria",
             format!(
                 "`acceptance_criteria` has {} items, allowed 1-{MAX_ACCEPTANCE_CRITERIA}",
@@ -248,7 +280,7 @@ fn criteria_field(object: &RawObject, problems: &mut Vec<PreflightProblem>) -> O
             Some(item) => {
                 if item.trim().is_empty() {
                     problems.push(problem(
-                        PreflightRule::BlankField,
+                        ChangeRequestRule::BlankField,
                         pointer.clone(),
                         format!("criterion #{} must not be blank", index + 1),
                     ));
@@ -256,7 +288,7 @@ fn criteria_field(object: &RawObject, problems: &mut Vec<PreflightProblem>) -> O
                 let characters = item.chars().count();
                 if characters > MAX_CRITERION_CHARACTERS {
                     problems.push(problem(
-                        PreflightRule::FieldTooLong,
+                        ChangeRequestRule::FieldTooLong,
                         pointer,
                         format!(
                             "criterion #{} is {characters} characters, maximum is {MAX_CRITERION_CHARACTERS}",
@@ -267,7 +299,7 @@ fn criteria_field(object: &RawObject, problems: &mut Vec<PreflightProblem>) -> O
                 criteria.push(item.to_owned());
             }
             None => problems.push(problem(
-                PreflightRule::WrongType,
+                ChangeRequestRule::WrongType,
                 pointer,
                 format!("criterion #{} must be a string", index + 1),
             )),
@@ -295,16 +327,16 @@ fn pointer_for_key(key: &str) -> String {
     format!("/{}", key.replace('~', "~0").replace('/', "~1"))
 }
 
-fn one_problem(code: PreflightRule, message: impl Into<String>) -> Vec<PreflightProblem> {
+fn one_problem(code: ChangeRequestRule, message: impl Into<String>) -> Vec<ChangeRequestProblem> {
     vec![problem(code, "/", message)]
 }
 
 fn problem(
-    code: PreflightRule,
+    code: ChangeRequestRule,
     pointer: impl Into<String>,
     message: impl Into<String>,
-) -> PreflightProblem {
-    PreflightProblem {
+) -> ChangeRequestProblem {
+    ChangeRequestProblem {
         code,
         pointer: pointer.into(),
         message: message.into(),

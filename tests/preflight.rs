@@ -1,4 +1,6 @@
-use daemar::preflight;
+use std::cell::Cell;
+
+use daemar::{execute_run, preflight};
 
 #[test]
 fn preflight_rejects_unreadable_document_shapes_at_the_root() {
@@ -134,11 +136,11 @@ fn preflight_accepts_the_complete_shape_at_every_inclusive_maximum() {
 
     let request = preflight(&source).expect("inclusive maxima should pass Preflight");
 
-    assert_eq!(request.schema, "change_request.v1");
-    assert_eq!(request.id.chars().count(), 64);
-    assert_eq!(request.objective.chars().count(), 4_096);
-    assert_eq!(request.acceptance_criteria.len(), 20);
-    assert_eq!(request.acceptance_criteria[0].chars().count(), 1_024);
+    assert_eq!(request.schema(), "change_request.v1");
+    assert_eq!(request.id().chars().count(), 64);
+    assert_eq!(request.objective().chars().count(), 4_096);
+    assert_eq!(request.acceptance_criteria().len(), 20);
+    assert_eq!(request.acceptance_criteria()[0].chars().count(), 1_024);
 }
 
 #[test]
@@ -160,4 +162,109 @@ fn preflight_reports_every_repeated_field_occurrence() {
         .collect();
 
     assert_eq!(duplicates, ["/id", "/id"]);
+}
+
+#[test]
+fn preflight_interleaves_missing_and_present_field_problems_in_contract_order() {
+    let problems = preflight(br#"{"schema":"change_request.v2"}"#)
+        .expect_err("missing and invalid fields should fail Preflight");
+    let diagnostics: Vec<_> = problems
+        .iter()
+        .map(|problem| (problem.code.as_str(), problem.pointer.as_str()))
+        .collect();
+
+    assert_eq!(
+        diagnostics,
+        [
+            ("unsupported_version", "/schema"),
+            ("missing_field", "/id"),
+            ("missing_field", "/objective"),
+            ("missing_field", "/acceptance_criteria"),
+        ]
+    );
+}
+
+#[test]
+fn invalid_change_request_never_reaches_workflow_run_initialization() {
+    let run_ids_allocated = Cell::new(0);
+
+    let result = execute_run(br#"{"schema":"change_request.v1"}"#, |_| {
+        run_ids_allocated.set(run_ids_allocated.get() + 1);
+    });
+
+    assert!(result.is_err());
+    assert_eq!(run_ids_allocated.get(), 0);
+}
+
+#[test]
+fn preflight_accepts_contract_minima_at_the_exact_document_size_limit() {
+    let mut source =
+        br#"{"schema":"change_request.v1","id":"a","objective":"x","acceptance_criteria":["x"]}"#
+            .to_vec();
+    source.resize(16 * 1024, b' ');
+
+    let request = preflight(&source).expect("the inclusive document limit should pass");
+
+    assert_eq!(request.id(), "a");
+    assert_eq!(request.objective(), "x");
+    assert_eq!(request.acceptance_criteria(), ["x"]);
+}
+
+#[test]
+fn preflight_reports_empty_lower_bounds() {
+    let source = br#"{
+        "schema": "change_request.v1",
+        "id": "",
+        "objective": "",
+        "acceptance_criteria": []
+    }"#;
+
+    let problems = preflight(source).expect_err("empty bounded values should fail Preflight");
+    let diagnostics: Vec<_> = problems
+        .iter()
+        .map(|problem| (problem.code.as_str(), problem.pointer.as_str()))
+        .collect();
+
+    assert_eq!(
+        diagnostics,
+        [
+            ("field_too_long", "/id"),
+            ("bad_slug", "/id"),
+            ("blank_field", "/objective"),
+            ("bad_item_count", "/acceptance_criteria"),
+        ]
+    );
+}
+
+#[test]
+fn preflight_enforces_every_slug_grammar_edge() {
+    for valid in ["a", "0", "a-0", "request-123"] {
+        let source = request_with_id(valid);
+        preflight(source.as_bytes()).unwrap_or_else(|problems| {
+            panic!("valid slug {valid:?} failed Preflight: {problems:?}")
+        });
+    }
+
+    for invalid in ["-a", "a-", "a--b", "A", "a_b", "é"] {
+        let source = request_with_id(invalid);
+        let Err(problems) = preflight(source.as_bytes()) else {
+            panic!("invalid slug {invalid:?} passed Preflight");
+        };
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.code.as_str() == "bad_slug"),
+            "invalid slug {invalid:?}: {problems:?}"
+        );
+    }
+}
+
+fn request_with_id(id: &str) -> String {
+    serde_json::to_string(&serde_json::json!({
+        "schema": "change_request.v1",
+        "id": id,
+        "objective": "Inspect Workflow Runs.",
+        "acceptance_criteria": ["Inspection is read-only."],
+    }))
+    .expect("fixture should serialize")
 }

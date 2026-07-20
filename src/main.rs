@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use daemar::{PreflightProblem, PreflightRule, preflight};
+use daemar::{ChangeRequestProblem, ChangeRequestRule, execute_run};
 
 #[derive(Parser)]
 #[command(name = "daemar", about = "Execute and inspect Daemar Workflows")]
@@ -45,21 +45,21 @@ fn run(path: &Path) -> ExitCode {
         Err(error) => {
             return report_invalid_request(
                 path,
-                &[PreflightProblem {
-                    code: PreflightRule::IoError,
+                &[ChangeRequestProblem {
+                    code: ChangeRequestRule::IoError,
                     pointer: "/".to_owned(),
                     message: format!("cannot read file: {error}"),
                 }],
             );
         }
     };
-    match preflight(&bytes) {
-        Ok(_) => ExitCode::SUCCESS,
+    match execute_run(&bytes, |_| ()) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(problems) => report_invalid_request(path, &problems),
     }
 }
 
-fn report_invalid_request(path: &Path, problems: &[PreflightProblem]) -> ExitCode {
+fn report_invalid_request(path: &Path, problems: &[ChangeRequestProblem]) -> ExitCode {
     eprintln!(
         "error: invalid Change Request - {} problem(s) in {}\n",
         problems.len(),
