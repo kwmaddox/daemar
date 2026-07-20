@@ -66,7 +66,7 @@ fn invalid_request_creates_no_workflow_run_and_does_not_mutate_the_repository() 
 }
 
 #[test]
-fn unreadable_request_is_an_invalid_request_not_a_usage_error() {
+fn unreadable_request_is_a_file_error_not_an_invalid_change_request() {
     let repository = temporary_git_repository("missing-file");
     let request_path = repository.join("does-not-exist.json");
     let output = Command::new(env!("CARGO_BIN_EXE_daemar"))
@@ -78,13 +78,67 @@ fn unreadable_request_is_an_invalid_request_not_a_usage_error() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).expect("diagnostics should be UTF-8");
-    assert!(stderr.contains("[io_error]"), "stderr:\n{stderr}");
-    assert!(stderr.contains("(at /)"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("error: cannot read Change Request"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("invalid Change Request"),
+        "stderr:\n{stderr}"
+    );
+    assert!(!stderr.contains("(at "), "stderr:\n{stderr}");
     assert!(
         stderr.ends_with("no Workflow Run created\n"),
         "stderr:\n{stderr}"
     );
     assert!(!repository.join(".daemar").exists());
+
+    fs::remove_dir_all(repository).expect("fixture should be removable");
+}
+
+#[test]
+fn root_preflight_problem_renders_the_empty_json_pointer() {
+    let repository = temporary_git_repository("root-pointer");
+    let request_path = repository.join("change-request.json");
+    fs::write(&request_path, b"[]").expect("fixture should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_daemar"))
+        .args(["run", request_path.to_str().expect("UTF-8 fixture path")])
+        .current_dir(&repository)
+        .output()
+        .expect("Daemar should be executable");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("diagnostics should be UTF-8");
+    assert!(stderr.contains("[not_an_object]"), "stderr:\n{stderr}");
+    assert!(stderr.contains("(at \"\")"), "stderr:\n{stderr}");
+    assert!(
+        stderr.ends_with("no Workflow Run created\n"),
+        "stderr:\n{stderr}"
+    );
+
+    fs::remove_dir_all(repository).expect("fixture should be removable");
+}
+
+#[test]
+fn oversized_request_is_rejected_by_preflight_after_a_bounded_read() {
+    let repository = temporary_git_repository("oversized-request");
+    let request_path = repository.join("change-request.json");
+    fs::write(&request_path, vec![b'x'; 32 * 1024]).expect("fixture should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_daemar"))
+        .args(["run", request_path.to_str().expect("UTF-8 fixture path")])
+        .current_dir(&repository)
+        .output()
+        .expect("Daemar should be executable");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("diagnostics should be UTF-8");
+    assert!(stderr.contains("[document_too_large]"), "stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("cannot read Change Request"),
+        "stderr:\n{stderr}"
+    );
 
     fs::remove_dir_all(repository).expect("fixture should be removable");
 }

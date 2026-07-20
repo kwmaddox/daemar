@@ -1,22 +1,24 @@
-use std::cell::Cell;
-
-use daemar::{execute_run, preflight};
+use daemar::{ChangeRequestProblem, ChangeRequestRule, preflight};
 
 #[test]
 fn preflight_rejects_unreadable_document_shapes_at_the_root() {
     let oversized = vec![b' '; 16 * 1024 + 1];
-    let cases: [(&str, &[u8], &str); 4] = [
-        ("oversized", &oversized, "document_too_large"),
-        ("non-UTF-8", &[0xff], "invalid_encoding"),
-        ("invalid JSON", br#"{"schema": }"#, "invalid_json"),
-        ("non-object", br#"[]"#, "not_an_object"),
+    let cases: [(&str, &[u8], ChangeRequestRule); 4] = [
+        ("oversized", &oversized, ChangeRequestRule::DocumentTooLarge),
+        ("non-UTF-8", &[0xff], ChangeRequestRule::InvalidEncoding),
+        (
+            "invalid JSON",
+            br#"{"schema": }"#,
+            ChangeRequestRule::InvalidJson,
+        ),
+        ("non-object", br#"[]"#, ChangeRequestRule::NotAnObject),
     ];
 
     for (label, source, expected_code) in cases {
         let problems = preflight(source).expect_err(label);
         assert_eq!(problems.len(), 1, "{label}");
-        assert_eq!(problems[0].code.as_str(), expected_code, "{label}");
-        assert_eq!(problems[0].pointer, "/", "{label}");
+        assert_eq!(problems[0].code, expected_code, "{label}");
+        assert_eq!(problems[0].pointer, "", "{label}");
     }
 }
 
@@ -34,22 +36,73 @@ fn preflight_reports_key_problems_in_document_order_then_fields_in_contract_orde
     }"#;
 
     let problems = preflight(source).expect_err("the request should fail Preflight");
-    let diagnostics: Vec<_> = problems
+    assert_eq!(
+        diagnostics(&problems),
+        [
+            (ChangeRequestRule::UnknownField, "/z~1field"),
+            (ChangeRequestRule::DuplicateField, "/id"),
+            (ChangeRequestRule::UnknownField, "/a~0field"),
+            (ChangeRequestRule::UnsupportedVersion, "/schema"),
+            (ChangeRequestRule::BadSlug, "/id"),
+            (ChangeRequestRule::BlankField, "/objective"),
+            (ChangeRequestRule::BadItemCount, "/acceptance_criteria"),
+        ]
+    );
+}
+
+#[test]
+fn unknown_field_guidance_includes_the_optional_schema_metadata_field() {
+    let source = br#"{
+        "schema": "change_request.v1",
+        "id": "inspect-runs",
+        "objective": "Inspect Workflow Runs.",
+        "acceptance_criteria": ["Inspection is read-only."],
+        "unexpected": true
+    }"#;
+
+    let problems = preflight(source).expect_err("the unknown field should fail Preflight");
+    let problem = problems
         .iter()
-        .map(|problem| (problem.code.as_str(), problem.pointer.as_str()))
-        .collect();
+        .find(|problem| problem.code == ChangeRequestRule::UnknownField)
+        .expect("an unknown-field diagnostic should be present");
+
+    assert!(problem.message.contains("$schema"), "{}", problem.message);
+    assert!(
+        problem.message.contains("optional metadata"),
+        "{}",
+        problem.message
+    );
+}
+
+#[test]
+fn preflight_ignores_arbitrary_precision_numbers_in_schema_metadata() {
+    let source = br#"{
+        "$schema": 1e400,
+        "schema": "change_request.v1",
+        "id": "inspect-runs",
+        "objective": "Inspect Workflow Runs.",
+        "acceptance_criteria": ["Inspection is read-only."]
+    }"#;
+
+    let request = preflight(source).expect("arbitrary-precision `$schema` metadata is ignored");
+
+    assert_eq!(request.id(), "inspect-runs");
+}
+
+#[test]
+fn preflight_classifies_arbitrary_precision_numbers_by_field_type() {
+    let source = br#"{
+        "schema": "change_request.v1",
+        "id": 1e400,
+        "objective": "Inspect Workflow Runs.",
+        "acceptance_criteria": ["Inspection is read-only."]
+    }"#;
+
+    let problems = preflight(source).expect_err("a numeric `id` should fail its field type rule");
 
     assert_eq!(
-        diagnostics,
-        [
-            ("unknown_field", "/z~1field"),
-            ("duplicate_field", "/id"),
-            ("unknown_field", "/a~0field"),
-            ("unsupported_version", "/schema"),
-            ("bad_slug", "/id"),
-            ("blank_field", "/objective"),
-            ("bad_item_count", "/acceptance_criteria"),
-        ]
+        diagnostics(&problems),
+        [(ChangeRequestRule::WrongType, "/id")]
     );
 }
 
@@ -63,19 +116,14 @@ fn preflight_reports_wrong_types_in_contract_and_item_order() {
     }"#;
 
     let problems = preflight(source).expect_err("wrong types should fail Preflight");
-    let diagnostics: Vec<_> = problems
-        .iter()
-        .map(|problem| (problem.code.as_str(), problem.pointer.as_str()))
-        .collect();
-
     assert_eq!(
-        diagnostics,
+        diagnostics(&problems),
         [
-            ("wrong_type", "/schema"),
-            ("wrong_type", "/id"),
-            ("wrong_type", "/objective"),
-            ("wrong_type", "/acceptance_criteria/0"),
-            ("wrong_type", "/acceptance_criteria/2"),
+            (ChangeRequestRule::WrongType, "/schema"),
+            (ChangeRequestRule::WrongType, "/id"),
+            (ChangeRequestRule::WrongType, "/objective"),
+            (ChangeRequestRule::WrongType, "/acceptance_criteria/0"),
+            (ChangeRequestRule::WrongType, "/acceptance_criteria/2"),
         ]
     );
 }
@@ -99,21 +147,16 @@ fn preflight_reports_every_applicable_bound_problem_without_suppression() {
 
     let problems =
         preflight(source.as_bytes()).expect_err("every applicable bound should be reported");
-    let diagnostics: Vec<_> = problems
-        .iter()
-        .map(|problem| (problem.code.as_str(), problem.pointer.as_str()))
-        .collect();
-
     assert_eq!(
-        diagnostics,
+        diagnostics(&problems),
         [
-            ("field_too_long", "/id"),
-            ("bad_slug", "/id"),
-            ("blank_field", "/objective"),
-            ("field_too_long", "/objective"),
-            ("bad_item_count", "/acceptance_criteria"),
-            ("blank_field", "/acceptance_criteria/0"),
-            ("field_too_long", "/acceptance_criteria/0"),
+            (ChangeRequestRule::FieldTooLong, "/id"),
+            (ChangeRequestRule::BadSlug, "/id"),
+            (ChangeRequestRule::BlankField, "/objective"),
+            (ChangeRequestRule::FieldTooLong, "/objective"),
+            (ChangeRequestRule::BadItemCount, "/acceptance_criteria"),
+            (ChangeRequestRule::BlankField, "/acceptance_criteria/0"),
+            (ChangeRequestRule::FieldTooLong, "/acceptance_criteria/0"),
         ]
     );
 }
@@ -157,7 +200,7 @@ fn preflight_reports_every_repeated_field_occurrence() {
     let problems = preflight(source).expect_err("duplicates should fail Preflight");
     let duplicates: Vec<_> = problems
         .iter()
-        .filter(|problem| problem.code.as_str() == "duplicate_field")
+        .filter(|problem| problem.code == ChangeRequestRule::DuplicateField)
         .map(|problem| problem.pointer.as_str())
         .collect();
 
@@ -165,35 +208,63 @@ fn preflight_reports_every_repeated_field_occurrence() {
 }
 
 #[test]
-fn preflight_interleaves_missing_and_present_field_problems_in_contract_order() {
-    let problems = preflight(br#"{"schema":"change_request.v2"}"#)
-        .expect_err("missing and invalid fields should fail Preflight");
-    let diagnostics: Vec<_> = problems
-        .iter()
-        .map(|problem| (problem.code.as_str(), problem.pointer.as_str()))
-        .collect();
+fn preflight_validates_every_duplicate_field_occurrence_in_document_order() {
+    let source = br#"{
+        "schema": 7,
+        "schema": "change_request.v2",
+        "id": 8,
+        "id": "Bad_Id",
+        "objective": [],
+        "objective": " ",
+        "acceptance_criteria": false,
+        "acceptance_criteria": [9, ""]
+    }"#;
+
+    let problems = preflight(source).expect_err("every duplicate occurrence should be validated");
 
     assert_eq!(
-        diagnostics,
+        diagnostics(&problems),
         [
-            ("unsupported_version", "/schema"),
-            ("missing_field", "/id"),
-            ("missing_field", "/objective"),
-            ("missing_field", "/acceptance_criteria"),
+            (ChangeRequestRule::DuplicateField, "/schema"),
+            (ChangeRequestRule::DuplicateField, "/id"),
+            (ChangeRequestRule::DuplicateField, "/objective"),
+            (ChangeRequestRule::DuplicateField, "/acceptance_criteria",),
+            (ChangeRequestRule::WrongType, "/schema"),
+            (ChangeRequestRule::UnsupportedVersion, "/schema"),
+            (ChangeRequestRule::WrongType, "/id"),
+            (ChangeRequestRule::BadSlug, "/id"),
+            (ChangeRequestRule::WrongType, "/objective"),
+            (ChangeRequestRule::BlankField, "/objective"),
+            (ChangeRequestRule::WrongType, "/acceptance_criteria"),
+            (ChangeRequestRule::WrongType, "/acceptance_criteria/0"),
+            (ChangeRequestRule::BlankField, "/acceptance_criteria/1"),
         ]
     );
 }
 
 #[test]
-fn invalid_change_request_never_reaches_workflow_run_initialization() {
-    let run_ids_allocated = Cell::new(0);
+fn preflight_interleaves_missing_and_present_field_problems_in_contract_order() {
+    let problems = preflight(br#"{"schema":"change_request.v2"}"#)
+        .expect_err("missing and invalid fields should fail Preflight");
+    assert_eq!(
+        diagnostics(&problems),
+        [
+            (ChangeRequestRule::UnsupportedVersion, "/schema"),
+            (ChangeRequestRule::MissingField, "/id"),
+            (ChangeRequestRule::MissingField, "/objective"),
+            (ChangeRequestRule::MissingField, "/acceptance_criteria"),
+        ]
+    );
+}
 
-    let result = execute_run(br#"{"schema":"change_request.v1"}"#, |_| {
-        run_ids_allocated.set(run_ids_allocated.get() + 1);
-    });
+#[test]
+fn problem_display_renders_the_empty_json_pointer_as_the_document_root() {
+    let problem = preflight(br#"[]"#).expect_err("an array should fail Preflight");
 
-    assert!(result.is_err());
-    assert_eq!(run_ids_allocated.get(), 0);
+    assert_eq!(
+        problem[0].to_string(),
+        "[not_an_object] top level must be a JSON object (at \"\")"
+    );
 }
 
 #[test]
@@ -220,18 +291,13 @@ fn preflight_reports_empty_lower_bounds() {
     }"#;
 
     let problems = preflight(source).expect_err("empty bounded values should fail Preflight");
-    let diagnostics: Vec<_> = problems
-        .iter()
-        .map(|problem| (problem.code.as_str(), problem.pointer.as_str()))
-        .collect();
-
     assert_eq!(
-        diagnostics,
+        diagnostics(&problems),
         [
-            ("field_too_long", "/id"),
-            ("bad_slug", "/id"),
-            ("blank_field", "/objective"),
-            ("bad_item_count", "/acceptance_criteria"),
+            (ChangeRequestRule::FieldTooLong, "/id"),
+            (ChangeRequestRule::BadSlug, "/id"),
+            (ChangeRequestRule::BlankField, "/objective"),
+            (ChangeRequestRule::BadItemCount, "/acceptance_criteria"),
         ]
     );
 }
@@ -253,10 +319,17 @@ fn preflight_enforces_every_slug_grammar_edge() {
         assert!(
             problems
                 .iter()
-                .any(|problem| problem.code.as_str() == "bad_slug"),
+                .any(|problem| problem.code == ChangeRequestRule::BadSlug),
             "invalid slug {invalid:?}: {problems:?}"
         );
     }
+}
+
+fn diagnostics(problems: &[ChangeRequestProblem]) -> Vec<(ChangeRequestRule, &str)> {
+    problems
+        .iter()
+        .map(|problem| (problem.code, problem.pointer.as_str()))
+        .collect()
 }
 
 fn request_with_id(id: &str) -> String {

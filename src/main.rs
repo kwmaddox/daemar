@@ -1,8 +1,12 @@
+use std::fmt;
+use std::fs::File;
+use std::io;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use daemar::{ChangeRequestProblem, ChangeRequestRule, execute_run};
+use daemar::{ChangeRequestProblem, change_request_document_byte_limit, preflight};
 
 #[derive(Parser)]
 #[command(name = "daemar", about = "Execute and inspect Daemar Workflows")]
@@ -40,23 +44,51 @@ fn main() -> ExitCode {
 }
 
 fn run(path: &Path) -> ExitCode {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return report_invalid_request(
-                path,
-                &[ChangeRequestProblem {
-                    code: ChangeRequestRule::IoError,
-                    pointer: "/".to_owned(),
-                    message: format!("cannot read file: {error}"),
-                }],
-            );
-        }
+    let change_request_document = match read_change_request_document(path) {
+        Ok(change_request_document) => change_request_document,
+        Err(error) => return report_read_error(&error),
     };
-    match execute_run(&bytes, |_| ()) {
-        Ok(()) => ExitCode::SUCCESS,
+    match preflight(&change_request_document) {
+        Ok(_) => ExitCode::SUCCESS,
         Err(problems) => report_invalid_request(path, &problems),
     }
+}
+
+fn read_change_request_document(path: &Path) -> Result<Vec<u8>, ChangeRequestReadError<'_>> {
+    let file = File::open(path).map_err(|source| ChangeRequestReadError { path, source })?;
+    read_bounded_change_request_document(file)
+        .map_err(|source| ChangeRequestReadError { path, source })
+}
+
+fn read_bounded_change_request_document(reader: impl Read) -> Result<Vec<u8>, io::Error> {
+    let read_limit = change_request_document_byte_limit().saturating_add(1);
+    let mut change_request_document = Vec::with_capacity(read_limit);
+    let read_limit = u64::try_from(read_limit).unwrap_or(u64::MAX);
+    reader
+        .take(read_limit)
+        .read_to_end(&mut change_request_document)?;
+    Ok(change_request_document)
+}
+
+struct ChangeRequestReadError<'a> {
+    path: &'a Path,
+    source: io::Error,
+}
+
+impl fmt::Display for ChangeRequestReadError<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "cannot read Change Request from {}: {}",
+            self.path.display(),
+            self.source
+        )
+    }
+}
+
+fn report_read_error(error: &ChangeRequestReadError<'_>) -> ExitCode {
+    eprintln!("error: {error}\n\nno Workflow Run created");
+    ExitCode::from(1)
 }
 
 fn report_invalid_request(path: &Path, problems: &[ChangeRequestProblem]) -> ExitCode {
@@ -66,11 +98,34 @@ fn report_invalid_request(path: &Path, problems: &[ChangeRequestProblem]) -> Exi
         path.display()
     );
     for problem in problems {
-        eprintln!(
-            "  [{}] {} (at {})",
-            problem.code, problem.message, problem.pointer
-        );
+        eprintln!("  {problem}");
     }
     eprintln!("\nno Workflow Run created");
     ExitCode::from(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Read};
+
+    use daemar::change_request_document_byte_limit;
+
+    use super::read_bounded_change_request_document;
+
+    struct EndlessReader;
+
+    impl Read for EndlessReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            buffer.fill(b'x');
+            Ok(buffer.len())
+        }
+    }
+
+    #[test]
+    fn change_request_reading_stops_one_byte_past_the_policy_limit() {
+        let document = read_bounded_change_request_document(EndlessReader)
+            .expect("the bounded reader should finish");
+
+        assert_eq!(document.len(), change_request_document_byte_limit() + 1);
+    }
 }
