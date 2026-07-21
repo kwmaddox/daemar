@@ -1,27 +1,38 @@
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::LazyLock;
 
+use regex::Regex;
+use schemars::{JsonSchema, schema_for};
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 struct PreflightPolicy {
     schema_version: &'static str,
     max_document_bytes: usize,
+    min_id_characters: usize,
     max_id_characters: usize,
     max_objective_characters: usize,
+    min_acceptance_criteria: usize,
     max_acceptance_criteria: usize,
     max_criterion_characters: usize,
+    id_pattern: &'static str,
+    non_blank_pattern: &'static str,
     accepted_fields: &'static [&'static str],
 }
 
 const PREFLIGHT_POLICY: PreflightPolicy = PreflightPolicy {
     schema_version: "change_request.v1",
     max_document_bytes: 16 * 1024,
+    min_id_characters: 1,
     max_id_characters: 64,
     max_objective_characters: 4_096,
+    min_acceptance_criteria: 1,
     max_acceptance_criteria: 20,
     max_criterion_characters: 1_024,
+    id_pattern: r"^[a-z0-9]+(-[a-z0-9]+)*$",
+    non_blank_pattern: r"[^\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]",
     accepted_fields: &[
         "schema",
         "id",
@@ -31,11 +42,32 @@ const PREFLIGHT_POLICY: PreflightPolicy = PreflightPolicy {
     ],
 };
 
-#[derive(Debug, PartialEq, Eq)]
+static CHANGE_REQUEST_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(PREFLIGHT_POLICY.id_pattern).expect("Change Request id pattern should compile")
+});
+static NON_BLANK_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(PREFLIGHT_POLICY.non_blank_pattern)
+        .expect("Change Request non-blank pattern should compile")
+});
+
+/// The typed result of a Change Request that passed Preflight.
+///
+/// The authoring document is a UTF-8 JSON object no larger than 16 KiB. Duplicate keys and
+/// document size are enforced by Preflight because JSON Schema operates on parsed values.
+#[derive(Debug, JsonSchema, PartialEq, Eq)]
+#[schemars(title = "Change Request", deny_unknown_fields)]
 pub struct ChangeRequest {
+    /// Optional editor hint pointing at this schema. Daemar ignores its value.
+    #[schemars(rename = "$schema")]
+    _schema_hint: Option<Value>,
+    /// Contract version. Exact match required; no negotiation.
     schema: String,
+    /// Human-authored slug identifying this Change Request.
+    #[schemars(with = "String")]
     id: ChangeRequestSlug,
+    /// What the Workflow Run should achieve.
     objective: String,
+    /// How a human reviewer judges success. Daemar does not machine-check these criteria.
     acceptance_criteria: Vec<String>,
 }
 
@@ -152,6 +184,71 @@ pub fn change_request_document_byte_limit() -> usize {
     PREFLIGHT_POLICY.max_document_bytes
 }
 
+/// Generates the editor-facing JSON Schema for the Change Request accepted by Preflight.
+pub fn change_request_schema_document() -> String {
+    let policy = &PREFLIGHT_POLICY;
+    let mut schema = schema_for!(ChangeRequest).to_value();
+    let schema_object = schema
+        .as_object_mut()
+        .expect("Schemars should generate an object schema");
+    schema_object.insert("$id".to_owned(), json!("change-request.schema.json"));
+    let properties = schema_object
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .expect("Change Request schema should contain properties");
+
+    let actual_fields: HashSet<_> = properties.keys().map(String::as_str).collect();
+    let accepted_fields: HashSet<_> = policy.accepted_fields.iter().copied().collect();
+    assert_eq!(
+        actual_fields, accepted_fields,
+        "schema fields must match the fields accepted by Preflight"
+    );
+
+    schema_property(properties, "schema").insert("const".to_owned(), json!(policy.schema_version));
+    schema_property(properties, "id").extend([
+        ("minLength".to_owned(), json!(policy.min_id_characters)),
+        ("maxLength".to_owned(), json!(policy.max_id_characters)),
+        ("pattern".to_owned(), json!(policy.id_pattern)),
+    ]);
+    schema_property(properties, "objective").extend([
+        (
+            "maxLength".to_owned(),
+            json!(policy.max_objective_characters),
+        ),
+        ("pattern".to_owned(), json!(policy.non_blank_pattern)),
+    ]);
+
+    let criteria = schema_property(properties, "acceptance_criteria");
+    criteria.insert("minItems".to_owned(), json!(policy.min_acceptance_criteria));
+    criteria.insert("maxItems".to_owned(), json!(policy.max_acceptance_criteria));
+    let items = criteria
+        .get_mut("items")
+        .and_then(Value::as_object_mut)
+        .expect("acceptance criteria should have an item schema");
+    items.extend([
+        (
+            "maxLength".to_owned(),
+            json!(policy.max_criterion_characters),
+        ),
+        ("pattern".to_owned(), json!(policy.non_blank_pattern)),
+    ]);
+
+    let mut document =
+        serde_json::to_string_pretty(&schema).expect("JSON Schema should serialize as JSON");
+    document.push('\n');
+    document
+}
+
+fn schema_property<'a>(
+    properties: &'a mut Map<String, Value>,
+    name: &str,
+) -> &'a mut Map<String, Value> {
+    properties
+        .get_mut(name)
+        .and_then(Value::as_object_mut)
+        .unwrap_or_else(|| panic!("Change Request schema should contain `{name}`"))
+}
+
 fn validate_object(
     object: RawObject,
     policy: &PreflightPolicy,
@@ -199,7 +296,7 @@ fn validate_object(
         "objective",
         &mut problems,
         |objective, problems| {
-            if objective.trim().is_empty() {
+            if !NON_BLANK_REGEX.is_match(objective) {
                 problems.push(problem(
                     ChangeRequestRule::BlankField,
                     "/objective",
@@ -224,6 +321,7 @@ fn validate_object(
 
     if problems.is_empty() {
         Ok(ChangeRequest {
+            _schema_hint: None,
             schema: only_occurrence(schema, "schema"),
             id: only_occurrence(id, "id"),
             objective: only_occurrence(objective, "objective"),
@@ -295,18 +393,18 @@ fn slug_field(
 
         let mut valid = true;
         let characters = id.chars().count();
-        if !(1..=policy.max_id_characters).contains(&characters) {
+        if !(policy.min_id_characters..=policy.max_id_characters).contains(&characters) {
             valid = false;
             problems.push(problem(
                 ChangeRequestRule::FieldTooLong,
                 "/id",
                 format!(
-                    "`id` is {characters} characters, allowed 1-{}",
-                    policy.max_id_characters
+                    "`id` is {characters} characters, allowed {}-{}",
+                    policy.min_id_characters, policy.max_id_characters
                 ),
             ));
         }
-        if !is_lowercase_kebab_case(id) {
+        if !CHANGE_REQUEST_ID_REGEX.is_match(id) {
             valid = false;
             problems.push(problem(
                 ChangeRequestRule::BadSlug,
@@ -347,13 +445,15 @@ fn criteria_field(
             continue;
         };
 
-        if !(1..=policy.max_acceptance_criteria).contains(&items.len()) {
+        if !(policy.min_acceptance_criteria..=policy.max_acceptance_criteria).contains(&items.len())
+        {
             problems.push(problem(
                 ChangeRequestRule::BadItemCount,
                 "/acceptance_criteria",
                 format!(
-                    "`acceptance_criteria` has {} items, allowed 1-{}",
+                    "`acceptance_criteria` has {} items, allowed {}-{}",
                     items.len(),
+                    policy.min_acceptance_criteria,
                     policy.max_acceptance_criteria
                 ),
             ));
@@ -364,7 +464,7 @@ fn criteria_field(
             let pointer = format!("/acceptance_criteria/{index}");
             match item.as_str() {
                 Some(item) => {
-                    if item.trim().is_empty() {
+                    if !NON_BLANK_REGEX.is_match(item) {
                         problems.push(problem(
                             ChangeRequestRule::BlankField,
                             pointer.clone(),
@@ -402,16 +502,6 @@ fn only_occurrence<T>(values: Option<Vec<T>>, field: &str) -> T {
     let mut values = values.expect("validated required field");
     assert_eq!(values.len(), 1, "validated `{field}` field occurrence");
     values.pop().expect("validated field value")
-}
-
-fn is_lowercase_kebab_case(value: &str) -> bool {
-    !value.is_empty()
-        && value.split('-').all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        })
 }
 
 fn pointer_for_key(key: &str) -> String {
