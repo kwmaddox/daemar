@@ -394,6 +394,7 @@ fn esc(s: &str) -> String {
 const STYLE: &str = r#"<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 :root{color-scheme:dark}
 body{background:#0f1216;color:#d7dce2;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:0 1.2rem 3rem}
+main,header{max-width:1240px}
 header{display:flex;align-items:baseline;gap:1rem;padding:.8rem 0;border-bottom:1px solid #232a33}
 h1{font-size:1rem;margin:0;letter-spacing:.08em;text-transform:uppercase}
 h1 a{color:inherit;text-decoration:none}
