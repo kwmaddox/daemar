@@ -154,7 +154,15 @@ pub enum Kind {
     ModelCall {
         phase: String,
         model: String,
+        /// Total tokens; the split rides beside it because pricing is
+        /// asymmetric and a receipt needs its line items.
         tokens: u64,
+        #[serde(default)]
+        prompt_tokens: u64,
+        #[serde(default)]
+        completion_tokens: u64,
+        /// USD as computed AT FLIGHT TIME from the registry — a frozen
+        /// receipt, never recomputed from a later table.
         cost: f64,
     },
     #[serde(rename = "note.v1")]

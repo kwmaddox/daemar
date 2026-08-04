@@ -1,0 +1,13 @@
+# airframes.toml — the factory's model registry.
+#
+# Prices are USD per 1M tokens, and they go stale: date every entry when you
+# touch it. Cost is computed at flight time and frozen on the ledger — a
+# receipt — so editing this file never rewrites history.
+#
+# A flight on a model with no entry here records cost 0.0 and a note.v1 on
+# its ledger saying the model is unregistered. Loud until fed.
+#
+# [models."gpt-5.6-terra"]
+# input = 0.0      # USD per 1M input tokens
+# output = 0.0     # USD per 1M output tokens
+# updated = "2026-08-04"

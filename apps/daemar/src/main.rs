@@ -18,8 +18,10 @@ use std::process::ExitCode;
 use ledger::{Kind, Lane, LedgerWriter, PhaseOutcome, SlipId, SlipOutcome};
 
 mod provider;
+mod registry;
 
 use provider::Provider;
+use registry::{Price, Registry};
 
 const WORKFLOW: &str = "prompt";
 const PHASE: &str = "respond";
@@ -32,7 +34,48 @@ Answer the request directly and completely, in plain text.";
 struct Config {
     provider: Provider,
     ledgers: String,
+    airframes: String,
     engineer: String,
+}
+
+/// What the registry had to say about this flight's airframe, resolved once
+/// before takeoff. Not-priced is never silent: it becomes a note on the
+/// ledger, so the audit records WHY a receipt reads zero.
+enum Pricing {
+    Priced(Price),
+    Unregistered { model: String },
+    RegistryBroken { detail: String },
+}
+
+impl Pricing {
+    fn resolve(config: &Config) -> Pricing {
+        match Registry::load(config.airframes.as_ref()) {
+            Ok(registry) => match registry.price(&config.provider.model) {
+                Some(price) => Pricing::Priced(price),
+                None => Pricing::Unregistered { model: config.provider.model.clone() },
+            },
+            Err(error) => Pricing::RegistryBroken { detail: error.to_string() },
+        }
+    }
+
+    fn cost(&self, prompt_tokens: u64, completion_tokens: u64) -> f64 {
+        match self {
+            Pricing::Priced(price) => price.cost(prompt_tokens, completion_tokens),
+            Pricing::Unregistered { .. } | Pricing::RegistryBroken { .. } => 0.0,
+        }
+    }
+
+    fn complaint(&self) -> Option<String> {
+        match self {
+            Pricing::Priced(_) => None,
+            Pricing::Unregistered { model } => Some(format!(
+                "airframe {model} is not in airframes.toml; cost unrecorded"
+            )),
+            Pricing::RegistryBroken { detail } => {
+                Some(format!("airframe registry unreadable; cost unrecorded — {detail}"))
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -65,6 +108,7 @@ impl Config {
                 model: env("DAEMAR_MODEL").ok_or(ConfigError::Missing("DAEMAR_MODEL"))?,
             },
             ledgers: env("DAEMAR_LEDGERS").unwrap_or_else(|| "ledgers".to_string()),
+            airframes: env("DAEMAR_AIRFRAMES").unwrap_or_else(|| "airframes.toml".to_string()),
             engineer: env("USER").unwrap_or_else(|| "engineer".to_string()),
         })
     }
@@ -85,7 +129,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match fly(&config, &request) {
+    let pricing = Pricing::resolve(&config);
+    if let Some(complaint) = pricing.complaint() {
+        eprintln!("daemar: {complaint}");
+    }
+    match fly(&config, &request, &pricing) {
         Ok(accepted) => {
             if accepted {
                 ExitCode::SUCCESS
@@ -104,7 +152,7 @@ fn main() -> ExitCode {
 
 /// Run the whole flight, appending every event. Returns whether the slip
 /// closed accepted. Only a ledger-write failure aborts the recording itself.
-fn fly(config: &Config, request: &str) -> Result<bool, ledger::LedgerError> {
+fn fly(config: &Config, request: &str, pricing: &Pricing) -> Result<bool, ledger::LedgerError> {
     let slip_id = SlipId(uuid::Uuid::now_v7().to_string());
     let mut w = LedgerWriter::create(config.ledgers.as_ref(), slip_id)?;
 
@@ -127,13 +175,18 @@ fn fly(config: &Config, request: &str) -> Result<bool, ledger::LedgerError> {
 
     match config.provider.complete(SYSTEM_PROMPT, request) {
         Ok(reply) => {
+            let cost = pricing.cost(reply.prompt_tokens, reply.completion_tokens);
             w.append(&Kind::ModelCall {
                 phase: PHASE.to_string(),
                 model: config.provider.model.clone(),
                 tokens: reply.total_tokens,
-                // No pricing table yet; 0.0 is honest, not a guess.
-                cost: 0.0,
+                prompt_tokens: reply.prompt_tokens,
+                completion_tokens: reply.completion_tokens,
+                cost,
             })?;
+            if let Some(complaint) = pricing.complaint() {
+                w.append(&Kind::Note { text: complaint })?;
+            }
             w.append(&Kind::SectionWritten {
                 section: "response.v1".to_string(),
                 by: OWNER.to_string(),
@@ -150,7 +203,7 @@ fn fly(config: &Config, request: &str) -> Result<bool, ledger::LedgerError> {
             })?;
             println!("{}", reply.text.trim_end());
             eprintln!(
-                "\nslip {} · accepted · {} tokens · board: /slip/{}",
+                "\nslip {} · accepted · {} tokens · ${cost:.4} · board: /slip/{}",
                 w.slip_id(),
                 reply.total_tokens,
                 w.slip_id()

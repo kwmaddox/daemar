@@ -16,6 +16,8 @@ pub struct Provider {
 
 pub struct ModelReply {
     pub text: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
     pub total_tokens: u64,
 }
 
@@ -63,8 +65,12 @@ struct Message {
     content: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default, Clone, Copy)]
 struct Usage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
     #[serde(default)]
     total_tokens: u64,
 }
@@ -106,8 +112,18 @@ impl Provider {
             .and_then(|choice| choice.message.content)
             .filter(|content| !content.is_empty())
             .ok_or(ProviderError::MissingContent)?;
-        let total_tokens = parsed.usage.map(|u| u.total_tokens).unwrap_or(0);
-        Ok(ModelReply { text, total_tokens })
+        let usage = parsed.usage.unwrap_or_default();
+        let total_tokens = if usage.total_tokens > 0 {
+            usage.total_tokens
+        } else {
+            usage.prompt_tokens + usage.completion_tokens
+        };
+        Ok(ModelReply {
+            text,
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens,
+        })
     }
 }
 
