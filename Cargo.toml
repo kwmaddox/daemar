@@ -6,7 +6,8 @@ rust-version = "1.97.1"
 
 [dependencies]
 clap = { version = "=4.6.1", features = ["derive"] }
-regex = "=1.13.1"
-schemars = "=1.2.1"
 serde = "=1.0.229"
 serde_json = { version = "=1.0.149", features = ["arbitrary_precision"] }
+
+[dev-dependencies]
+jsonschema = { version = "=0.48.1", default-features = false }

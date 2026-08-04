@@ -3,7 +3,7 @@ use daemar::{ChangeRequestProblem, ChangeRequestRule, preflight};
 #[test]
 fn preflight_rejects_unreadable_document_shapes_at_the_root() {
     let oversized = vec![b' '; 16 * 1024 + 1];
-    let cases: [(&str, &[u8], ChangeRequestRule); 4] = [
+    let cases: [(&str, &[u8], ChangeRequestRule); 6] = [
         ("oversized", &oversized, ChangeRequestRule::DocumentTooLarge),
         ("non-UTF-8", &[0xff], ChangeRequestRule::InvalidEncoding),
         (
@@ -11,7 +11,17 @@ fn preflight_rejects_unreadable_document_shapes_at_the_root() {
             br#"{"schema": }"#,
             ChangeRequestRule::InvalidJson,
         ),
+        (
+            "invalid non-object JSON",
+            br#""unterminated"#,
+            ChangeRequestRule::InvalidJson,
+        ),
         ("non-object", br#"[]"#, ChangeRequestRule::NotAnObject),
+        (
+            "arbitrary-precision root number",
+            br#"1e400"#,
+            ChangeRequestRule::NotAnObject,
+        ),
     ];
 
     for (label, source, expected_code) in cases {
@@ -32,7 +42,7 @@ fn preflight_reports_key_problems_in_document_order_then_fields_in_contract_orde
         "a~field": 0,
         "objective": " ",
         "acceptance_criteria": [],
-        "$schema": {"ignored": true}
+        "$schema": {"not": "a string"}
     }"#;
 
     let problems = preflight(source).expect_err("the request should fail Preflight");
@@ -46,6 +56,7 @@ fn preflight_reports_key_problems_in_document_order_then_fields_in_contract_orde
             (ChangeRequestRule::BadSlug, "/id"),
             (ChangeRequestRule::BlankField, "/objective"),
             (ChangeRequestRule::BadItemCount, "/acceptance_criteria"),
+            (ChangeRequestRule::WrongType, "/$schema"),
         ]
     );
 }
@@ -75,18 +86,36 @@ fn unknown_field_guidance_includes_the_optional_schema_metadata_field() {
 }
 
 #[test]
-fn preflight_ignores_arbitrary_precision_numbers_in_schema_metadata() {
+fn preflight_accepts_string_schema_metadata() {
     let source = br#"{
-        "$schema": 1e400,
+        "$schema": "../change-request.schema.json",
         "schema": "change_request.v1",
         "id": "inspect-runs",
         "objective": "Inspect Workflow Runs.",
         "acceptance_criteria": ["Inspection is read-only."]
     }"#;
 
-    let request = preflight(source).expect("arbitrary-precision `$schema` metadata is ignored");
+    let request = preflight(source).expect("a string `$schema` editor hint should be accepted");
 
     assert_eq!(request.id(), "inspect-runs");
+}
+
+#[test]
+fn preflight_rejects_non_string_schema_metadata_at_its_json_pointer() {
+    let source = br#"{
+        "$schema": {"not": "a path or URL"},
+        "schema": "change_request.v1",
+        "id": "inspect-runs",
+        "objective": "Inspect Workflow Runs.",
+        "acceptance_criteria": ["Inspection is read-only."]
+    }"#;
+
+    let problems = preflight(source).expect_err("non-string `$schema` metadata should fail");
+
+    assert_eq!(
+        diagnostics(&problems),
+        [(ChangeRequestRule::WrongType, "/$schema")]
+    );
 }
 
 #[test]
@@ -169,7 +198,7 @@ fn preflight_accepts_the_complete_shape_at_every_inclusive_maximum() {
     let mut criteria = vec![criterion];
     criteria.extend((1..20).map(|index| format!("criterion {index}")));
     let source = serde_json::to_vec(&serde_json::json!({
-        "$schema": {"any value is ignored": true},
+        "$schema": "../change-request.schema.json",
         "schema": "change_request.v1",
         "id": id,
         "objective": objective,
@@ -291,10 +320,11 @@ fn preflight_reports_empty_lower_bounds() {
     }"#;
 
     let problems = preflight(source).expect_err("empty bounded values should fail Preflight");
+    assert_eq!(problems[0].code.to_string(), "field_too_short");
     assert_eq!(
         diagnostics(&problems),
         [
-            (ChangeRequestRule::FieldTooLong, "/id"),
+            (ChangeRequestRule::FieldTooShort, "/id"),
             (ChangeRequestRule::BadSlug, "/id"),
             (ChangeRequestRule::BlankField, "/objective"),
             (ChangeRequestRule::BadItemCount, "/acceptance_criteria"),

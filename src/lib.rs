@@ -1,15 +1,12 @@
 use std::collections::HashSet;
 use std::fmt;
-use std::sync::LazyLock;
 
-use regex::Regex;
-use schemars::{JsonSchema, schema_for};
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 struct PreflightPolicy {
-    schema_version: &'static str,
+    schema_version: ChangeRequestSchemaVersion,
     max_document_bytes: usize,
     min_id_characters: usize,
     max_id_characters: usize,
@@ -17,13 +14,13 @@ struct PreflightPolicy {
     min_acceptance_criteria: usize,
     max_acceptance_criteria: usize,
     max_criterion_characters: usize,
-    id_pattern: &'static str,
-    non_blank_pattern: &'static str,
+    json_schema_id_pattern: &'static str,
+    json_schema_non_blank_pattern: &'static str,
     accepted_fields: &'static [&'static str],
 }
 
 const PREFLIGHT_POLICY: PreflightPolicy = PreflightPolicy {
-    schema_version: "change_request.v1",
+    schema_version: ChangeRequestSchemaVersion::V1,
     max_document_bytes: 16 * 1024,
     min_id_characters: 1,
     max_id_characters: 64,
@@ -31,8 +28,8 @@ const PREFLIGHT_POLICY: PreflightPolicy = PreflightPolicy {
     min_acceptance_criteria: 1,
     max_acceptance_criteria: 20,
     max_criterion_characters: 1_024,
-    id_pattern: r"^[a-z0-9]+(-[a-z0-9]+)*$",
-    non_blank_pattern: r"[^\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]",
+    json_schema_id_pattern: r"^[a-z0-9]+(-[a-z0-9]+)*$",
+    json_schema_non_blank_pattern: r"[^\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]",
     accepted_fields: &[
         "schema",
         "id",
@@ -42,28 +39,15 @@ const PREFLIGHT_POLICY: PreflightPolicy = PreflightPolicy {
     ],
 };
 
-static CHANGE_REQUEST_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(PREFLIGHT_POLICY.id_pattern).expect("Change Request id pattern should compile")
-});
-static NON_BLANK_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(PREFLIGHT_POLICY.non_blank_pattern)
-        .expect("Change Request non-blank pattern should compile")
-});
-
 /// The typed result of a Change Request that passed Preflight.
 ///
 /// The authoring document is a UTF-8 JSON object no larger than 16 KiB. Duplicate keys and
 /// document size are enforced by Preflight because JSON Schema operates on parsed values.
-#[derive(Debug, JsonSchema, PartialEq, Eq)]
-#[schemars(title = "Change Request", deny_unknown_fields)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ChangeRequest {
-    /// Optional editor hint pointing at this schema. Daemar ignores its value.
-    #[schemars(rename = "$schema")]
-    _schema_hint: Option<Value>,
     /// Contract version. Exact match required; no negotiation.
-    schema: String,
+    schema: ChangeRequestSchemaVersion,
     /// Human-authored slug identifying this Change Request.
-    #[schemars(with = "String")]
     id: ChangeRequestSlug,
     /// What the Workflow Run should achieve.
     objective: String,
@@ -73,7 +57,7 @@ pub struct ChangeRequest {
 
 impl ChangeRequest {
     pub fn schema(&self) -> &str {
-        &self.schema
+        self.schema.as_str()
     }
 
     pub fn id(&self) -> &str {
@@ -86,6 +70,27 @@ impl ChangeRequest {
 
     pub fn acceptance_criteria(&self) -> &[String] {
         &self.acceptance_criteria
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChangeRequestSchemaVersion {
+    V1,
+}
+
+impl ChangeRequestSchemaVersion {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::V1 => "change_request.v1",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        if value == Self::V1.as_str() {
+            Some(Self::V1)
+        } else {
+            None
+        }
     }
 }
 
@@ -110,6 +115,7 @@ pub enum ChangeRequestRule {
     MissingField,
     WrongType,
     UnsupportedVersion,
+    FieldTooShort,
     FieldTooLong,
     BadItemCount,
     BadSlug,
@@ -128,6 +134,7 @@ impl fmt::Display for ChangeRequestRule {
             Self::MissingField => "missing_field",
             Self::WrongType => "wrong_type",
             Self::UnsupportedVersion => "unsupported_version",
+            Self::FieldTooShort => "field_too_short",
             Self::FieldTooLong => "field_too_long",
             Self::BadItemCount => "bad_item_count",
             Self::BadSlug => "bad_slug",
@@ -164,6 +171,18 @@ pub fn preflight(
             "document is not valid UTF-8",
         )
     })?;
+    if !text.trim_start().starts_with('{') {
+        serde_json::from_str::<IgnoredAny>(text).map_err(|error| {
+            one_problem(
+                ChangeRequestRule::InvalidJson,
+                format!("not valid JSON: {error}"),
+            )
+        })?;
+        return Err(one_problem(
+            ChangeRequestRule::NotAnObject,
+            "top level must be a JSON object",
+        ));
+    }
     let document: RawDocument = serde_json::from_str(text).map_err(|error| {
         one_problem(
             ChangeRequestRule::InvalidJson,
@@ -187,66 +206,68 @@ pub fn change_request_document_byte_limit() -> usize {
 /// Generates the editor-facing JSON Schema for the Change Request accepted by Preflight.
 pub fn change_request_schema_document() -> String {
     let policy = &PREFLIGHT_POLICY;
-    let mut schema = schema_for!(ChangeRequest).to_value();
-    let schema_object = schema
-        .as_object_mut()
-        .expect("Schemars should generate an object schema");
-    schema_object.insert("$id".to_owned(), json!("change-request.schema.json"));
-    let properties = schema_object
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-        .expect("Change Request schema should contain properties");
-
-    let actual_fields: HashSet<_> = properties.keys().map(String::as_str).collect();
+    let schema = json!({
+        "$id": "change-request.schema.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "The authoring contract for a Change Request accepted by Preflight. Document size and duplicate keys are enforced by Preflight because JSON Schema operates on parsed values.",
+        "properties": {
+            "$schema": {
+                "description": "Optional non-blank path or URL that associates the document with this schema. Daemar validates it, then discards it.",
+                "pattern": policy.json_schema_non_blank_pattern,
+                "type": "string",
+            },
+            "acceptance_criteria": {
+                "description": "How a human reviewer judges success. Daemar does not machine-check these criteria.",
+                "items": {
+                    "maxLength": policy.max_criterion_characters,
+                    "pattern": policy.json_schema_non_blank_pattern,
+                    "type": "string",
+                },
+                "maxItems": policy.max_acceptance_criteria,
+                "minItems": policy.min_acceptance_criteria,
+                "type": "array",
+            },
+            "id": {
+                "description": "Human-authored slug identifying this Change Request.",
+                "maxLength": policy.max_id_characters,
+                "minLength": policy.min_id_characters,
+                "pattern": policy.json_schema_id_pattern,
+                "type": "string",
+            },
+            "objective": {
+                "description": "What the Workflow Run should achieve.",
+                "maxLength": policy.max_objective_characters,
+                "pattern": policy.json_schema_non_blank_pattern,
+                "type": "string",
+            },
+            "schema": {
+                "const": policy.schema_version.as_str(),
+                "description": "Contract version. Exact match required; no negotiation.",
+                "type": "string",
+            },
+        },
+        "required": ["schema", "id", "objective", "acceptance_criteria"],
+        "title": "Change Request",
+        "type": "object",
+    });
+    let schema_fields: HashSet<_> = schema
+        .pointer("/properties")
+        .and_then(Value::as_object)
+        .expect("Change Request schema should contain properties")
+        .keys()
+        .map(String::as_str)
+        .collect();
     let accepted_fields: HashSet<_> = policy.accepted_fields.iter().copied().collect();
     assert_eq!(
-        actual_fields, accepted_fields,
+        schema_fields, accepted_fields,
         "schema fields must match the fields accepted by Preflight"
     );
-
-    schema_property(properties, "schema").insert("const".to_owned(), json!(policy.schema_version));
-    schema_property(properties, "id").extend([
-        ("minLength".to_owned(), json!(policy.min_id_characters)),
-        ("maxLength".to_owned(), json!(policy.max_id_characters)),
-        ("pattern".to_owned(), json!(policy.id_pattern)),
-    ]);
-    schema_property(properties, "objective").extend([
-        (
-            "maxLength".to_owned(),
-            json!(policy.max_objective_characters),
-        ),
-        ("pattern".to_owned(), json!(policy.non_blank_pattern)),
-    ]);
-
-    let criteria = schema_property(properties, "acceptance_criteria");
-    criteria.insert("minItems".to_owned(), json!(policy.min_acceptance_criteria));
-    criteria.insert("maxItems".to_owned(), json!(policy.max_acceptance_criteria));
-    let items = criteria
-        .get_mut("items")
-        .and_then(Value::as_object_mut)
-        .expect("acceptance criteria should have an item schema");
-    items.extend([
-        (
-            "maxLength".to_owned(),
-            json!(policy.max_criterion_characters),
-        ),
-        ("pattern".to_owned(), json!(policy.non_blank_pattern)),
-    ]);
 
     let mut document =
         serde_json::to_string_pretty(&schema).expect("JSON Schema should serialize as JSON");
     document.push('\n');
     document
-}
-
-fn schema_property<'a>(
-    properties: &'a mut Map<String, Value>,
-    name: &str,
-) -> &'a mut Map<String, Value> {
-    properties
-        .get_mut(name)
-        .and_then(Value::as_object_mut)
-        .unwrap_or_else(|| panic!("Change Request schema should contain `{name}`"))
 }
 
 fn validate_object(
@@ -269,7 +290,7 @@ fn validate_object(
                 format!(
                     "unknown field `{}`; {} accepts: {} (`$schema` is optional metadata)",
                     field.name,
-                    policy.schema_version,
+                    policy.schema_version.as_str(),
                     policy.accepted_fields.join(", ")
                 ),
             ));
@@ -277,13 +298,13 @@ fn validate_object(
     }
 
     let schema = string_field(&object, "schema", &mut problems, |schema, problems| {
-        if schema != policy.schema_version {
+        if schema != policy.schema_version.as_str() {
             problems.push(problem(
                 ChangeRequestRule::UnsupportedVersion,
                 "/schema",
                 format!(
                     "`schema` is {schema:?}; this Daemar accepts exactly {:?}",
-                    policy.schema_version
+                    policy.schema_version.as_str()
                 ),
             ));
         }
@@ -296,7 +317,7 @@ fn validate_object(
         "objective",
         &mut problems,
         |objective, problems| {
-            if !NON_BLANK_REGEX.is_match(objective) {
+            if !has_non_whitespace(objective) {
                 problems.push(problem(
                     ChangeRequestRule::BlankField,
                     "/objective",
@@ -318,11 +339,31 @@ fn validate_object(
     );
 
     let acceptance_criteria = criteria_field(&object, &mut problems, policy);
+    for schema_hint in object.values("$schema") {
+        match schema_hint.as_str() {
+            Some(schema_hint) if !has_non_whitespace(schema_hint) => {
+                problems.push(problem(
+                    ChangeRequestRule::BlankField,
+                    "/$schema",
+                    "`$schema` must not be blank",
+                ));
+            }
+            Some(_) => {}
+            None => {
+                problems.push(problem(
+                    ChangeRequestRule::WrongType,
+                    "/$schema",
+                    "`$schema` must be a string",
+                ));
+            }
+        }
+    }
 
     if problems.is_empty() {
+        let schema = only_occurrence(schema, "schema");
         Ok(ChangeRequest {
-            _schema_hint: None,
-            schema: only_occurrence(schema, "schema"),
+            schema: ChangeRequestSchemaVersion::parse(&schema)
+                .expect("Preflight accepted a supported schema version"),
             id: only_occurrence(id, "id"),
             objective: only_occurrence(objective, "objective"),
             acceptance_criteria: only_occurrence(acceptance_criteria, "acceptance_criteria"),
@@ -393,18 +434,28 @@ fn slug_field(
 
         let mut valid = true;
         let characters = id.chars().count();
-        if !(policy.min_id_characters..=policy.max_id_characters).contains(&characters) {
+        if characters < policy.min_id_characters {
+            valid = false;
+            problems.push(problem(
+                ChangeRequestRule::FieldTooShort,
+                "/id",
+                format!(
+                    "`id` is {characters} characters, minimum is {}",
+                    policy.min_id_characters
+                ),
+            ));
+        } else if characters > policy.max_id_characters {
             valid = false;
             problems.push(problem(
                 ChangeRequestRule::FieldTooLong,
                 "/id",
                 format!(
-                    "`id` is {characters} characters, allowed {}-{}",
-                    policy.min_id_characters, policy.max_id_characters
+                    "`id` is {characters} characters, maximum is {}",
+                    policy.max_id_characters
                 ),
             ));
         }
-        if !CHANGE_REQUEST_ID_REGEX.is_match(id) {
+        if !is_change_request_slug(id) {
             valid = false;
             problems.push(problem(
                 ChangeRequestRule::BadSlug,
@@ -417,6 +468,24 @@ fn slug_field(
         }
     }
     Some(slugs)
+}
+
+fn is_change_request_slug(value: &str) -> bool {
+    let mut needs_alphanumeric = true;
+    for byte in value.bytes() {
+        if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
+            needs_alphanumeric = false;
+        } else if byte == b'-' && !needs_alphanumeric {
+            needs_alphanumeric = true;
+        } else {
+            return false;
+        }
+    }
+    !needs_alphanumeric
+}
+
+fn has_non_whitespace(value: &str) -> bool {
+    value.chars().any(|character| !character.is_whitespace())
 }
 
 fn criteria_field(
@@ -464,7 +533,7 @@ fn criteria_field(
             let pointer = format!("/acceptance_criteria/{index}");
             match item.as_str() {
                 Some(item) => {
-                    if !NON_BLANK_REGEX.is_match(item) {
+                    if !has_non_whitespace(item) {
                         problems.push(problem(
                             ChangeRequestRule::BlankField,
                             pointer.clone(),

@@ -22,7 +22,7 @@ duplicate fields are rejected.
 | `id` | string | 1–64 characters; lowercase kebab-case using `a-z`, `0-9`, and single dashes | Correlates independent attempts for the same request. |
 | `objective` | string | non-blank; at most 4,096 characters | States what the Workflow Run should achieve. |
 | `acceptance_criteria` | array of strings | 1–20 non-blank items; each at most 1,024 characters | States how a human reviewer judges the result. |
-| `$schema` | any JSON value | optional and ignored by Daemar | Lets an editor associate the document with the JSON Schema; use a path or URL string for editor support. |
+| `$schema` | string | optional and non-blank; validated, then discarded by Daemar | Lets an editor associate the document with the JSON Schema using a path or URL. |
 
 Only `objective` and `acceptance_criteria` enter the Context Surface. The
 `schema` and `id` fields remain trusted bookkeeping.
@@ -66,9 +66,12 @@ changing them requires a reviewed code change.
 
 ## Keeping the schema synchronized
 
-The checked-in schema is generated from the canonical Rust authoring type and
-the same policy constants used by Preflight. Regenerate it with the pinned
-toolchain:
+The checked-in schema is generated explicitly from Preflight's private contract
+policy. Version, field names, and numeric bounds are shared directly. Slug and
+blank-value rules have separate Rust and JSON Schema implementations because
+the schema uses the ECMAScript regex dialect. Public-seam parity tests execute
+both implementations for every schema-expressible rule. Regenerate the schema
+with the pinned toolchain:
 
 ```console
 cargo +1.97.1-aarch64-apple-darwin run --offline --locked --example generate_change_request_schema > docs/change-request.schema.json
@@ -76,4 +79,7 @@ cargo +1.97.1-aarch64-apple-darwin run --offline --locked --example generate_cha
 
 The `change_request_authoring` test regenerates the schema in memory and fails
 if the checked-in file differs. The same test parses the complete example
-through the production Preflight interface.
+through the production Preflight interface. Focused parity tests execute an
+independent authoring corpus through both Preflight and a Draft 2020-12
+validator. Document size and duplicate-key rules remain Preflight-only because
+JSON Schema validates an already-parsed value.
