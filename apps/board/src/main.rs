@@ -124,36 +124,38 @@ fn shell(app: &App, selected: Option<&str>) -> String {
     let board = render_board(app, &all);
     let (init, detail) = match selected.and_then(|id| all.iter().find(|(s, _)| s.id == id)) {
         Some((slip, events)) => (slip.id.clone(), render_detail(slip, events)),
-        None => (String::new(), PLACEHOLDER.to_string()),
+        None => (String::new(), String::new()),
     };
+    let viewing = if init.is_empty() { "" } else { " class=\"viewing\"" };
     format!(
         "{STYLE}<title>daemar — the board</title>\
          <header><h1>daemar</h1><span class=\"sub\">the board · ledgers are truth · slips are folds</span></header>\
-         <main><section id=\"bays\">{board}</section><aside id=\"detail\">{detail}</aside></main>\
+         <main{viewing}><section id=\"bays\">{board}</section><aside id=\"detail\">{detail}</aside></main>\
          <script>\
-         const PLACEHOLDER={placeholder:?};let sel={init:?}||null;\
+         let sel={init:?}||null;\
          const mainEl=document.querySelector('main');\
          function mark(){{document.querySelectorAll('a.strip').forEach(a=>a.classList.toggle('selected',a.getAttribute('href')==='/slip/'+sel));}}\
          function setViewing(){{mainEl.classList.toggle('viewing',!!sel);}}\
+         function closePanel(push){{sel=null;setViewing();mark();if(push)history.pushState({{}},'','/');}}\
          async function loadBays(){{const r=await fetch('/board');document.getElementById('bays').innerHTML=await r.text();mark();}}\
          async function loadDetail(id,push){{const changed=id!==sel;sel=id;setViewing();\
            const p=document.getElementById('detail');const st=p.scrollTop;\
            const r=await fetch('/fragment/slip/'+id);if(r.ok){{p.innerHTML=await r.text();p.scrollTop=changed?0:st;}}\
            if(changed){{p.classList.remove('enter');void p.offsetWidth;p.classList.add('enter');}}\
            mark();if(push)history.pushState({{id}},'','/slip/'+id);}}\
-         document.addEventListener('click',e=>{{const a=e.target.closest('a.strip');if(!a)return;\
-           e.preventDefault();loadDetail(a.getAttribute('href').split('/').pop(),true);}});\
+         document.addEventListener('click',e=>{{\
+           const x=e.target.closest('a.close');if(x){{e.preventDefault();closePanel(true);return;}}\
+           const a=e.target.closest('a.strip');if(!a)return;e.preventDefault();\
+           const id=a.getAttribute('href').split('/').pop();\
+           if(id===sel){{closePanel(true);}}else{{loadDetail(id,true);}}}});\
          window.addEventListener('popstate',()=>{{const m=location.pathname.match(/^\\/slip\\/(.+)$/);\
-           if(m)loadDetail(m[1],false);else{{sel=null;setViewing();document.getElementById('detail').innerHTML=PLACEHOLDER;mark();}}}});\
+           if(m)loadDetail(m[1],false);else closePanel(false);}});\
          new EventSource('/events').onmessage=()=>{{loadBays();if(sel)loadDetail(sel,false);}};\
-         mark();setViewing();setInterval(()=>{{loadBays();if(sel)loadDetail(sel,false);}},5000);\
+         mark();setInterval(()=>{{loadBays();if(sel)loadDetail(sel,false);}},5000);\
          </script>",
-        placeholder = PLACEHOLDER,
         init = init,
     )
 }
-
-const PLACEHOLDER: &str = "<p class=\"empty placeholder\">select a strip</p>";
 
 async fn index(State(app): State<Arc<App>>) -> Html<String> {
     Html(shell(&app, None))
@@ -169,7 +171,7 @@ async fn closed_page(State(app): State<Arc<App>>) -> Html<String> {
     let now = now_epoch();
     let mut closed: Vec<&Slip> = all.iter().map(|(s, _)| s).filter(|s| s.status != Status::InFlight).collect();
     closed.sort_by(|a, b| b.last_ts.cmp(&a.last_ts));
-    let mut html = format!("{STYLE}<title>daemar — closed</title><header><h1><a href=\"/\">daemar</a> / closed</h1></header><main>");
+    let mut html = format!("{STYLE}<title>daemar — closed</title><header><h1><a href=\"/\">daemar</a> / closed</h1></header><main class=\"single\">");
     html.push_str(&format!("<section><h2>CLOSED <span class=\"count\">{}</span></h2>", closed.len()));
     for slip in &closed {
         html.push_str(&render_strip(slip, now, u64::MAX));
@@ -376,7 +378,7 @@ fn render_detail(slip: &Slip, events: &[ledger::Event]) -> String {
     let mut html = String::new();
 
     html.push_str(&format!(
-        "<p class=\"detailid\">slip {} · <span>{}</span></p>",
+        "<p class=\"detailid\">slip {} · <span>{}</span><a class=\"close\" href=\"/\" title=\"close\">×</a></p>",
         esc(&short(&slip.id)),
         esc(&slip.id)
     ));
@@ -487,10 +489,15 @@ fn esc(s: &str) -> String {
 const STYLE: &str = r#"<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 :root{color-scheme:dark}
 body{background:#0f1216;color:#d7dce2;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:0 1.2rem 3rem}
-main,header{max-width:1720px}
-main{display:grid;grid-template-columns:minmax(600px,1100px) minmax(400px,540px);gap:0 1.4rem;align-items:start;transition:grid-template-columns .25s ease}
-main.viewing{grid-template-columns:minmax(360px,620px) minmax(560px,1fr)}
-#detail{position:sticky;top:0;max-height:100vh;overflow-y:auto;border-left:1px solid #232a33;padding:.4rem .2rem 2rem 1.4rem}
+main,header{max-width:1100px;margin-inline:auto;transition:max-width .25s ease}
+body:has(main.viewing) header{max-width:1720px}
+main{display:grid;grid-template-columns:1fr 0fr;gap:0;align-items:start;transition:grid-template-columns .25s ease,max-width .25s ease,gap .25s ease}
+main.viewing{grid-template-columns:minmax(360px,620px) minmax(560px,1fr);gap:0 1.4rem;max-width:1720px}
+main.single{display:block}
+#detail{position:sticky;top:0;max-height:100vh;overflow-y:auto;overflow-x:hidden;min-width:0;border-left:1px solid #232a33;padding:.4rem .2rem 2rem 1.4rem}
+main:not(.viewing) #detail{border-left:none;padding:0}
+.close{float:right;color:#5c6773;text-decoration:none;font-size:1rem;line-height:1;padding:0 .3rem}
+.close:hover{color:#d7dce2}
 #detail.enter{animation:slidein .22s ease}
 @keyframes slidein{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
 .detailid{color:#5c6773;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;margin:.4rem 0 0}
