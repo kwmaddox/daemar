@@ -17,6 +17,8 @@ pub struct Provider {
 pub struct ModelReply {
     pub text: String,
     pub prompt_tokens: u64,
+    /// Cache-hit subset of prompt_tokens — billed at the cached rate.
+    pub cached_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
 }
@@ -73,6 +75,14 @@ struct Usage {
     completion_tokens: u64,
     #[serde(default)]
     total_tokens: u64,
+    #[serde(default)]
+    prompt_tokens_details: PromptTokensDetails,
+}
+
+#[derive(Deserialize, Default, Clone, Copy)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: u64,
 }
 
 impl Provider {
@@ -121,6 +131,7 @@ impl Provider {
         Ok(ModelReply {
             text,
             prompt_tokens: usage.prompt_tokens,
+            cached_tokens: usage.prompt_tokens_details.cached_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens,
         })

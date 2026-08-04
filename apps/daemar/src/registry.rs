@@ -23,6 +23,10 @@ pub struct Price {
     pub input: f64,
     /// USD per 1M output tokens.
     pub output: f64,
+    /// USD per 1M cache-hit input tokens. Absent means cached tokens price
+    /// at the full input rate — conservative, never a hidden discount.
+    #[serde(default)]
+    pub cached_input: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -60,9 +64,16 @@ impl Registry {
 }
 
 impl Price {
-    /// The receipt line: line items priced per million.
-    pub fn cost(&self, prompt_tokens: u64, completion_tokens: u64) -> f64 {
-        (prompt_tokens as f64 * self.input + completion_tokens as f64 * self.output) / 1_000_000.0
+    /// The receipt: three line items per million. `cached_tokens` is the
+    /// cache-hit subset of `prompt_tokens`.
+    pub fn cost(&self, prompt_tokens: u64, cached_tokens: u64, completion_tokens: u64) -> f64 {
+        let cached = cached_tokens.min(prompt_tokens);
+        let uncached = prompt_tokens - cached;
+        let cached_rate = self.cached_input.unwrap_or(self.input);
+        (uncached as f64 * self.input
+            + cached as f64 * cached_rate
+            + completion_tokens as f64 * self.output)
+            / 1_000_000.0
     }
 }
 
@@ -76,15 +87,26 @@ mod tests {
             r#"
             [models."gpt-5.6-terra"]
             input = 2.0
+            cached_input = 0.2
             output = 8.0
             updated = "2026-08-04"
             "#,
         )
         .expect("parses");
         let price = registry.price("gpt-5.6-terra").expect("listed");
-        // 100k in at $2/M = $0.20; 50k out at $8/M = $0.40.
-        assert!((price.cost(100_000, 50_000) - 0.60).abs() < 1e-9);
+        // 60k uncached at $2/M = $0.12; 40k cached at $0.2/M = $0.008;
+        // 50k out at $8/M = $0.40.
+        assert!((price.cost(100_000, 40_000, 50_000) - 0.528).abs() < 1e-9);
         assert!(registry.price("unlisted-model").is_none());
+    }
+
+    #[test]
+    fn missing_cached_rate_prices_cache_hits_at_full_input() {
+        let registry: Registry =
+            toml::from_str("[models.m]\ninput = 1.0\noutput = 2.0\n").expect("parses");
+        let price = registry.price("m").expect("listed");
+        // All 100k prompt tokens at $1/M regardless of the cached split.
+        assert!((price.cost(100_000, 90_000, 0) - 0.10).abs() < 1e-9);
     }
 
     #[test]

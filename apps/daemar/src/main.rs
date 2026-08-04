@@ -58,9 +58,9 @@ impl Pricing {
         }
     }
 
-    fn cost(&self, prompt_tokens: u64, completion_tokens: u64) -> f64 {
+    fn cost(&self, prompt_tokens: u64, cached_tokens: u64, completion_tokens: u64) -> f64 {
         match self {
-            Pricing::Priced(price) => price.cost(prompt_tokens, completion_tokens),
+            Pricing::Priced(price) => price.cost(prompt_tokens, cached_tokens, completion_tokens),
             Pricing::Unregistered { .. } | Pricing::RegistryBroken { .. } => 0.0,
         }
     }
@@ -175,12 +175,13 @@ fn fly(config: &Config, request: &str, pricing: &Pricing) -> Result<bool, ledger
 
     match config.provider.complete(SYSTEM_PROMPT, request) {
         Ok(reply) => {
-            let cost = pricing.cost(reply.prompt_tokens, reply.completion_tokens);
+            let cost = pricing.cost(reply.prompt_tokens, reply.cached_tokens, reply.completion_tokens);
             w.append(&Kind::ModelCall {
                 phase: PHASE.to_string(),
                 model: config.provider.model.clone(),
                 tokens: reply.total_tokens,
                 prompt_tokens: reply.prompt_tokens,
+                cached_tokens: reply.cached_tokens,
                 completion_tokens: reply.completion_tokens,
                 cost,
             })?;

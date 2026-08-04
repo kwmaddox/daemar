@@ -159,6 +159,9 @@ pub enum Kind {
         tokens: u64,
         #[serde(default)]
         prompt_tokens: u64,
+        /// Cache-hit subset of prompt_tokens, billed at the cached rate.
+        #[serde(default)]
+        cached_tokens: u64,
         #[serde(default)]
         completion_tokens: u64,
         /// USD as computed AT FLIGHT TIME from the registry — a frozen
