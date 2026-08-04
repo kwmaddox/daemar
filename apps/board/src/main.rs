@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -118,26 +118,29 @@ async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<Ss
 
 /// The two-pane shell: bays on the left, the detail panel (and, one day, the
 /// chat) docked on the right. `selected` pre-renders the panel so /slip/{id}
-/// deep links work before a single line of JS runs.
-fn shell(app: &App, selected: Option<&str>) -> String {
+/// deep links work before a single line of JS runs. `closed_view` keeps the
+/// left column showing the closed list when that is where the reader is —
+/// a closed slip's detail must never dump you back into live traffic.
+fn shell(app: &App, selected: Option<&str>, closed_view: bool) -> String {
     let all = load(app);
-    let board = render_board(app, &all);
+    let board = if closed_view { render_closed(&all) } else { render_board(app, &all) };
     let (init, detail) = match selected.and_then(|id| all.iter().find(|(s, _)| s.id == id)) {
         Some((slip, events)) => (slip.id.clone(), render_detail(slip, events)),
         None => (String::new(), String::new()),
     };
     let viewing = if init.is_empty() { "" } else { " class=\"viewing\"" };
+    let (bays_url, home) = if closed_view { ("/board?view=closed", "/closed") } else { ("/board", "/") };
     format!(
         "{STYLE}<title>daemar — the board</title>\
          <header><h1>daemar</h1><span class=\"sub\">the board · ledgers are truth · slips are folds</span></header>\
          <main{viewing}><section id=\"bays\">{board}</section><aside id=\"detail\">{detail}</aside></main>\
          <script>\
-         let sel={init:?}||null;\
+         let sel={init:?}||null;const BAYS={bays_url:?},HOME={home:?};\
          const mainEl=document.querySelector('main');\
          function mark(){{document.querySelectorAll('a.strip').forEach(a=>a.classList.toggle('selected',a.getAttribute('href')==='/slip/'+sel));}}\
          function setViewing(){{mainEl.classList.toggle('viewing',!!sel);}}\
-         function closePanel(push){{sel=null;setViewing();mark();if(push)history.pushState({{}},'','/');}}\
-         async function loadBays(){{const r=await fetch('/board');document.getElementById('bays').innerHTML=await r.text();mark();}}\
+         function closePanel(push){{sel=null;setViewing();mark();if(push)history.pushState({{}},'',HOME);}}\
+         async function loadBays(){{const r=await fetch(BAYS);document.getElementById('bays').innerHTML=await r.text();mark();}}\
          async function loadDetail(id,push){{const changed=id!==sel;sel=id;setViewing();\
            const p=document.getElementById('detail');const st=p.scrollTop;\
            const r=await fetch('/fragment/slip/'+id);if(r.ok){{p.innerHTML=await r.text();p.scrollTop=changed?0:st;}}\
@@ -158,31 +161,27 @@ fn shell(app: &App, selected: Option<&str>) -> String {
 }
 
 async fn index(State(app): State<Arc<App>>) -> Html<String> {
-    Html(shell(&app, None))
+    Html(shell(&app, None, false))
 }
 
-async fn board_fragment(State(app): State<Arc<App>>) -> Html<String> {
-    let board = render_board(&app, &load(&app));
-    Html(board)
+async fn board_fragment(State(app): State<Arc<App>>, RawQuery(query): RawQuery) -> Html<String> {
+    let all = load(&app);
+    let closed_view = query.as_deref().is_some_and(|q| q.contains("view=closed"));
+    Html(if closed_view { render_closed(&all) } else { render_board(&app, &all) })
 }
 
 async fn closed_page(State(app): State<Arc<App>>) -> Html<String> {
-    let all = load(&app);
-    let now = now_epoch();
-    let mut closed: Vec<&Slip> = all.iter().map(|(s, _)| s).filter(|s| s.status != Status::InFlight).collect();
-    closed.sort_by(|a, b| b.last_ts.cmp(&a.last_ts));
-    let mut html = format!("{STYLE}<title>daemar — closed</title><header><h1><a href=\"/\">daemar</a> / closed</h1></header><main class=\"single\">");
-    html.push_str(&format!("<section><h2>CLOSED <span class=\"count\">{}</span></h2>", closed.len()));
-    for slip in &closed {
-        html.push_str(&render_strip(slip, now, u64::MAX));
-    }
-    html.push_str("</section><p><a href=\"/\">← board</a></p></main>");
-    Html(html)
+    Html(shell(&app, None, true))
 }
 
-/// Deep link: the same two-pane shell with the panel pre-loaded.
+/// Deep link: the same two-pane shell with the panel pre-loaded. A closed
+/// slip restores the closed view on the left, not live traffic.
 async fn slip_page(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
-    Html(shell(&app, Some(id.as_str()))).into_response()
+    let closed_view = load(&app)
+        .iter()
+        .find(|(s, _)| s.id == id)
+        .is_some_and(|(s, _)| s.status != Status::InFlight);
+    Html(shell(&app, Some(id.as_str()), closed_view)).into_response()
 }
 
 /// The detail panel alone — what the board's JS swaps in.
@@ -249,6 +248,22 @@ fn render_board(app: &App, slips: &[(Slip, Vec<ledger::Event>)]) -> String {
     html.push_str(&format!(
         "<p class=\"closedlink\"><a href=\"/closed\">closed: {closed_count} →</a></p>"
     ));
+    html
+}
+
+/// The closed archive as a bays fragment: same strips, same panel mechanics.
+fn render_closed(slips: &[(Slip, Vec<ledger::Event>)]) -> String {
+    let now = now_epoch();
+    let mut closed: Vec<&Slip> = slips.iter().map(|(s, _)| s).filter(|s| s.status != Status::InFlight).collect();
+    closed.sort_by(|a, b| b.last_ts.cmp(&a.last_ts));
+    let mut html = format!("<section><h2>CLOSED <span class=\"count\">{}</span></h2>", closed.len());
+    if closed.is_empty() {
+        html.push_str("<p class=\"empty\">— nothing closed yet —</p>");
+    }
+    for slip in &closed {
+        html.push_str(&render_strip(slip, now, u64::MAX));
+    }
+    html.push_str("</section><p class=\"closedlink\"><a href=\"/\">← board</a></p>");
     html
 }
 
