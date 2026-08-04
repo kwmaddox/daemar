@@ -1,57 +1,124 @@
-# Daemar
+# daemar
 
-Daemar is a software factory and workflow engine for executing bounded software-generation work.
+Daes Dae'mar — the Game of Houses. A software factory: deterministic Rust owns
+the workflow; models work inside bounded phases; one artifact — the **slip** —
+carries each task through its whole flight. The engineer is a controller, not a
+pilot: aircraft fly themselves; the controller sequences, separates, and
+handles exceptions.
 
-## Language
+This document is the ubiquitous language. Every term below means exactly one
+thing everywhere in this repo — code, docs, prompts, and UI. Change the meaning
+here or don't change it at all.
 
-**Workflow**:
-An ordered, strongly typed sequence of stages that owns a complete unit of work across its trust boundaries.
-_Avoid_: Loop, flow, pipeline
+## The core idea
 
-**Workflow Definition**:
-The compiled Rust program that defines a Workflow's exact stage sequence, configuration, typed handoffs, and failure behavior. The first Workflow uses direct linear control flow rather than a separately loaded document or reusable graph abstraction.
-_Avoid_: Configuration file, workflow document, command graph, workflow DSL
+A task's entire life is recorded in an append-only **ledger**. Everything else
+— current state, phase context, the UI — is a **projection** of that ledger.
+Ambiguity decreases monotonically as work flows inward: a loose prose request
+enters the factory; a validated, typed contract crosses into execution. Checks
+are earned, not speculated: structure is added when a real run demonstrates the
+need, and never before.
 
-**Workflow Run**:
-One execution of a Workflow, including its trusted setup, sandboxed execution, and trusted publication stages.
-_Avoid_: Job, workflow execution
+Heritage, for the archaeologists: ATC flight progress strips (the slip, the
+board, cocking, clearances), manufacturing travelers (the record rides with the
+work), SSSF's "agent proposes, code disposes" (code owns the loop), and this
+repo's own Wayfinder era (`archive/wayfinder-v0`: the run-record event
+envelope, the all-problems-at-once preflight pattern — quarry, don't inherit).
 
-**Change Request**:
-The human-approved input describing the objective and acceptance criteria for a Workflow Run, identified by a human-authored slug. Operational policy belongs to the repository and Workflow Definition rather than to the requester.
-_Avoid_: Ticket, prompt, task
+## Glossary
 
-**Preflight**:
-The pure, deterministic gate that validates a Change Request's shape and bounds before a Workflow Run begins. A Change Request that fails Preflight produces no Workflow Run.
-_Avoid_: Validation, input check, startup check
+**Ledger** — the append-only event log of one task's flight: every stage,
+every clearance, every query, every annotation. The single source of truth.
+Events have versioned kinds (`plan_section_written.v1`); anything spanning
+real time gets an intent/outcome pair. _Avoid_: updating or deleting events;
+a correction is a new event.
 
-**Sandboxed Execution**:
-The portion of a Workflow Run confined by an enforceable, deny-by-default capability policy. It can access only explicitly granted filesystem, network, credential, process, time, and resource capabilities.
-_Avoid_: Isolated workspace, sandboxed workflow
+**Slip** — the canonical record of one task, derived by folding its ledger.
+Face plus sections. The slip is always a projection — it cannot lie, because
+it cannot be written. _Avoid_: any code path that mutates a slip directly.
 
-**Generation Stage**:
-A sandboxed stage in which Daemar calls a model provider directly and mediates every model-initiated operation through registered Model Tools. The first Workflow bounds iteration, tokens, time, and cost.
-_Avoid_: Agent harness, coding agent
+**Face** — the slip's frontmatter: id, request one-liner, current phase,
+owner, status, clearance state, cost. Printed into every phase's context,
+rendered on every board card. Stable schema forever, so one board renders
+every workflow ever built.
 
-**Model Tool**:
-A strongly typed, deterministic operation exposed to a model by Daemar. In the first Workflow, Model Tools are limited to repository navigation and structured editing; no shell or validation operation is exposed.
-_Avoid_: Shell command, plugin
+**Section** — a typed, versioned unit of slip content: `request.v1`,
+`plan.v1`, `review.v1`. Workflows extend the factory by adding section kinds,
+never by touching the face.
 
-**Validation Stage**:
-A deterministic Workflow stage that evaluates generated changes by executing one or more Validation Operations after the Generation Stage. The first Workflow deliberately assigns exactly one Validation Operation to each Validation Stage so their boundaries can be observed and evolved independently; results are not fed back into the model.
-_Avoid_: Model review, agent review
+**Printout** — the context assembled for a phase at entry: the face plus the
+sections named in the phase's declaration. A pure function of
+(ledger, declaration) — deterministic, reproducible byte-for-byte, at any
+later date, for any model. The printout is the sector-local strip: the ledger
+is infinite, the reader gets exactly what its job needs.
 
-**Validation Operation**:
-One deterministic invocation of a code-validation tool with a typed result. The first Workflow gives each selected Validation Operation its own sequential Validation Stage rather than bundling multiple operations into one stage.
-_Avoid_: Validation task, check
+**Declaration** — what a phase states it requires, fixed at phase entry.
+Defines the printout. Declarations evolve from evidence: a section every run
+queries gets promoted into the declaration; a declared section nobody reads
+gets demoted.
 
-**Run Record**:
-The append-only JSONL event record of a Workflow Run, including every model request and response and every Model Tool request and result.
-_Avoid_: Log, transcript
+**Query** — the pull tier: a model asks the ledger for more than its printout,
+through a mechanism, mid-phase. Every query and its result reference are
+themselves appended to the ledger. This makes each phase's knowledge
+auditable: not only what happened, but what the deciding agent knew, and when.
+_Avoid_: any read path that bypasses the query mechanism; an unlogged read is
+a hole in the epistemic record.
 
-**Context Surface**:
-The instructions, skills, Model Tool definitions, history, and evidence exposed to a model for a request. Because additional context can impair model performance, every addition is a deliberate design choice; all else being equal, Daemar prefers on-demand repeated operations over adding or retaining context when both accomplish the same objective.
-_Avoid_: Context dump, maximal context
+**Phase** — one bounded segment of a task's flight. A model (or code, or the
+engineer) is autonomous within a phase and stopped at its boundary. Phases
+default to failure; success is earned by a clean exit and a granted clearance.
 
-**Context Entry**:
-An item of evidence included in the Context Surface with its source, size, and reason recorded in the Run Record. A Context Entry records exposure; it is not a per-entry runtime approval gate.
-_Avoid_: Context blob, repository dump
+**Clearance** — permission to cross a phase boundary. Granted by code
+(required sections present and valid — reported all-problems-at-once, with
+pointers, so a rejection is a correction prompt) or by the controller (an
+approval stamp). Recorded on the ledger like everything else. Workflows choose
+per boundary whether a human stamp is required.
+
+**Cocked** — a slip whose latest clearance request has no response: it needs
+the controller. Always derived from the ledger, never asserted — the same rule
+as liveness, where a missing terminator event means interrupted, and no event
+ever claims "still running."
+
+**Board** — the observability front end: slip faces in bays, ordered by
+attention; progressive disclosure from face to sections to raw ledger. The
+controller's instrument. Built first, because every later piece of the factory
+is born with a place to be seen.
+
+**Controller** — the engineer. Manages by exception: watches the board, works
+the cocked slips, grants or refuses clearances. Does not fly the aircraft.
+
+## The three-tier context economy
+
+1. **Pushed always** — the face. On every printout, no exceptions.
+2. **Pushed by declaration** — the sections a phase declared. Deterministic.
+3. **Pulled on demand** — queries, logged as events.
+
+Storage is unlimited; consumers are not. The human has glance-budget, the
+model has a context window — so the paper strip's discipline survives at
+projection time. The query log is the tuning instrument for tier 2: context
+contracts evolve from measured demand, not taste.
+
+Because the ledger is the memory, a model session is only a cache. Resuming a
+task is re-printing it. Any model can pick up any slip at any boundary, which
+is what makes the factory crash-tolerant, multi-model, and cheap to iterate.
+
+## Hard rules
+
+1. Append only. The slip is a fold. Nothing writes state directly.
+2. Every read outside the printout goes through the query mechanism and lands
+   on the ledger.
+3. Liveness and attention (running, interrupted, cocked) are derived, never
+   asserted.
+4. Success is earned: phases default to fail; boundaries require clearance.
+5. Checks are added when a real run shows the need. Not before.
+6. Workflows are Rust. _Avoid_: workflow DSLs, graph engines, config-as-code
+   control flow — the compiler is the first gate.
+
+## Build order (dogfooding)
+
+1. **The board.** Renders slips from fixture ledgers before any loop exists.
+   The fixtures define the schema demand-side.
+2. **The first loop.** Deliberately minimal: Rust, one model API behind a thin
+   seam, no checks — the board and the controller's eyes are the check.
+3. **Everything else, earned.** Clearances, section validators, more phases,
+   more workflows — each added when a real run on the board demands it.
