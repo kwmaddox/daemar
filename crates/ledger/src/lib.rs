@@ -151,6 +151,8 @@ pub struct Slip {
     pub cost: f64,
     pub model_calls: u32,
     pub queries: u32,
+    /// The airframe currently flying: the model of the most recent call.
+    pub last_model: Option<String>,
     pub opened_ts: String,
     pub last_ts: String,
     pub event_count: usize,
@@ -187,6 +189,7 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                     cost: 0.0,
                     model_calls: 0,
                     queries: 0,
+                    last_model: None,
                     opened_ts: ts.clone(),
                     last_ts: ts,
                     event_count: 1,
@@ -240,10 +243,11 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                         answer_clearance(s, &boundary, "refused", by, ts, reason);
                     }
                     Kind::QueryMade { .. } => s.queries += 1,
-                    Kind::ModelCall { tokens, cost, .. } => {
+                    Kind::ModelCall { model, tokens, cost, .. } => {
                         s.model_calls += 1;
                         s.tokens += tokens;
                         s.cost += cost;
+                        s.last_model = Some(model);
                     }
                     Kind::Note { .. } => {}
                     Kind::SlipClosed { outcome, reason } => {
@@ -294,6 +298,28 @@ fn answer_clearance(
         row.response = Some((verdict.to_string(), by, ts));
         row.reason = reason;
     }
+}
+
+// ── Time ─────────────────────────────────────────────────────────────────────
+
+/// Parse a ledger timestamp ("YYYY-MM-DDTHH:MM:SS…", UTC assumed) to epoch
+/// seconds. Anything after the seconds — "Z", ".123Z" — is ignored. Ledger
+/// writers emit RFC3339 UTC; this reads exactly that and nothing cleverer.
+pub fn parse_ts(ts: &str) -> Option<u64> {
+    let num = |r: std::ops::Range<usize>| ts.get(r)?.parse::<i64>().ok();
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, mi, s) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Howard Hinnant's days_from_civil.
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = y2 - era * 400;
+    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    u64::try_from(days * 86400 + h * 3600 + mi * 60 + s).ok()
 }
 
 // ── Loading ──────────────────────────────────────────────────────────────────
@@ -402,6 +428,14 @@ mod tests {
         assert_eq!(slip.status, Status::Rejected);
         assert_eq!(slip.cocked, None);
         assert_eq!(slip.close_reason.as_deref(), Some("review failed"));
+    }
+
+    #[test]
+    fn timestamps_parse_to_epoch_seconds() {
+        assert_eq!(parse_ts("2026-08-03T17:00:00Z"), Some(1_785_776_400));
+        assert_eq!(parse_ts("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_ts("2026-08-03T17:00:00.123Z"), Some(1_785_776_400));
+        assert_eq!(parse_ts("not a timestamp"), None);
     }
 
     #[test]

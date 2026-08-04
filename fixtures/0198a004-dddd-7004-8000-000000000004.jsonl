@@ -1,4 +1,4 @@
-{"schema":"ledger.v1","slip_id":"0198a004-dddd-7004-8000-000000000004","seq":1,"ts":"2026-08-03T16:05:00Z","kind":"slip_opened.v1","payload":{"request":"Refactor the session cache to be lock-free","workflow":"plan_build_review","engineer":"kendall"}}
+{"schema":"ledger.v1","slip_id":"0198a004-dddd-7004-8000-000000000004","seq":1,"ts":"2026-08-03T16:05:00Z","kind":"slip_opened.v1","payload":{"request":"Refactor the session cache to be lock-free","workflow":"pbr","engineer":"kendall"}}
 {"schema":"ledger.v1","slip_id":"0198a004-dddd-7004-8000-000000000004","seq":2,"ts":"2026-08-03T16:05:01Z","kind":"phase_started.v1","payload":{"phase":"plan","owner":"planner","lane":"agent"}}
 {"schema":"ledger.v1","slip_id":"0198a004-dddd-7004-8000-000000000004","seq":3,"ts":"2026-08-03T16:06:33Z","kind":"model_call.v1","payload":{"phase":"plan","model":"fireworks/kimi-k3","tokens":22000,"cost":0.13}}
 {"schema":"ledger.v1","slip_id":"0198a004-dddd-7004-8000-000000000004","seq":4,"ts":"2026-08-03T16:06:34Z","kind":"section_written.v1","payload":{"section":"plan.v1","by":"planner","summary":"Swap RwLock map for sharded lock-free structure"}}
