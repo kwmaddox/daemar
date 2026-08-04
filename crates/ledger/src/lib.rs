@@ -175,6 +175,11 @@ pub enum Kind {
         outcome: SlipOutcome,
         #[serde(default)]
         reason: String,
+        /// Who rendered the verdict. Doctrine: a process may close its own
+        /// slip accepted; a failed flight is closed only by the controller
+        /// (disposition) or a gate that carries a verdict.
+        #[serde(default)]
+        by: String,
     },
 }
 
@@ -330,6 +335,9 @@ pub struct Slip {
     pub status: Status,
     /// The boundary awaiting the controller, when the strip is cocked.
     pub cocked: Option<String>,
+    /// The phase whose error is unwitnessed: last phase ended in error and
+    /// nothing has happened since, on a slip still open. Awaiting disposition.
+    pub failed: Option<String>,
     pub current_phase: Option<String>,
     pub close_reason: Option<String>,
     pub phases: Vec<PhaseRow>,
@@ -370,6 +378,7 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                     engineer,
                     status: Status::InFlight,
                     cocked: None,
+                    failed: None,
                     current_phase: None,
                     close_reason: None,
                     phases: Vec::new(),
@@ -444,7 +453,7 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                         s.last_model = Some(model);
                     }
                     Kind::Note { .. } => {}
-                    Kind::SlipClosed { outcome, reason } => {
+                    Kind::SlipClosed { outcome, reason, .. } => {
                         s.status = match outcome {
                             SlipOutcome::Accepted => Status::Accepted,
                             SlipOutcome::Rejected => Status::Rejected,
@@ -458,18 +467,27 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
         }
     }
 
-    // Cocked is derived, never asserted: an unanswered clearance on a slip
-    // that is still in flight.
+    // Attention states are derived, never asserted. Cocked: an unanswered
+    // clearance on an open slip. Failed: an open slip whose most recent phase
+    // ended in error — the flight cannot close itself rejected (failure must
+    // be witnessed), so it waits here for the controller's disposition.
     if let Some(s) = slip.as_mut() {
-        s.cocked = if s.status == Status::InFlight {
-            s.clearances
+        if s.status == Status::InFlight {
+            s.cocked = s
+                .clearances
                 .iter()
                 .rev()
                 .find(|c| c.response.is_none())
-                .map(|c| c.boundary.clone())
+                .map(|c| c.boundary.clone());
+            s.failed = s
+                .phases
+                .last()
+                .filter(|p| p.outcome == Some(PhaseOutcome::Error))
+                .map(|p| p.phase.clone());
         } else {
-            None
-        };
+            s.cocked = None;
+            s.failed = None;
+        }
     }
     slip
 }
@@ -588,6 +606,19 @@ impl LedgerWriter {
 
     pub fn slip_id(&self) -> &SlipId {
         &self.slip_id
+    }
+
+    /// Reopen an existing ledger for append — disposition, later phases.
+    /// Fails loud if the ledger does not exist: resume never creates.
+    pub fn resume(dir: &Path, slip_id: SlipId) -> Result<Self, LedgerError> {
+        let path = dir.join(format!("{slip_id}.jsonl"));
+        let existing = load_ledger(&path)?;
+        let seq = existing.events.iter().map(|e| e.seq).max().unwrap_or(0);
+        let file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(|source| LedgerError::Io { path: path.clone(), source })?;
+        Ok(LedgerWriter { file, path, slip_id, seq })
     }
 }
 
@@ -809,8 +840,12 @@ mod tests {
             body: "the full text\nwith lines".into(),
         })
         .unwrap();
-        w.append(&Kind::SlipClosed { outcome: SlipOutcome::Accepted, reason: String::new() })
-            .unwrap();
+        w.append(&Kind::SlipClosed {
+            outcome: SlipOutcome::Accepted,
+            reason: String::new(),
+            by: "daemar".into(),
+        })
+        .unwrap();
 
         // A second writer for the same slip must fail loud: born exactly once.
         assert!(LedgerWriter::create(&dir, SlipId("slip-w".into())).is_err());
@@ -820,6 +855,78 @@ mod tests {
         let slip = fold(&file.events).expect("folds");
         assert_eq!(slip.status, Status::Accepted);
         assert_eq!(slip.sections[0].body, "the full text\nwith lines");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unwitnessed_error_derives_failed() {
+        let events = parse(&[
+            line(1, "t1", "slip_opened.v1", r#"{"request":"r","workflow":"w","engineer":"e"}"#),
+            line(2, "t2", "phase_started.v1", r#"{"phase":"respond","owner":"o","lane":"agent"}"#),
+            line(3, "t3", "phase_ended.v1", r#"{"phase":"respond","outcome":"error"}"#),
+        ]);
+        let slip = fold(&events).unwrap();
+        assert_eq!(slip.status, Status::InFlight); // no one closed it — by design
+        assert_eq!(slip.failed.as_deref(), Some("respond"));
+    }
+
+    #[test]
+    fn disposition_clears_failed_and_a_retry_phase_clears_it_too() {
+        let base = [
+            line(1, "t1", "slip_opened.v1", r#"{"request":"r","workflow":"w","engineer":"e"}"#),
+            line(2, "t2", "phase_started.v1", r#"{"phase":"respond","owner":"o","lane":"agent"}"#),
+            line(3, "t3", "phase_ended.v1", r#"{"phase":"respond","outcome":"error"}"#),
+        ];
+        let disposed = parse(
+            &base
+                .iter()
+                .cloned()
+                .chain([line(4, "t4", "slip_closed.v1",
+                    r#"{"outcome":"rejected","reason":"disposed","by":"kendall"}"#)])
+                .collect::<Vec<_>>(),
+        );
+        let slip = fold(&disposed).unwrap();
+        assert_eq!(slip.status, Status::Rejected);
+        assert_eq!(slip.failed, None);
+
+        let retried = parse(
+            &base
+                .iter()
+                .cloned()
+                .chain([line(4, "t4", "phase_started.v1",
+                    r#"{"phase":"respond","owner":"o","lane":"agent"}"#)])
+                .collect::<Vec<_>>(),
+        );
+        let slip = fold(&retried).unwrap();
+        assert_eq!(slip.failed, None); // a new phase is progress, not a corpse
+    }
+
+    #[test]
+    fn resume_continues_the_sequence_and_never_creates() {
+        let dir = std::env::temp_dir().join(format!("daemar-resume-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(LedgerWriter::resume(&dir.join("nope"), SlipId("ghost".into())).is_err());
+
+        let mut w = LedgerWriter::create(&dir, SlipId("slip-r".into())).unwrap();
+        w.append(&Kind::SlipOpened {
+            request: "r".into(),
+            workflow: "w".into(),
+            engineer: "e".into(),
+        })
+        .unwrap();
+        drop(w);
+
+        let mut resumed = LedgerWriter::resume(&dir, SlipId("slip-r".into())).unwrap();
+        let seq = resumed
+            .append(&Kind::SlipClosed {
+                outcome: SlipOutcome::Rejected,
+                reason: "disposed".into(),
+                by: "kendall".into(),
+            })
+            .unwrap();
+        assert_eq!(seq, 2); // continued, not restarted
+        let file = load_ledger(&dir.join("slip-r.jsonl")).unwrap();
+        assert_eq!(fold(&file.events).unwrap().status, Status::Rejected);
         std::fs::remove_dir_all(&dir).ok();
     }
 

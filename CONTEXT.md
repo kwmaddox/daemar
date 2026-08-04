@@ -110,6 +110,11 @@ is what makes the factory crash-tolerant, multi-model, and cheap to iterate.
 3. Liveness and attention (running, interrupted, cocked) are derived, never
    asserted.
 4. Success is earned: phases default to fail; boundaries require clearance.
+   And its mirror — success may be self-reported, failure must be witnessed:
+   a process may close its slip accepted (gates check the claim), but never
+   rejected. A failed flight stays open, in the attention bay, until the
+   controller disposes it. The machine's verdict on its own failure is
+   exactly the judgment we do not trust.
 5. Checks are added when a real run shows the need. Not before.
 6. Workflows are Rust. _Avoid_: workflow DSLs, graph engines, config-as-code
    control flow — the compiler is the first gate.

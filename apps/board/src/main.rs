@@ -221,6 +221,7 @@ async fn slip_fragment(State(app): State<Arc<App>>, Path(id): Path<String>) -> R
 fn render_board(app: &App, report: &LoadReport) -> String {
     let now = now_epoch();
 
+    let mut failed: Vec<&Slip> = Vec::new();
     let mut cocked: Vec<&Slip> = Vec::new();
     let mut stale: Vec<&Slip> = Vec::new();
     let mut flying: Vec<&Slip> = Vec::new();
@@ -229,7 +230,9 @@ fn render_board(app: &App, report: &LoadReport) -> String {
     for FoldedSlip { slip, .. } in &report.slips {
         match slip.status {
             Status::InFlight => {
-                if slip.cocked.is_some() {
+                if slip.failed.is_some() {
+                    failed.push(slip);
+                } else if slip.cocked.is_some() {
                     cocked.push(slip);
                 } else if silence(slip, now) >= app.stale_secs {
                     stale.push(slip);
@@ -240,7 +243,9 @@ fn render_board(app: &App, report: &LoadReport) -> String {
             _ => closed_count += 1,
         }
     }
-    // Attention order: longest-waiting clearance first, then longest silence.
+    // Attention order: confirmed failures first (oldest unwitnessed first),
+    // then waiting clearances, then suspected trouble by silence.
+    failed.sort_by_key(|s| std::cmp::Reverse(failed_age(s, now)));
     cocked.sort_by_key(|s| std::cmp::Reverse(cocked_wait(s, now)));
     stale.sort_by_key(|s| std::cmp::Reverse(silence(s, now)));
     // Healthy traffic: most recent activity first.
@@ -249,12 +254,12 @@ fn render_board(app: &App, report: &LoadReport) -> String {
     let mut html = String::new();
     html.push_str(&format!(
         "<section><h2>ATTENTION <span class=\"count\">{}</span></h2>",
-        cocked.len() + stale.len()
+        failed.len() + cocked.len() + stale.len()
     ));
-    if cocked.is_empty() && stale.is_empty() {
+    if failed.is_empty() && cocked.is_empty() && stale.is_empty() {
         html.push_str("<p class=\"empty\">— clean board —</p>");
     }
-    for slip in cocked.iter().chain(stale.iter()) {
+    for slip in failed.iter().chain(cocked.iter()).chain(stale.iter()) {
         html.push_str(&render_strip(slip, now, app.stale_secs));
     }
     html.push_str("</section>");
@@ -319,12 +324,16 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
     let quiet = silence(slip, now);
     let is_stale = slip.status == Status::InFlight && slip.cocked.is_none() && quiet >= stale_secs;
 
-    let (class, status, age) = match (&slip.cocked, &slip.status) {
+    let (class, status, age) = if slip.status == Status::InFlight && slip.failed.is_some() {
+        ("failed", "FLD", format!("⚠{}", human(failed_age(slip, now))))
+    } else {
+        match (&slip.cocked, &slip.status) {
         (Some(_), _) => ("cocked", "CKD", format!("⚠{}", human(cocked_wait(slip, now)))),
         (None, Status::InFlight) if is_stale => ("stale", "STL", format!("silent {}", human(quiet))),
         (None, Status::InFlight) => ("inflight", "FLY", human(quiet)),
         (None, Status::Accepted) => ("accepted", "ACC", String::new()),
         (None, Status::Rejected) => ("rejected", "REJ", String::new()),
+        }
     };
 
     let mut route: String = slip
@@ -372,6 +381,16 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
 /// Seconds since the ledger last spoke.
 fn silence(slip: &Slip, now: u64) -> u64 {
     ledger::parse_ts(&slip.last_ts).map(|t| now.saturating_sub(t)).unwrap_or(0)
+}
+
+/// Seconds since the unwitnessed failure — the last phase's error ended.
+fn failed_age(slip: &Slip, now: u64) -> u64 {
+    slip.phases
+        .last()
+        .and_then(|p| p.ended.as_deref())
+        .and_then(ledger::parse_ts)
+        .map(|t| now.saturating_sub(t))
+        .unwrap_or(0)
 }
 
 /// Seconds the unanswered clearance has been waiting.
@@ -451,7 +470,15 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
          <tr><th>spend</th><td>{} model calls · {} tokens · ${:.2} · {} queries</td></tr>{}</table></div>",
         esc(&slip.request),
         slip.status,
-        slip.cocked.as_deref().map(|b| format!(" — COCKED at {}", esc(b))).unwrap_or_default(),
+        match (&slip.failed, &slip.cocked) {
+            (Some(phase), _) => format!(
+                " — FAILED at {}; dispose: <code>daemar dispose {}</code>",
+                esc(phase),
+                esc(&slip.id.0)
+            ),
+            (None, Some(boundary)) => format!(" — COCKED at {}", esc(boundary)),
+            (None, None) => String::new(),
+        },
         esc(&slip.workflow),
         esc(&slip.engineer),
         esc(&slip.opened_ts),
@@ -647,6 +674,9 @@ main.viewing .strip .wf,main.viewing .strip .model,main.viewing .strip .num{opac
 @keyframes pulse{50%{opacity:.35}}
 .strip.cocked{border-left-color:#f59e0b;transform:rotate(-1.2deg);background:#1c1810}
 .strip.cocked .status{color:#f59e0b}
+.strip.failed{border-left-color:#f87171;transform:rotate(-1.2deg);background:#1d1113}
+.strip.failed .status{color:#f87171}
+.strip.failed:hover{transform:rotate(-1.2deg) translateX(3px)}
 .strip.stale{border-left-color:#f87171;opacity:.75}
 .strip.stale .status{color:#f87171}
 .strip.inflight{border-left-color:#38bdf8}

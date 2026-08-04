@@ -118,6 +118,9 @@ impl Config {
 
 fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("dispose") {
+        return dispose(&args[1..]);
+    }
     let request = if args.len() == 1 && args[0] == "-" {
         // The request from stdin: `git diff | daemar -`. The pipe is how real
         // repo content reaches a toolless loop.
@@ -214,6 +217,7 @@ fn fly(config: &Config, request: &str, pricing: &Pricing) -> Result<bool, ledger
             w.append(&Kind::SlipClosed {
                 outcome: SlipOutcome::Accepted,
                 reason: String::new(),
+                by: "daemar".to_string(),
             })?;
             println!("{}", reply.text.trim_end());
             eprintln!(
@@ -225,15 +229,82 @@ fn fly(config: &Config, request: &str, pricing: &Pricing) -> Result<bool, ledger
             Ok(true)
         }
         Err(error) => {
+            // Failure must be witnessed: report the error, close the phase,
+            // and leave the slip OPEN. Only the controller closes a failed
+            // flight (disposition) — the machine's verdict on its own failure
+            // is exactly the judgment we don't trust.
             let reason = error.to_string();
+            w.append(&Kind::Note { text: format!("model call failed: {reason}") })?;
             w.append(&Kind::PhaseEnded {
                 phase: PHASE.to_string(),
                 outcome: PhaseOutcome::Error,
             })?;
-            w.append(&Kind::SlipClosed { outcome: SlipOutcome::Rejected, reason: reason.clone() })?;
             eprintln!("daemar: model call failed: {reason}");
-            eprintln!("slip {} · rejected · board: /slip/{}", w.slip_id(), w.slip_id());
+            eprintln!(
+                "slip {id} · FAILED, left open for disposition · \
+                 daemar dispose {id} \"<reason>\" · board: /slip/{id}",
+                id = w.slip_id()
+            );
             Ok(false)
+        }
+    }
+}
+
+/// The controller's pen: close a flight that could not close itself.
+/// Ends any still-open phase as an error, then closes the slip rejected,
+/// signed by the engineer. Refuses to dispose a slip that is already closed
+/// — history is not re-litigated.
+fn dispose(args: &[String]) -> ExitCode {
+    let Some(slip_id) = args.first().filter(|a| !a.trim().is_empty()) else {
+        eprintln!("usage: daemar dispose <slip-id> [\"<reason>\"]");
+        return ExitCode::from(2);
+    };
+    let reason = if args.len() > 1 {
+        args[1..].join(" ")
+    } else {
+        "disposed by controller".to_string()
+    };
+    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let ledgers = env("DAEMAR_LEDGERS").unwrap_or_else(|| "ledgers".to_string());
+    let engineer = env("USER").unwrap_or_else(|| "engineer".to_string());
+    let dir = std::path::Path::new(&ledgers);
+
+    let loaded = match ledger::load_ledger(&dir.join(format!("{slip_id}.jsonl"))) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            eprintln!("daemar: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let Some(slip) = ledger::fold(&loaded.events) else {
+        eprintln!("daemar: {slip_id} has a ledger but never opened — nothing to dispose");
+        return ExitCode::from(2);
+    };
+    if slip.status != ledger::Status::InFlight {
+        eprintln!("daemar: {slip_id} is already closed ({:?}); history is not re-litigated", slip.status);
+        return ExitCode::from(2);
+    }
+
+    let result = (|| -> Result<(), ledger::LedgerError> {
+        let mut w = LedgerWriter::resume(dir, SlipId(slip_id.clone()))?;
+        if let Some(open_phase) = slip.current_phase {
+            w.append(&Kind::PhaseEnded { phase: open_phase, outcome: PhaseOutcome::Error })?;
+        }
+        w.append(&Kind::SlipClosed {
+            outcome: SlipOutcome::Rejected,
+            reason: reason.clone(),
+            by: engineer.clone(),
+        })?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            println!("slip {slip_id} · disposed by {engineer} · {reason}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("daemar: ledger failure: {error}");
+            ExitCode::FAILURE
         }
     }
 }

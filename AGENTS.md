@@ -53,6 +53,9 @@ fixtures/       hand-authored ledgers — the schema's test corpus. Tracked.
 
 ## Operating
 
+- `daemar dispose <slip-id> "<reason>"` — the controller's closure of a
+  flight that could not close itself (failed, crashed, hung). Refuses slips
+  that are already closed.
 - `just` lists the recipes. `just dev` — the board with auto-restart via
   watchexec, watching source only (NEVER `ledgers/` — flight writes must not
   restart the server). `just fly "<request>"` — run the loop. `just check` —
