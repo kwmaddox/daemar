@@ -71,8 +71,12 @@ default to failure; success is earned by a clean exit and a granted clearance.
 **Clearance** — permission to cross a phase boundary. Granted by code
 (required sections present and valid — reported all-problems-at-once, with
 pointers, so a rejection is a correction prompt) or by the controller (an
-approval stamp). Recorded on the ledger like everything else. Workflows choose
-per boundary whether a human stamp is required.
+approval stamp). Recorded on the ledger like everything else. Every grant and
+refusal is signed: `by` names the grantor — the engineer, or a code gate
+(`by: "gate:<name>"`). A boundary's policy is a dial, not a doctrine: human
+stamp, code gate, or open — chosen per boundary per workflow, and demoted on
+evidence (a gate that refuses nothing across hundreds of flights has proven
+the check can relax). Management by exception, never by turnstile.
 
 **Cocked** — a slip whose latest clearance request has no response: it needs
 the controller. Always derived from the ledger, never asserted — the same rule

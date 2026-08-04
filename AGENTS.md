@@ -53,6 +53,12 @@ fixtures/       hand-authored ledgers — the schema's test corpus. Tracked.
 
 ## Operating
 
+- `daemar plan "<request>"` — plan phase, then the slip cocks at
+  plan->respond and the process EXITS (exit-and-resume: boundary waits and
+  crashes share one recovery). `daemar grant|refuse <slip-id>` — the
+  controller answers the clearance. `daemar continue <slip-id>` — flies the
+  next phase from the printout, context rebuilt purely from the ledger, in a
+  fresh process, possibly on a different airframe.
 - `daemar dispose <slip-id> "<reason>"` — the controller's closure of a
   flight that could not close itself (failed, crashed, hung). Refuses slips
   that are already closed.

@@ -476,7 +476,11 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
                 esc(phase),
                 esc(&slip.id.0)
             ),
-            (None, Some(boundary)) => format!(" — COCKED at {}", esc(boundary)),
+            (None, Some(boundary)) => format!(
+                " — COCKED at {}; <code>daemar grant {id}</code> · <code>daemar refuse {id}</code>",
+                esc(boundary),
+                id = esc(&slip.id.0)
+            ),
             (None, None) => String::new(),
         },
         esc(&slip.workflow),

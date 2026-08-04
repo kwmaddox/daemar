@@ -8,10 +8,11 @@ use std::fmt;
 
 use serde::Deserialize;
 
+/// The connection, not the model: one provider serves many airframes, and
+/// which model flies is decided per phase by the workflow.
 pub struct Provider {
     pub base_url: String,
     pub api_key: String,
-    pub model: String,
 }
 
 pub struct ModelReply {
@@ -87,10 +88,10 @@ struct PromptTokensDetails {
 
 impl Provider {
     /// One turn: system + user in, assistant text and usage out.
-    pub fn complete(&self, system: &str, user: &str) -> Result<ModelReply, ProviderError> {
+    pub fn complete(&self, model: &str, system: &str, user: &str) -> Result<ModelReply, ProviderError> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let body = serde_json::json!({
-            "model": self.model,
+            "model": model,
             "messages": [
                 { "role": "system", "content": system },
                 { "role": "user", "content": user },

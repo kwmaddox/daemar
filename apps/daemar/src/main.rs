@@ -1,58 +1,119 @@
-//! The factory's runner. v0: the first loop.
+//! The factory's runner.
 //!
-//!     daemar "<request>"
+//!     daemar "<request>"              one-phase prompt workflow
+//!     ... | daemar -                  request from stdin
+//!     daemar plan "<request>"         plan phase, then cock at plan->respond
+//!     daemar grant <slip-id>          controller clears the boundary
+//!     daemar refuse <slip-id> [why]   controller refuses; slip closes rejected
+//!     daemar continue <slip-id>       fly the next phase from the printout
+//!     daemar dispose <slip-id> [why]  close a flight that could not close itself
 //!
-//! One slip, one phase, one model call, no tools, no checks — the board and
-//! the controller's eyes are the check (CONTEXT.md build order). The loop is
-//! shaped as a turn loop that happens to run exactly one turn, so tools are
-//! a later addition, not surgery.
+//! Exit-and-resume at boundaries, by ruling: a flight that hits a clearance
+//! EXITS. The strip cocks on the board; `continue` later rebuilds context
+//! purely from the ledger — the printout — in a fresh process, possibly on a
+//! different airframe. The ledger is the memory; sessions are caches.
 //!
-//! Every event is appended and flushed as it happens; the board's doorbell
-//! narrates the flight live. Errors close the slip honestly (rejected, with
-//! the reason on the ledger). A crash leaves no terminator and the board
-//! derives interrupted — by design.
+//! Failure must be witnessed: on error the runner reports, ends the phase in
+//! error, and leaves the slip OPEN for the controller's disposition.
 
 use std::fmt;
 use std::process::ExitCode;
 
-use ledger::{Kind, Lane, LedgerWriter, PhaseOutcome, SlipId, SlipOutcome};
+use ledger::{Kind, Lane, LedgerWriter, PhaseOutcome, Slip, SlipId, SlipOutcome, Status};
 
 mod provider;
 mod registry;
 
 use provider::Provider;
-use registry::{Price, Registry};
+use registry::Registry;
 
-const WORKFLOW: &str = "prompt";
-const PHASE: &str = "respond";
-const OWNER: &str = "responder";
-const SYSTEM_PROMPT: &str = "You are the first agent of daemar, a software factory. \
-Answer the request directly and completely, in plain text.";
+const RESPOND_SYSTEM: &str = "You are daemar's responder. Answer the request directly and \
+completely, in plain text. If a plan is provided, follow it.";
+const PLAN_SYSTEM: &str = "You are daemar's planner. Produce a concise plan for answering the \
+engineer's request: what the answer must cover, in what order, and what would make it \
+complete. Do not answer the request itself. Plain text.";
+const BOUNDARY: &str = "plan->respond";
 
 // ── Config (env is the serde edge of a CLI; parsed once, here) ───────────────
 
 struct Config {
     provider: Provider,
+    plan_model: String,
+    respond_model: String,
     ledgers: String,
     airframes: String,
     engineer: String,
 }
 
-/// What the registry had to say about this flight's airframe, resolved once
-/// before takeoff. Not-priced is never silent: it becomes a note on the
-/// ledger, so the audit records WHY a receipt reads zero.
+#[derive(Debug)]
+enum ConfigError {
+    Missing(&'static str),
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::Missing(name) => write!(
+                f,
+                "{name} is not set — cd into the repo so direnv decrypts secrets, \
+                 or export it"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+fn env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+impl Config {
+    fn from_env() -> Result<Self, ConfigError> {
+        let default_model = env("DAEMAR_MODEL");
+        let plan_model = env("DAEMAR_PLAN_MODEL")
+            .or_else(|| default_model.clone())
+            .ok_or(ConfigError::Missing("DAEMAR_PLAN_MODEL (or DAEMAR_MODEL)"))?;
+        let respond_model = env("DAEMAR_RESPOND_MODEL")
+            .or_else(|| default_model.clone())
+            .ok_or(ConfigError::Missing("DAEMAR_RESPOND_MODEL (or DAEMAR_MODEL)"))?;
+        Ok(Config {
+            provider: Provider {
+                base_url: env("DAEMAR_BASE_URL")
+                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+                api_key: env("OPENAI_API_KEY").ok_or(ConfigError::Missing("OPENAI_API_KEY"))?,
+            },
+            plan_model,
+            respond_model,
+            ledgers: env("DAEMAR_LEDGERS").unwrap_or_else(|| "ledgers".to_string()),
+            airframes: env("DAEMAR_AIRFRAMES").unwrap_or_else(|| "airframes.toml".to_string()),
+            engineer: engineer(),
+        })
+    }
+}
+
+fn engineer() -> String {
+    env("USER").unwrap_or_else(|| "engineer".to_string())
+}
+
+fn ledgers_dir() -> String {
+    env("DAEMAR_LEDGERS").unwrap_or_else(|| "ledgers".to_string())
+}
+
+// ── Pricing (resolved per airframe; not-priced is never silent) ──────────────
+
 enum Pricing {
-    Priced(Price),
+    Priced(registry::Price),
     Unregistered { model: String },
     RegistryBroken { detail: String },
 }
 
 impl Pricing {
-    fn resolve(config: &Config) -> Pricing {
-        match Registry::load(config.airframes.as_ref()) {
-            Ok(registry) => match registry.price(&config.provider.model) {
+    fn resolve(airframes: &str, model: &str) -> Pricing {
+        match Registry::load(airframes.as_ref()) {
+            Ok(registry) => match registry.price(model) {
                 Some(price) => Pricing::Priced(price),
-                None => Pricing::Unregistered { model: config.provider.model.clone() },
+                None => Pricing::Unregistered { model: model.to_string() },
             },
             Err(error) => Pricing::RegistryBroken { detail: error.to_string() },
         }
@@ -78,66 +139,56 @@ impl Pricing {
     }
 }
 
-#[derive(Debug)]
-enum ConfigError {
-    Missing(&'static str),
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ConfigError::Missing(name) => write!(
-                f,
-                "{name} is not set — cd into the repo so direnv decrypts secrets, \
-                 or export it"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
-impl Config {
-    fn from_env() -> Result<Self, ConfigError> {
-        let env = |name: &'static str| std::env::var(name).ok().filter(|v| !v.is_empty());
-        Ok(Config {
-            provider: Provider {
-                base_url: env("DAEMAR_BASE_URL")
-                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-                api_key: env("OPENAI_API_KEY").ok_or(ConfigError::Missing("OPENAI_API_KEY"))?,
-                model: env("DAEMAR_MODEL").ok_or(ConfigError::Missing("DAEMAR_MODEL"))?,
-            },
-            ledgers: env("DAEMAR_LEDGERS").unwrap_or_else(|| "ledgers".to_string()),
-            airframes: env("DAEMAR_AIRFRAMES").unwrap_or_else(|| "airframes.toml".to_string()),
-            engineer: env("USER").unwrap_or_else(|| "engineer".to_string()),
-        })
-    }
-}
-
-// ── The flight ───────────────────────────────────────────────────────────────
+// ── Dispatch ─────────────────────────────────────────────────────────────────
 
 fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.first().map(String::as_str) == Some("dispose") {
-        return dispose(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("dispose") => dispose(&args[1..]),
+        Some("grant") => grant(&args[1..]),
+        Some("refuse") => refuse(&args[1..]),
+        Some("continue") => continue_flight(&args[1..]),
+        Some("plan") => match read_request(&args[1..]) {
+            Some(request) => plan_flight(&request),
+            None => usage(),
+        },
+        _ => match read_request(&args) {
+            Some(request) => prompt_flight(&request),
+            None => usage(),
+        },
     }
+}
+
+fn usage() -> ExitCode {
+    eprintln!(
+        "usage: daemar \"<request>\"            (or ... | daemar -)\n       \
+         daemar plan \"<request>\"\n       \
+         daemar grant|refuse|continue|dispose <slip-id> [\"<reason>\"]"
+    );
+    ExitCode::from(2)
+}
+
+/// The request from args, or stdin when the sole arg is '-'. None = usage.
+fn read_request(args: &[String]) -> Option<String> {
     let request = if args.len() == 1 && args[0] == "-" {
-        // The request from stdin: `git diff | daemar -`. The pipe is how real
-        // repo content reaches a toolless loop.
         let mut buffer = String::new();
         use std::io::Read;
-        if let Err(error) = std::io::stdin().read_to_string(&mut buffer) {
-            eprintln!("daemar: reading stdin: {error}");
-            return ExitCode::from(2);
-        }
+        std::io::stdin().read_to_string(&mut buffer).ok()?;
         buffer
     } else {
         args.join(" ")
     };
     if request.trim().is_empty() {
-        eprintln!("usage: daemar \"<request>\"   or   ... | daemar -");
-        return ExitCode::from(2);
+        None
+    } else {
+        Some(request)
     }
+}
+
+fn with_config<F>(flight: F) -> ExitCode
+where
+    F: FnOnce(&Config) -> Result<bool, ledger::LedgerError>,
+{
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(error) => {
@@ -145,18 +196,9 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let pricing = Pricing::resolve(&config);
-    if let Some(complaint) = pricing.complaint() {
-        eprintln!("daemar: {complaint}");
-    }
-    match fly(&config, &request, &pricing) {
-        Ok(accepted) => {
-            if accepted {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
-        }
+    match flight(&config) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
         Err(error) => {
             // A ledger that cannot be written is a flight that cannot be
             // recorded: nothing to salvage, fail loud.
@@ -166,35 +208,46 @@ fn main() -> ExitCode {
     }
 }
 
-/// Run the whole flight, appending every event. Returns whether the slip
-/// closed accepted. Only a ledger-write failure aborts the recording itself.
-fn fly(config: &Config, request: &str, pricing: &Pricing) -> Result<bool, ledger::LedgerError> {
-    let slip_id = SlipId(uuid::Uuid::now_v7().to_string());
-    let mut w = LedgerWriter::create(config.ledgers.as_ref(), slip_id)?;
+// ── The phase engine: one agent phase, events in, reply out ──────────────────
 
-    w.append(&Kind::SlipOpened {
-        request: request.to_string(),
-        workflow: WORKFLOW.to_string(),
-        engineer: config.engineer.clone(),
-    })?;
+struct PhaseSpec<'a> {
+    phase: &'a str,
+    owner: &'a str,
+    section: &'a str,
+    model: &'a str,
+    system: &'a str,
+    user: String,
+}
+
+/// Fly one agent phase, appending its whole event sequence. `Ok(Some)` on
+/// success; `Ok(None)` when the model call failed — the phase is closed in
+/// error and the slip is left open (failure must be witnessed).
+fn agent_phase(
+    w: &mut LedgerWriter,
+    config: &Config,
+    spec: &PhaseSpec,
+) -> Result<Option<provider::ModelReply>, ledger::LedgerError> {
+    let pricing = Pricing::resolve(&config.airframes, spec.model);
+    if let Some(complaint) = pricing.complaint() {
+        eprintln!("daemar: {complaint}");
+    }
     w.append(&Kind::PhaseStarted {
-        phase: PHASE.to_string(),
-        owner: OWNER.to_string(),
+        phase: spec.phase.to_string(),
+        owner: spec.owner.to_string(),
         lane: Lane::Agent,
     })?;
     w.append(&Kind::ModelRequested {
-        phase: PHASE.to_string(),
-        model: config.provider.model.clone(),
-        system: SYSTEM_PROMPT.to_string(),
-        user: request.to_string(),
+        phase: spec.phase.to_string(),
+        model: spec.model.to_string(),
+        system: spec.system.to_string(),
+        user: spec.user.clone(),
     })?;
-
-    match config.provider.complete(SYSTEM_PROMPT, request) {
+    match config.provider.complete(spec.model, spec.system, &spec.user) {
         Ok(reply) => {
             let cost = pricing.cost(reply.prompt_tokens, reply.cached_tokens, reply.completion_tokens);
             w.append(&Kind::ModelCall {
-                phase: PHASE.to_string(),
-                model: config.provider.model.clone(),
+                phase: spec.phase.to_string(),
+                model: spec.model.to_string(),
                 tokens: reply.total_tokens,
                 prompt_tokens: reply.prompt_tokens,
                 cached_tokens: reply.cached_tokens,
@@ -205,101 +258,304 @@ fn fly(config: &Config, request: &str, pricing: &Pricing) -> Result<bool, ledger
                 w.append(&Kind::Note { text: complaint })?;
             }
             w.append(&Kind::SectionWritten {
-                section: "response.v1".to_string(),
-                by: OWNER.to_string(),
+                section: spec.section.to_string(),
+                by: spec.owner.to_string(),
                 summary: summarize(&reply.text),
                 body: reply.text.clone(),
             })?;
             w.append(&Kind::PhaseEnded {
-                phase: PHASE.to_string(),
+                phase: spec.phase.to_string(),
                 outcome: PhaseOutcome::Success,
             })?;
-            w.append(&Kind::SlipClosed {
-                outcome: SlipOutcome::Accepted,
-                reason: String::new(),
-                by: "daemar".to_string(),
-            })?;
-            println!("{}", reply.text.trim_end());
-            eprintln!(
-                "\nslip {} · accepted · {} tokens · ${cost:.4} · board: /slip/{}",
-                w.slip_id(),
-                reply.total_tokens,
-                w.slip_id()
-            );
-            Ok(true)
+            Ok(Some(reply))
         }
         Err(error) => {
-            // Failure must be witnessed: report the error, close the phase,
-            // and leave the slip OPEN. Only the controller closes a failed
-            // flight (disposition) — the machine's verdict on its own failure
-            // is exactly the judgment we don't trust.
             let reason = error.to_string();
             w.append(&Kind::Note { text: format!("model call failed: {reason}") })?;
             w.append(&Kind::PhaseEnded {
-                phase: PHASE.to_string(),
+                phase: spec.phase.to_string(),
                 outcome: PhaseOutcome::Error,
             })?;
             eprintln!("daemar: model call failed: {reason}");
-            eprintln!(
-                "slip {id} · FAILED, left open for disposition · \
-                 daemar dispose {id} \"<reason>\" · board: /slip/{id}",
-                id = w.slip_id()
-            );
-            Ok(false)
+            Ok(None)
         }
     }
 }
 
-/// The controller's pen: close a flight that could not close itself.
-/// Ends any still-open phase as an error, then closes the slip rejected,
-/// signed by the engineer. Refuses to dispose a slip that is already closed
-/// — history is not re-litigated.
-fn dispose(args: &[String]) -> ExitCode {
-    let Some(slip_id) = args.first().filter(|a| !a.trim().is_empty()) else {
-        eprintln!("usage: daemar dispose <slip-id> [\"<reason>\"]");
-        return ExitCode::from(2);
-    };
-    let reason = if args.len() > 1 {
-        args[1..].join(" ")
-    } else {
-        "disposed by controller".to_string()
-    };
-    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
-    let ledgers = env("DAEMAR_LEDGERS").unwrap_or_else(|| "ledgers".to_string());
-    let engineer = env("USER").unwrap_or_else(|| "engineer".to_string());
-    let dir = std::path::Path::new(&ledgers);
+fn failed_open_message(id: &SlipId) {
+    eprintln!(
+        "slip {id} · FAILED, left open for disposition · \
+         daemar dispose {id} \"<reason>\" · board: /slip/{id}"
+    );
+}
 
-    let loaded = match ledger::load_ledger(&dir.join(format!("{slip_id}.jsonl"))) {
-        Ok(loaded) => loaded,
-        Err(error) => {
-            eprintln!("daemar: {error}");
+// ── Workflows (workflows are Rust) ───────────────────────────────────────────
+
+/// The one-phase prompt workflow: respond, close accepted.
+fn prompt_flight(request: &str) -> ExitCode {
+    with_config(|config| {
+        let mut w = LedgerWriter::create(
+            config.ledgers.as_ref(),
+            SlipId(uuid::Uuid::now_v7().to_string()),
+        )?;
+        w.append(&Kind::SlipOpened {
+            request: request.to_string(),
+            workflow: "prompt".to_string(),
+            engineer: config.engineer.clone(),
+        })?;
+        let spec = PhaseSpec {
+            phase: "respond",
+            owner: "responder",
+            section: "response.v1",
+            model: &config.respond_model,
+            system: RESPOND_SYSTEM,
+            user: request.to_string(),
+        };
+        match agent_phase(&mut w, config, &spec)? {
+            Some(reply) => {
+                close_accepted(&mut w)?;
+                println!("{}", reply.text.trim_end());
+                eprintln!(
+                    "\nslip {id} · accepted · {} tokens · board: /slip/{id}",
+                    reply.total_tokens,
+                    id = w.slip_id()
+                );
+                Ok(true)
+            }
+            None => {
+                failed_open_message(w.slip_id());
+                Ok(false)
+            }
+        }
+    })
+}
+
+/// Phase one of the planned workflow: plan, then cock at the boundary and
+/// EXIT. The strip waits on the board; the ledger carries everything the
+/// respond phase will need.
+fn plan_flight(request: &str) -> ExitCode {
+    with_config(|config| {
+        let mut w = LedgerWriter::create(
+            config.ledgers.as_ref(),
+            SlipId(uuid::Uuid::now_v7().to_string()),
+        )?;
+        w.append(&Kind::SlipOpened {
+            request: request.to_string(),
+            workflow: "plan".to_string(),
+            engineer: config.engineer.clone(),
+        })?;
+        let spec = PhaseSpec {
+            phase: "plan",
+            owner: "planner",
+            section: "plan.v1",
+            model: &config.plan_model,
+            system: PLAN_SYSTEM,
+            user: request.to_string(),
+        };
+        match agent_phase(&mut w, config, &spec)? {
+            Some(reply) => {
+                w.append(&Kind::ClearanceRequested {
+                    boundary: BOUNDARY.to_string(),
+                    by: "planner".to_string(),
+                })?;
+                println!("{}", reply.text.trim_end());
+                eprintln!(
+                    "\nslip {id} · COCKED at {BOUNDARY} · \
+                     daemar grant {id}  |  daemar refuse {id} \"<reason>\" · board: /slip/{id}",
+                    id = w.slip_id()
+                );
+                Ok(true)
+            }
+            None => {
+                failed_open_message(w.slip_id());
+                Ok(false)
+            }
+        }
+    })
+}
+
+/// Fly the phase after a granted boundary, context rebuilt purely from the
+/// ledger: the printout. A fresh process, possibly a different airframe —
+/// the ledger is the memory.
+fn continue_flight(args: &[String]) -> ExitCode {
+    let Some(slip_id) = args.first().filter(|a| !a.trim().is_empty()) else {
+        return usage();
+    };
+    let slip = match load_open_slip(slip_id) {
+        Ok(slip) => slip,
+        Err(message) => {
+            eprintln!("daemar: {message}");
             return ExitCode::from(2);
         }
     };
-    let Some(slip) = ledger::fold(&loaded.events) else {
-        eprintln!("daemar: {slip_id} has a ledger but never opened — nothing to dispose");
-        return ExitCode::from(2);
-    };
-    if slip.status != ledger::Status::InFlight {
-        eprintln!("daemar: {slip_id} is already closed ({:?}); history is not re-litigated", slip.status);
+    if let Some(boundary) = &slip.cocked {
+        eprintln!(
+            "daemar: {slip_id} is awaiting clearance at {boundary} — \
+             daemar grant {slip_id} first"
+        );
         return ExitCode::from(2);
     }
+    let granted = slip
+        .clearances
+        .iter()
+        .any(|c| c.boundary == BOUNDARY && c.response.as_ref().is_some_and(|r| r.verdict == ledger::ClearanceVerdict::Granted));
+    if !granted {
+        eprintln!("daemar: {slip_id} has no granted {BOUNDARY} clearance — nothing to continue");
+        return ExitCode::from(2);
+    }
+    if slip.phases.iter().any(|p| p.phase == "respond") {
+        eprintln!("daemar: {slip_id} already flew its respond phase");
+        return ExitCode::from(2);
+    }
+    let Some(plan_body) = slip
+        .sections
+        .iter()
+        .rev()
+        .find(|s| s.section == "plan.v1")
+        .map(|s| s.body.clone())
+    else {
+        eprintln!("daemar: {slip_id} has no plan.v1 section to continue from");
+        return ExitCode::from(2);
+    };
 
-    let result = (|| -> Result<(), ledger::LedgerError> {
-        let mut w = LedgerWriter::resume(dir, SlipId(slip_id.clone()))?;
-        if let Some(open_phase) = slip.current_phase {
-            w.append(&Kind::PhaseEnded { phase: open_phase, outcome: PhaseOutcome::Error })?;
+    with_config(|config| {
+        let mut w = LedgerWriter::resume(config.ledgers.as_ref(), SlipId(slip_id.clone()))?;
+        // The printout: this phase's declared context, assembled from the
+        // ledger and nothing else. No process memory, no session.
+        let printout = format!(
+            "## Request\n\n{}\n\n## Plan (from the plan phase)\n\n{plan_body}\n\n\
+             ## Task\n\nAnswer the request, following the plan.",
+            slip.request
+        );
+        let spec = PhaseSpec {
+            phase: "respond",
+            owner: "responder",
+            section: "response.v1",
+            model: &config.respond_model,
+            system: RESPOND_SYSTEM,
+            user: printout,
+        };
+        match agent_phase(&mut w, config, &spec)? {
+            Some(reply) => {
+                close_accepted(&mut w)?;
+                println!("{}", reply.text.trim_end());
+                eprintln!(
+                    "\nslip {id} · accepted · {} tokens · board: /slip/{id}",
+                    reply.total_tokens,
+                    id = w.slip_id()
+                );
+                Ok(true)
+            }
+            None => {
+                failed_open_message(w.slip_id());
+                Ok(false)
+            }
         }
-        w.append(&Kind::SlipClosed {
+    })
+}
+
+fn close_accepted(w: &mut LedgerWriter) -> Result<(), ledger::LedgerError> {
+    w.append(&Kind::SlipClosed {
+        outcome: SlipOutcome::Accepted,
+        reason: String::new(),
+        by: "daemar".to_string(),
+    })?;
+    Ok(())
+}
+
+// ── The controller's pens ────────────────────────────────────────────────────
+
+/// Grant the pending clearance: the strip un-cocks, the flight may continue.
+fn grant(args: &[String]) -> ExitCode {
+    controller_pen(args, |slip, _reason| {
+        let Some(boundary) = slip.cocked.clone() else {
+            return Err(format!("{} is not awaiting any clearance", slip.id));
+        };
+        Ok((
+            vec![Kind::ClearanceGranted { boundary: boundary.clone(), by: engineer() }],
+            format!("cleared at {boundary} · daemar continue {}", slip.id),
+        ))
+    })
+}
+
+/// Refuse the pending clearance: a verdict-carrying rejection, so the slip
+/// closes directly — attention was paid here, at the boundary.
+fn refuse(args: &[String]) -> ExitCode {
+    controller_pen(args, |slip, reason| {
+        let Some(boundary) = slip.cocked.clone() else {
+            return Err(format!("{} is not awaiting any clearance", slip.id));
+        };
+        let reason = if reason.is_empty() { "clearance refused".to_string() } else { reason };
+        Ok((
+            vec![
+                Kind::ClearanceRefused {
+                    boundary: boundary.clone(),
+                    by: engineer(),
+                    reason: reason.clone(),
+                },
+                Kind::SlipClosed {
+                    outcome: SlipOutcome::Rejected,
+                    reason,
+                    by: engineer(),
+                },
+            ],
+            format!("refused at {boundary} · slip closed rejected"),
+        ))
+    })
+}
+
+/// Close a flight that could not close itself. Ends any still-open phase as
+/// an error first. Refuses already-closed slips: history is not re-litigated.
+fn dispose(args: &[String]) -> ExitCode {
+    controller_pen(args, |slip, reason| {
+        let reason = if reason.is_empty() { "disposed by controller".to_string() } else { reason };
+        let mut events = Vec::new();
+        if let Some(open_phase) = slip.current_phase.clone() {
+            events.push(Kind::PhaseEnded { phase: open_phase, outcome: PhaseOutcome::Error });
+        }
+        events.push(Kind::SlipClosed {
             outcome: SlipOutcome::Rejected,
             reason: reason.clone(),
-            by: engineer.clone(),
-        })?;
+            by: engineer(),
+        });
+        Ok((events, format!("disposed by {} · {reason}", engineer())))
+    })
+}
+
+/// Shared shape of every controller write: load the open slip, decide the
+/// events, append them, say what happened.
+fn controller_pen<F>(args: &[String], decide: F) -> ExitCode
+where
+    F: FnOnce(&Slip, String) -> Result<(Vec<Kind>, String), String>,
+{
+    let Some(slip_id) = args.first().filter(|a| !a.trim().is_empty()) else {
+        return usage();
+    };
+    let reason = args[1..].join(" ");
+    let slip = match load_open_slip(slip_id) {
+        Ok(slip) => slip,
+        Err(message) => {
+            eprintln!("daemar: {message}");
+            return ExitCode::from(2);
+        }
+    };
+    let (events, message) = match decide(&slip, reason) {
+        Ok(decided) => decided,
+        Err(message) => {
+            eprintln!("daemar: {message}");
+            return ExitCode::from(2);
+        }
+    };
+    let result = (|| -> Result<(), ledger::LedgerError> {
+        let mut w = LedgerWriter::resume(ledgers_dir().as_ref(), SlipId(slip_id.clone()))?;
+        for event in &events {
+            w.append(event)?;
+        }
         Ok(())
     })();
     match result {
         Ok(()) => {
-            println!("slip {slip_id} · disposed by {engineer} · {reason}");
+            println!("slip {slip_id} · {message}");
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -307,6 +563,22 @@ fn dispose(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Load and fold a slip that must still be open.
+fn load_open_slip(slip_id: &str) -> Result<Slip, String> {
+    let dir = ledgers_dir();
+    let path = std::path::Path::new(&dir).join(format!("{slip_id}.jsonl"));
+    let loaded = ledger::load_ledger(&path).map_err(|e| e.to_string())?;
+    let slip = ledger::fold(&loaded.events)
+        .ok_or_else(|| format!("{slip_id} has a ledger but never opened"))?;
+    if slip.status != Status::InFlight {
+        return Err(format!(
+            "{slip_id} is already closed ({:?}); history is not re-litigated",
+            slip.status
+        ));
+    }
+    Ok(slip)
 }
 
 /// The strip's table line: first line of the response, clipped.
