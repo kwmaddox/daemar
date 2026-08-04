@@ -470,6 +470,26 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
     }
     html.push_str("</table>");
 
+    if !slip.model_requests.is_empty() {
+        html.push_str("<h2>prompts</h2>");
+        for r in &slip.model_requests {
+            html.push_str(&format!(
+                "<p class=\"promptmeta\">{} · {} · {}</p>",
+                esc(&r.phase),
+                esc(&r.model),
+                esc(&r.ts)
+            ));
+            for (label, text) in [("system", &r.system), ("user", &r.user)] {
+                if !text.is_empty() {
+                    html.push_str(&format!(
+                        "<details class=\"body\"><summary>{label}</summary><pre>{}</pre></details>",
+                        esc(text)
+                    ));
+                }
+            }
+        }
+    }
+
     html.push_str("<h2>sections</h2>");
     if slip.sections.is_empty() {
         html.push_str("<p class=\"empty\">— none yet —</p>");
@@ -586,6 +606,7 @@ h2{font-size:.72rem;letter-spacing:.14em;color:#8a94a0;margin:1.2rem 0 .3rem;tex
 .closedlink{margin-top:1.2rem}.closedlink a{color:#5c6773}
 .warn{color:#f59e0b;font-size:.75rem}
 details.body summary{cursor:pointer;color:#38bdf8;font-size:.75rem;margin-top:.2rem}
+.promptmeta{color:#8a94a0;font-size:.75rem;margin:.5rem 0 .1rem}
 details.body pre{white-space:pre-wrap;background:#10151b;border:1px solid #1e242c;border-radius:3px;padding:.6rem;margin:.4rem 0 0;max-height:24rem;overflow-y:auto}
 .strip{display:grid;grid-template-columns:3rem minmax(11rem,1fr) 3.4rem minmax(11rem,17rem) 7.6rem 7rem 3.2rem 3.2rem 3.6rem;
   gap:0 .7rem;align-items:baseline;white-space:nowrap;

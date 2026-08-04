@@ -139,8 +139,17 @@ pub enum Kind {
     #[serde(rename = "query_made.v1")]
     QueryMade { phase: String, query: String },
     /// Intent half of a model call — anything spanning real time gets a pair.
+    /// Carries the EXACT prompts sent: the epistemic record of what this
+    /// phase knew, written before the call so even a crashed flight keeps it.
     #[serde(rename = "model_requested.v1")]
-    ModelRequested { phase: String, model: String },
+    ModelRequested {
+        phase: String,
+        model: String,
+        #[serde(default)]
+        system: String,
+        #[serde(default)]
+        user: String,
+    },
     #[serde(rename = "model_call.v1")]
     ModelCall {
         phase: String,
@@ -274,6 +283,16 @@ pub struct SectionRow {
     pub ts: String,
 }
 
+/// One model request as sent: the phase's realized context.
+#[derive(Debug, Clone)]
+pub struct ModelRequestRow {
+    pub phase: String,
+    pub model: String,
+    pub system: String,
+    pub user: String,
+    pub ts: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClearanceResponse {
     pub verdict: ClearanceVerdict,
@@ -304,6 +323,7 @@ pub struct Slip {
     pub close_reason: Option<String>,
     pub phases: Vec<PhaseRow>,
     pub sections: Vec<SectionRow>,
+    pub model_requests: Vec<ModelRequestRow>,
     pub clearances: Vec<ClearanceRow>,
     pub tokens: u64,
     pub cost: f64,
@@ -343,6 +363,7 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                     close_reason: None,
                     phases: Vec::new(),
                     sections: Vec::new(),
+                    model_requests: Vec::new(),
                     clearances: Vec::new(),
                     tokens: 0,
                     cost: 0.0,
@@ -401,8 +422,9 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                         answer_clearance(s, &boundary, ClearanceVerdict::Refused, by, ts, reason);
                     }
                     Kind::QueryMade { .. } => s.queries += 1,
-                    Kind::ModelRequested { model, .. } => {
-                        s.last_model = Some(model);
+                    Kind::ModelRequested { phase, model, system, user } => {
+                        s.last_model = Some(model.clone());
+                        s.model_requests.push(ModelRequestRow { phase, model, system, user, ts });
                     }
                     Kind::ModelCall { model, tokens, cost, .. } => {
                         s.model_calls += 1;
@@ -657,7 +679,7 @@ mod tests {
         let events = parse(&[
             line(1, "t1", "slip_opened.v1", r#"{"request":"add /health","workflow":"simple","engineer":"kendall"}"#),
             line(2, "t2", "phase_started.v1", r#"{"phase":"plan","owner":"planner","lane":"agent"}"#),
-            line(3, "t3", "model_requested.v1", r#"{"phase":"plan","model":"m"}"#),
+            line(3, "t3", "model_requested.v1", r#"{"phase":"plan","model":"m","system":"be a planner","user":"plan it"}"#),
             line(4, "t4", "model_call.v1", r#"{"phase":"plan","model":"m","tokens":1000,"cost":0.02}"#),
             line(5, "t5", "section_written.v1", r#"{"section":"plan.v1","by":"planner"}"#),
             line(6, "t6", "phase_ended.v1", r#"{"phase":"plan","outcome":"success"}"#),
@@ -675,6 +697,9 @@ mod tests {
         assert_eq!(slip.sections.len(), 1);
         assert_eq!(slip.tokens, 1000);
         assert_eq!(slip.last_model.as_deref(), Some("m"));
+        assert_eq!(slip.model_requests.len(), 1);
+        assert_eq!(slip.model_requests[0].system, "be a planner");
+        assert_eq!(slip.model_requests[0].user, "plan it");
         assert_eq!(slip.event_count, 9);
         let response = slip.clearances[0].response.as_ref().expect("answered");
         assert_eq!(response.verdict, ClearanceVerdict::Granted);

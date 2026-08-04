@@ -121,6 +121,8 @@ fn fly(config: &Config, request: &str) -> Result<bool, ledger::LedgerError> {
     w.append(&Kind::ModelRequested {
         phase: PHASE.to_string(),
         model: config.provider.model.clone(),
+        system: SYSTEM_PROMPT.to_string(),
+        user: request.to_string(),
     })?;
 
     match config.provider.complete(SYSTEM_PROMPT, request) {
