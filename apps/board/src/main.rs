@@ -155,12 +155,22 @@ fn shell(app: &App, selected: Option<&str>, closed_view: bool) -> String {
          const mainEl=document.querySelector('main');\
          function mark(){{document.querySelectorAll('a.strip').forEach(a=>a.classList.toggle('selected',a.getAttribute('href')==='/slip/'+sel));}}\
          function setViewing(){{mainEl.classList.toggle('viewing',!!sel);}}\
-         function closePanel(push){{sel=null;setViewing();mark();if(push)history.pushState({{}},'',HOME);}}\
+         let lastDetail='';\
+         function closePanel(push){{sel=null;lastDetail='';setViewing();mark();if(push)history.pushState({{}},'',HOME);}}\
          async function loadBays(){{const r=await fetch(BAYS);document.getElementById('bays').innerHTML=await r.text();mark();}}\
          async function loadDetail(id,push){{const changed=id!==sel;sel=id;setViewing();\
-           const p=document.getElementById('detail');const st=p.scrollTop;\
-           const r=await fetch('/fragment/slip/'+id);if(r.ok){{p.innerHTML=await r.text();p.scrollTop=changed?0:st;}}\
-           if(changed){{p.classList.remove('enter');void p.offsetWidth;p.classList.add('enter');}}\
+           const p=document.getElementById('detail');\
+           const r=await fetch('/fragment/slip/'+id);\
+           if(r.ok){{const html=await r.text();\
+             if(changed){{p.innerHTML=html;lastDetail=html;p.scrollTop=0;\
+               p.classList.remove('enter');void p.offsetWidth;p.classList.add('enter');}}\
+             else if(html!==lastDetail){{\
+               const open=[...p.querySelectorAll('details')].map(d=>d.open);\
+               const st=p.scrollTop;\
+               p.innerHTML=html;lastDetail=html;\
+               [...p.querySelectorAll('details')].forEach((d,i)=>{{if(open[i])d.open=true;}});\
+               p.scrollTop=st;}}\
+           }}\
            mark();if(push)history.pushState({{id}},'','/slip/'+id);}}\
          document.addEventListener('click',e=>{{\
            const x=e.target.closest('a.close');if(x){{e.preventDefault();closePanel(true);return;}}\
