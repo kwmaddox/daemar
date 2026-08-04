@@ -113,6 +113,12 @@ is what makes the factory crash-tolerant, multi-model, and cheap to iterate.
 5. Checks are added when a real run shows the need. Not before.
 6. Workflows are Rust. _Avoid_: workflow DSLs, graph engines, config-as-code
    control flow — the compiler is the first gate.
+7. Rust discipline: strings cross exactly one boundary — the serde edge — and
+   are parsed there, once. Closed sets are enums (the exhaustive match is the
+   change-impact analysis); open vocabularies are newtypes; unknown wire data
+   is an explicit variant, never a silent skip. Every fallible seam has its
+   own error enum with real variants. _Avoid_: `Box<dyn Error>`, stringly
+   interfaces, re-parsing past the boundary, dropping anything uncounted.
 
 ## Build order (dogfooding)
 

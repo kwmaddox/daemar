@@ -22,7 +22,7 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use ledger::{Slip, Status};
+use ledger::{FoldedSlip, LoadReport, PhaseOutcome, Slip, Status};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 
@@ -53,8 +53,20 @@ async fn main() {
     axum::serve(listener, router).await.expect("serve");
 }
 
-fn load(app: &App) -> Vec<(Slip, Vec<ledger::Event>)> {
-    ledger::load_dir(&app.ledgers).unwrap_or_default()
+/// Load the fleet. A directory-level failure is not swallowed — it comes
+/// back as a skipped entry the board renders as a warning.
+fn load(app: &App) -> LoadReport {
+    match ledger::load_dir(&app.ledgers) {
+        Ok(report) => report,
+        Err(error) => LoadReport {
+            slips: Vec::new(),
+            skipped: vec![(app.ledgers.clone(), error)],
+        },
+    }
+}
+
+fn find<'a>(report: &'a LoadReport, id: &str) -> Option<&'a FoldedSlip> {
+    report.slips.iter().find(|f| f.slip.id.0 == id)
 }
 
 fn now_epoch() -> u64 {
@@ -122,10 +134,13 @@ async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<Ss
 /// left column showing the closed list when that is where the reader is —
 /// a closed slip's detail must never dump you back into live traffic.
 fn shell(app: &App, selected: Option<&str>, closed_view: bool) -> String {
-    let all = load(app);
-    let board = if closed_view { render_closed(&all) } else { render_board(app, &all) };
-    let (init, detail) = match selected.and_then(|id| all.iter().find(|(s, _)| s.id == id)) {
-        Some((slip, events)) => (slip.id.clone(), render_detail(slip, events)),
+    let report = load(app);
+    let board = if closed_view { render_closed(&report) } else { render_board(app, &report) };
+    let (init, detail) = match selected.and_then(|id| find(&report, id)) {
+        Some(folded) => (
+            folded.slip.id.0.clone(),
+            render_detail(&folded.slip, &folded.events, &folded.bad_lines),
+        ),
         None => (String::new(), String::new()),
     };
     let viewing = if init.is_empty() { "" } else { " class=\"viewing\"" };
@@ -165,9 +180,9 @@ async fn index(State(app): State<Arc<App>>) -> Html<String> {
 }
 
 async fn board_fragment(State(app): State<Arc<App>>, RawQuery(query): RawQuery) -> Html<String> {
-    let all = load(&app);
+    let report = load(&app);
     let closed_view = query.as_deref().is_some_and(|q| q.contains("view=closed"));
-    Html(if closed_view { render_closed(&all) } else { render_board(&app, &all) })
+    Html(if closed_view { render_closed(&report) } else { render_board(&app, &report) })
 }
 
 async fn closed_page(State(app): State<Arc<App>>) -> Html<String> {
@@ -177,25 +192,22 @@ async fn closed_page(State(app): State<Arc<App>>) -> Html<String> {
 /// Deep link: the same two-pane shell with the panel pre-loaded. A closed
 /// slip restores the closed view on the left, not live traffic.
 async fn slip_page(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
-    let closed_view = load(&app)
-        .iter()
-        .find(|(s, _)| s.id == id)
-        .is_some_and(|(s, _)| s.status != Status::InFlight);
+    let closed_view = find(&load(&app), &id).is_some_and(|f| f.slip.status != Status::InFlight);
     Html(shell(&app, Some(id.as_str()), closed_view)).into_response()
 }
 
 /// The detail panel alone — what the board's JS swaps in.
 async fn slip_fragment(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
-    let all = load(&app);
-    let Some((slip, events)) = all.iter().find(|(s, _)| s.id == id) else {
+    let report = load(&app);
+    let Some(folded) = find(&report, &id) else {
         return (StatusCode::NOT_FOUND, Html(format!("<p class=\"empty\">no slip {}</p>", esc(&id)))).into_response();
     };
-    Html(render_detail(slip, events)).into_response()
+    Html(render_detail(&folded.slip, &folded.events, &folded.bad_lines)).into_response()
 }
 
 // ── The board ────────────────────────────────────────────────────────────────
 
-fn render_board(app: &App, slips: &[(Slip, Vec<ledger::Event>)]) -> String {
+fn render_board(app: &App, report: &LoadReport) -> String {
     let now = now_epoch();
 
     let mut cocked: Vec<&Slip> = Vec::new();
@@ -203,7 +215,7 @@ fn render_board(app: &App, slips: &[(Slip, Vec<ledger::Event>)]) -> String {
     let mut flying: Vec<&Slip> = Vec::new();
     let mut closed_count = 0usize;
 
-    for (slip, _) in slips {
+    for FoldedSlip { slip, .. } in &report.slips {
         match slip.status {
             Status::InFlight => {
                 if slip.cocked.is_some() {
@@ -248,13 +260,35 @@ fn render_board(app: &App, slips: &[(Slip, Vec<ledger::Event>)]) -> String {
     html.push_str(&format!(
         "<p class=\"closedlink\"><a href=\"/closed\">closed: {closed_count} →</a></p>"
     ));
+    html.push_str(&render_warnings(report));
     html
 }
 
+/// Nothing is dropped silently: unreadable files and lines are announced.
+fn render_warnings(report: &LoadReport) -> String {
+    let bad_lines = report.bad_line_count();
+    if report.skipped.is_empty() && bad_lines == 0 {
+        return String::new();
+    }
+    let mut parts = Vec::new();
+    if bad_lines > 0 {
+        parts.push(format!("{bad_lines} unreadable line(s)"));
+    }
+    for (path, error) in &report.skipped {
+        parts.push(format!("{}: {}", path.display(), error));
+    }
+    format!("<p class=\"warn\">⚠ {}</p>", esc(&parts.join(" · ")))
+}
+
 /// The closed archive as a bays fragment: same strips, same panel mechanics.
-fn render_closed(slips: &[(Slip, Vec<ledger::Event>)]) -> String {
+fn render_closed(report: &LoadReport) -> String {
     let now = now_epoch();
-    let mut closed: Vec<&Slip> = slips.iter().map(|(s, _)| s).filter(|s| s.status != Status::InFlight).collect();
+    let mut closed: Vec<&Slip> = report
+        .slips
+        .iter()
+        .map(|f| &f.slip)
+        .filter(|s| s.status != Status::InFlight)
+        .collect();
     closed.sort_by(|a, b| b.last_ts.cmp(&a.last_ts));
     let mut html = format!("<section><h2>CLOSED <span class=\"count\">{}</span></h2>", closed.len());
     if closed.is_empty() {
@@ -264,6 +298,7 @@ fn render_closed(slips: &[(Slip, Vec<ledger::Event>)]) -> String {
         html.push_str(&render_strip(slip, now, u64::MAX));
     }
     html.push_str("</section><p class=\"closedlink\"><a href=\"/\">← board</a></p>");
+    html.push_str(&render_warnings(report));
     html
 }
 
@@ -285,9 +320,9 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
         .phases
         .iter()
         .map(|p| {
-            let (mark, class) = match p.outcome.as_deref() {
-                Some("success") => ("✓", "ok"),
-                Some(_) => ("✗", "bad"),
+            let (mark, class) = match p.outcome {
+                Some(PhaseOutcome::Success) => ("✓", "ok"),
+                Some(PhaseOutcome::Error) => ("✗", "bad"),
                 None => ("●", "live"),
             };
             format!("<i class=\"{class}\">{}{mark}</i>", phase_code(&p.phase))
@@ -310,8 +345,8 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
          <span class=\"num\">{tok}</span>\
          <span class=\"num\">${cost:.2}</span>\
          </a>",
-        id = esc(&slip.id),
-        sid = esc(&short(&slip.id)),
+        id = esc(&slip.id.0),
+        sid = esc(&short(&slip.id.0)),
         req = esc(&slip.request),
         wf = esc(&slip.workflow.to_uppercase()),
         model = esc(&airframe(slip)),
@@ -389,13 +424,13 @@ fn k_tokens(tokens: u64) -> String {
 
 // ── Detail page ──────────────────────────────────────────────────────────────
 
-fn render_detail(slip: &Slip, events: &[ledger::Event]) -> String {
+fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> String {
     let mut html = String::new();
 
     html.push_str(&format!(
         "<p class=\"detailid\">slip {} · <span>{}</span><a class=\"close\" href=\"/\" title=\"close\">×</a></p>",
-        esc(&short(&slip.id)),
-        esc(&slip.id)
+        esc(&short(&slip.id.0)),
+        esc(&slip.id.0)
     ));
     html.push_str(&format!(
         "<div class=\"face\"><p class=\"req\">{}</p>\
@@ -426,10 +461,10 @@ fn render_detail(slip: &Slip, events: &[ledger::Event]) -> String {
             "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             esc(&p.phase),
             esc(&p.owner),
-            esc(&p.lane),
+            p.lane,
             esc(&p.started),
             p.ended.as_deref().map(esc).unwrap_or_else(|| "…".to_string()),
-            p.outcome.as_deref().map(esc).unwrap_or_else(|| "running".to_string()),
+            p.outcome.map(|o| o.to_string()).unwrap_or_else(|| "running".to_string()),
         ));
     }
     html.push_str("</table>");
@@ -458,9 +493,9 @@ fn render_detail(slip: &Slip, events: &[ledger::Event]) -> String {
         html.push_str("<table><tr><th>boundary</th><th>requested by</th><th>at</th><th>response</th></tr>");
         for c in &slip.clearances {
             let response = match &c.response {
-                Some((verdict, by, ts)) => {
-                    let reason = if c.reason.is_empty() { String::new() } else { format!(" — {}", esc(&c.reason)) };
-                    format!("{} by {} at {}{}", esc(verdict), esc(by), esc(ts), reason)
+                Some(r) => {
+                    let reason = if r.reason.is_empty() { String::new() } else { format!(" — {}", esc(&r.reason)) };
+                    format!("{} by {} at {}{}", r.verdict, esc(&r.by), esc(&r.ts), reason)
                 }
                 None => "<b>PENDING — strip is cocked</b>".to_string(),
             };
@@ -475,15 +510,28 @@ fn render_detail(slip: &Slip, events: &[ledger::Event]) -> String {
         html.push_str("</table>");
     }
 
-    html.push_str(&format!("<h2>raw ledger <span class=\"count\">{} events</span></h2>", events.len()));
+    let bad_note = if bad_lines.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " <span class=\"warn\">⚠ {} unreadable line(s): {}</span>",
+            bad_lines.len(),
+            bad_lines.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+        )
+    };
+    html.push_str(&format!(
+        "<h2>raw ledger <span class=\"count\">{} events</span>{bad_note}</h2>",
+        events.len()
+    ));
     html.push_str("<table class=\"ledger\"><tr><th>seq</th><th>ts</th><th>kind</th><th>payload</th></tr>");
     for e in events {
-        let payload = serde_json::to_string(&e.payload).unwrap_or_default();
+        let (kind, payload) = e.kind.wire();
+        let payload = serde_json::to_string(&payload).unwrap_or_default();
         html.push_str(&format!(
             "<tr><td>{}</td><td>{}</td><td>{}</td><td><code>{}</code></td></tr>",
             e.seq,
             esc(&e.ts),
-            esc(&e.kind),
+            esc(&kind),
             esc(&payload)
         ));
     }
@@ -527,6 +575,7 @@ h2{font-size:.72rem;letter-spacing:.14em;color:#8a94a0;margin:1.2rem 0 .3rem;tex
 .count{color:#5c6773;font-weight:normal}
 .empty{color:#3f4854;margin:.2rem 0}
 .closedlink{margin-top:1.2rem}.closedlink a{color:#5c6773}
+.warn{color:#f59e0b;font-size:.75rem}
 .strip{display:grid;grid-template-columns:3rem minmax(11rem,1fr) 3.4rem minmax(11rem,17rem) 7.6rem 7rem 3.2rem 3.2rem 3.6rem;
   gap:0 .7rem;align-items:baseline;white-space:nowrap;
   background:#161b22;border-left:3px solid #3f4854;border-radius:2px;padding:.28rem .6rem;margin:.22rem 0;
