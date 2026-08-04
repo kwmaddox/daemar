@@ -1,3 +1,10 @@
 /target/
 **/*.rs.bk
 .DS_Store
+
+# runtime ledgers — the board reads these; not history
+/ledgers/
+
+# plaintext secrets must never exist in tree for long, and never in git
+*.dec.env
+/.env
