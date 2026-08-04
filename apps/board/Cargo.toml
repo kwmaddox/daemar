@@ -7,5 +7,6 @@ description = "The board: slip faces in bays, progressive disclosure to the raw 
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
 ledger = { path = "../../crates/ledger" }
 serde_json = "1"

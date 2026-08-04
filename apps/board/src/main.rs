@@ -10,16 +10,21 @@
 //! been silent past the threshold. A hung agent produces silence, not
 //! redness; the board makes silence visible.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use ledger::{Slip, Status};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::{Stream, StreamExt};
 
 struct App {
     ledgers: PathBuf,
@@ -39,6 +44,7 @@ async fn main() {
         .route("/closed", get(closed_page))
         .route("/slip/{id}", get(slip_page))
         .route("/fragment/slip/{id}", get(slip_fragment))
+        .route("/events", get(events))
         .with_state(app.clone());
 
     let addr = format!("127.0.0.1:{port}");
@@ -53,6 +59,59 @@ fn load(app: &App) -> Vec<(Slip, Vec<ledger::Event>)> {
 
 fn now_epoch() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+// ── Change push ──────────────────────────────────────────────────────────────
+
+/// One number that moves when any ledger moves: paths, lengths, mtimes hashed.
+fn fingerprint(dir: &std::path::Path) -> u64 {
+    let mut h = DefaultHasher::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        let mut entries: Vec<_> = rd
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .collect();
+        entries.sort_by_key(|e| e.path());
+        for e in entries {
+            e.path().hash(&mut h);
+            if let Ok(md) = e.metadata() {
+                md.len().hash(&mut h);
+                if let Ok(m) = md.modified() {
+                    if let Ok(d) = m.duration_since(UNIX_EPOCH) {
+                        d.as_nanos().hash(&mut h);
+                    }
+                }
+            }
+        }
+    }
+    h.finish()
+}
+
+/// SSE: the server watches the ledger dir (300ms fingerprint) and pushes
+/// "change" the moment anything moves. The client refetches on push, so the
+/// board reacts to a ledger write in ~300ms instead of a blind 2s poll. Files
+/// stay the only truth — this is a doorbell, not a data channel.
+async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<()>(8);
+    let dir = app.ledgers.clone();
+    tokio::spawn(async move {
+        let mut last = fingerprint(&dir);
+        loop {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            if tx.is_closed() {
+                return;
+            }
+            let now = fingerprint(&dir);
+            if now != last {
+                last = now;
+                if tx.send(()).await.is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    Sse::new(ReceiverStream::new(rx).map(|_| Ok(SseEvent::default().data("change"))))
+        .keep_alive(KeepAlive::default())
 }
 
 // ── Pages ────────────────────────────────────────────────────────────────────
@@ -73,16 +132,21 @@ fn shell(app: &App, selected: Option<&str>) -> String {
          <main><section id=\"bays\">{board}</section><aside id=\"detail\">{detail}</aside></main>\
          <script>\
          const PLACEHOLDER={placeholder:?};let sel={init:?}||null;\
+         const mainEl=document.querySelector('main');\
          function mark(){{document.querySelectorAll('a.strip').forEach(a=>a.classList.toggle('selected',a.getAttribute('href')==='/slip/'+sel));}}\
+         function setViewing(){{mainEl.classList.toggle('viewing',!!sel);}}\
          async function loadBays(){{const r=await fetch('/board');document.getElementById('bays').innerHTML=await r.text();mark();}}\
-         async function loadDetail(id,push){{sel=id;const p=document.getElementById('detail');const st=p.scrollTop;\
-           const r=await fetch('/fragment/slip/'+id);if(r.ok){{p.innerHTML=await r.text();p.scrollTop=st;}}\
+         async function loadDetail(id,push){{const changed=id!==sel;sel=id;setViewing();\
+           const p=document.getElementById('detail');const st=p.scrollTop;\
+           const r=await fetch('/fragment/slip/'+id);if(r.ok){{p.innerHTML=await r.text();p.scrollTop=changed?0:st;}}\
+           if(changed){{p.classList.remove('enter');void p.offsetWidth;p.classList.add('enter');}}\
            mark();if(push)history.pushState({{id}},'','/slip/'+id);}}\
          document.addEventListener('click',e=>{{const a=e.target.closest('a.strip');if(!a)return;\
            e.preventDefault();loadDetail(a.getAttribute('href').split('/').pop(),true);}});\
          window.addEventListener('popstate',()=>{{const m=location.pathname.match(/^\\/slip\\/(.+)$/);\
-           if(m)loadDetail(m[1],false);else{{sel=null;document.getElementById('detail').innerHTML=PLACEHOLDER;mark();}}}});\
-         mark();setInterval(()=>{{loadBays();if(sel)loadDetail(sel,false);}},2000);\
+           if(m)loadDetail(m[1],false);else{{sel=null;setViewing();document.getElementById('detail').innerHTML=PLACEHOLDER;mark();}}}});\
+         new EventSource('/events').onmessage=()=>{{loadBays();if(sel)loadDetail(sel,false);}};\
+         mark();setViewing();setInterval(()=>{{loadBays();if(sel)loadDetail(sel,false);}},5000);\
          </script>",
         placeholder = PLACEHOLDER,
         init = init,
@@ -424,8 +488,11 @@ const STYLE: &str = r#"<meta charset="utf-8"><meta name="viewport" content="widt
 :root{color-scheme:dark}
 body{background:#0f1216;color:#d7dce2;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:0 1.2rem 3rem}
 main,header{max-width:1720px}
-main{display:grid;grid-template-columns:minmax(600px,1100px) minmax(400px,540px);gap:0 1.4rem;align-items:start}
+main{display:grid;grid-template-columns:minmax(600px,1100px) minmax(400px,540px);gap:0 1.4rem;align-items:start;transition:grid-template-columns .25s ease}
+main.viewing{grid-template-columns:minmax(360px,620px) minmax(560px,1fr)}
 #detail{position:sticky;top:0;max-height:100vh;overflow-y:auto;border-left:1px solid #232a33;padding:.4rem .2rem 2rem 1.4rem}
+#detail.enter{animation:slidein .22s ease}
+@keyframes slidein{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
 .detailid{color:#5c6773;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;margin:.4rem 0 0}
 .detailid span{text-transform:none;letter-spacing:0}
 .placeholder{margin-top:2.4rem}
@@ -441,8 +508,14 @@ h2{font-size:.72rem;letter-spacing:.14em;color:#8a94a0;margin:1.2rem 0 .3rem;tex
 .strip{display:grid;grid-template-columns:3rem minmax(11rem,1fr) 3.4rem minmax(11rem,17rem) 7.6rem 7rem 3.2rem 3.2rem 3.6rem;
   gap:0 .7rem;align-items:baseline;white-space:nowrap;
   background:#161b22;border-left:3px solid #3f4854;border-radius:2px;padding:.28rem .6rem;margin:.22rem 0;
-  text-decoration:none;color:inherit}
-.strip:hover{background:#1b222b}
+  text-decoration:none;color:inherit;
+  transition:background .15s,transform .2s ease,grid-template-columns .25s ease,gap .25s ease}
+.strip>span{min-width:0;overflow:hidden}
+.strip:hover{background:#1b222b;transform:translateX(3px)}
+.strip.cocked:hover{transform:rotate(-1.2deg) translateX(3px)}
+.strip .wf,.strip .model,.strip .num{transition:opacity .2s}
+main.viewing .strip{grid-template-columns:2.6rem minmax(7rem,1fr) 0rem minmax(5.5rem,10rem) 8.6rem 0rem 0rem 0rem 0rem;gap:0 .35rem}
+main.viewing .strip .wf,main.viewing .strip .model,main.viewing .strip .num{opacity:0}
 .strip .id{color:#8a94a0}
 .strip .req,.strip .route{overflow:hidden;text-overflow:ellipsis}
 .strip .wf{color:#8a94a0;font-size:.72rem}
