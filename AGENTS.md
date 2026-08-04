@@ -53,6 +53,10 @@ fixtures/       hand-authored ledgers — the schema's test corpus. Tracked.
 
 ## Operating
 
+- `just` lists the recipes. `just dev` — the board with auto-restart via
+  watchexec, watching source only (NEVER `ledgers/` — flight writes must not
+  restart the server). `just fly "<request>"` — run the loop. `just check` —
+  what CI will enforce.
 - `cargo test` — the suite. `cargo run -p board` — the board on
   `http://127.0.0.1:4700` (`DAEMAR_LEDGERS`, `PORT`, `DAEMAR_STALE_SECS`).
 - **Rebuild before you run.** `cargo test` does not refresh
