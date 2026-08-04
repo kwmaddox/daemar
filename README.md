@@ -30,6 +30,7 @@ fixtures/         hand-authored ledgers: accepted, cocked, in-flight, rejected
 
 ```bash
 daemar "<request>"          # cargo run -p daemar -- "<request>"
+git diff | daemar -         # request from stdin
 ```
 
 One slip, one phase, one model call, no tools, no checks — the board is the

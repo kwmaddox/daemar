@@ -117,9 +117,22 @@ impl Config {
 // ── The flight ───────────────────────────────────────────────────────────────
 
 fn main() -> ExitCode {
-    let request = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let request = if args.len() == 1 && args[0] == "-" {
+        // The request from stdin: `git diff | daemar -`. The pipe is how real
+        // repo content reaches a toolless loop.
+        let mut buffer = String::new();
+        use std::io::Read;
+        if let Err(error) = std::io::stdin().read_to_string(&mut buffer) {
+            eprintln!("daemar: reading stdin: {error}");
+            return ExitCode::from(2);
+        }
+        buffer
+    } else {
+        args.join(" ")
+    };
     if request.trim().is_empty() {
-        eprintln!("usage: daemar \"<request>\"");
+        eprintln!("usage: daemar \"<request>\"   or   ... | daemar -");
         return ExitCode::from(2);
     }
     let config = match Config::from_env() {
