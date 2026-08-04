@@ -466,15 +466,20 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
             .unwrap_or_default(),
     ));
 
-    html.push_str("<h2>phases</h2><table><tr><th>phase</th><th>owner</th><th>lane</th><th>started</th><th>ended</th><th>outcome</th></tr>");
+    let now = now_epoch();
+    html.push_str("<h2>phases</h2><table><tr><th>phase</th><th>owner</th><th>lane</th><th>started</th><th>duration</th><th>outcome</th></tr>");
     for p in &slip.phases {
+        let duration = match (ledger::parse_ts(&p.started), p.ended.as_deref().and_then(ledger::parse_ts)) {
+            (Some(start), Some(end)) => human(end.saturating_sub(start)),
+            (Some(start), None) => format!("{}…", human(now.saturating_sub(start))),
+            _ => "?".to_string(),
+        };
         html.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{duration}</td><td>{}</td></tr>",
             esc(&p.phase),
             esc(&p.owner),
             p.lane,
             esc(&p.started),
-            p.ended.as_deref().map(esc).unwrap_or_else(|| "…".to_string()),
             p.outcome.map(|o| o.to_string()).unwrap_or_else(|| "running".to_string()),
         ));
     }
