@@ -33,7 +33,8 @@ struct App {
 
 #[tokio::main]
 async fn main() {
-    let ledgers = std::env::var("DAEMAR_LEDGERS").unwrap_or_else(|_| "fixtures".to_string());
+    // Real flights by default; DAEMAR_LEDGERS=fixtures for the test corpus.
+    let ledgers = std::env::var("DAEMAR_LEDGERS").unwrap_or_else(|_| "ledgers".to_string());
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(4700);
     let stale_secs: u64 = std::env::var("DAEMAR_STALE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
     let app = Arc::new(App { ledgers: PathBuf::from(ledgers), stale_secs });
@@ -475,11 +476,19 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
     } else {
         html.push_str("<table><tr><th>section</th><th>by</th><th>summary</th><th>ts</th></tr>");
         for s in &slip.sections {
+            let summary = if s.body.is_empty() {
+                esc(&s.summary)
+            } else {
+                format!(
+                    "{}<details class=\"body\"><summary>full section</summary><pre>{}</pre></details>",
+                    esc(&s.summary),
+                    esc(&s.body)
+                )
+            };
             html.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td>{}</td><td>{summary}</td><td>{}</td></tr>",
                 esc(&s.section),
                 esc(&s.by),
-                esc(&s.summary),
                 esc(&s.ts)
             ));
         }
@@ -576,6 +585,8 @@ h2{font-size:.72rem;letter-spacing:.14em;color:#8a94a0;margin:1.2rem 0 .3rem;tex
 .empty{color:#3f4854;margin:.2rem 0}
 .closedlink{margin-top:1.2rem}.closedlink a{color:#5c6773}
 .warn{color:#f59e0b;font-size:.75rem}
+details.body summary{cursor:pointer;color:#38bdf8;font-size:.75rem;margin-top:.2rem}
+details.body pre{white-space:pre-wrap;background:#10151b;border:1px solid #1e242c;border-radius:3px;padding:.6rem;margin:.4rem 0 0;max-height:24rem;overflow-y:auto}
 .strip{display:grid;grid-template-columns:3rem minmax(11rem,1fr) 3.4rem minmax(11rem,17rem) 7.6rem 7rem 3.2rem 3.2rem 3.6rem;
   gap:0 .7rem;align-items:baseline;white-space:nowrap;
   background:#161b22;border-left:3px solid #3f4854;border-radius:2px;padding:.28rem .6rem;margin:.22rem 0;

@@ -14,6 +14,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -119,6 +120,10 @@ pub enum Kind {
         by: String,
         #[serde(default)]
         summary: String,
+        /// Full section content. The summary is the table line; the body is
+        /// the disclosure. Empty is legal — some sections are their summary.
+        #[serde(default)]
+        body: String,
     },
     #[serde(rename = "clearance_requested.v1")]
     ClearanceRequested { boundary: String, by: String },
@@ -265,6 +270,7 @@ pub struct SectionRow {
     pub section: String,
     pub by: String,
     pub summary: String,
+    pub body: String,
     pub ts: String,
 }
 
@@ -377,8 +383,8 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                             s.current_phase = None;
                         }
                     }
-                    Kind::SectionWritten { section, by, summary } => {
-                        s.sections.push(SectionRow { section, by, summary, ts });
+                    Kind::SectionWritten { section, by, summary, body } => {
+                        s.sections.push(SectionRow { section, by, summary, body, ts });
                     }
                     Kind::ClearanceRequested { boundary, by } => {
                         s.clearances.push(ClearanceRow {
@@ -473,6 +479,83 @@ pub fn parse_ts(ts: &str) -> Option<u64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468;
     u64::try_from(days * 86400 + h * 3600 + mi * 60 + s).ok()
+}
+
+/// The inverse of `parse_ts`: epoch seconds to "YYYY-MM-DDTHH:MM:SSZ".
+/// Howard Hinnant's civil_from_days.
+pub fn format_ts(epoch: u64) -> String {
+    let days = (epoch / 86400) as i64;
+    let secs = epoch % 86400;
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
+}
+
+// ── Writing ──────────────────────────────────────────────────────────────────
+
+/// The append half. One writer per slip, one line per event, flushed as it
+/// lands so readers (and the board's doorbell) see events while the flight
+/// is still in the air. Sync and std-only: the core stays runtime-free.
+pub struct LedgerWriter {
+    file: fs::File,
+    path: PathBuf,
+    slip_id: SlipId,
+    seq: u64,
+}
+
+impl LedgerWriter {
+    /// Create `<dir>/<slip_id>.jsonl`. Fails loud if it already exists —
+    /// a slip's ledger is born exactly once, appended forever, never reborn.
+    pub fn create(dir: &Path, slip_id: SlipId) -> Result<Self, LedgerError> {
+        fs::create_dir_all(dir)
+            .map_err(|source| LedgerError::Io { path: dir.to_path_buf(), source })?;
+        let path = dir.join(format!("{slip_id}.jsonl"));
+        let file = fs::OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(&path)
+            .map_err(|source| LedgerError::Io { path: path.clone(), source })?;
+        Ok(LedgerWriter { file, path, slip_id, seq: 0 })
+    }
+
+    /// Append one event, stamped now, flushed. Returns the sequence number.
+    pub fn append(&mut self, kind: &Kind) -> Result<u64, LedgerError> {
+        use io::Write;
+        self.seq += 1;
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let (kind_str, payload) = EventKind::Known(kind.clone()).wire();
+        let line = serde_json::json!({
+            "schema": SCHEMA,
+            "slip_id": self.slip_id,
+            "seq": self.seq,
+            "ts": format_ts(now),
+            "kind": kind_str,
+            "payload": payload,
+        });
+        let io_err = |source| LedgerError::Io { path: self.path.clone(), source };
+        writeln!(self.file, "{line}").map_err(io_err)?;
+        self.file.flush().map_err(io_err)?;
+        Ok(self.seq)
+    }
+
+    pub fn slip_id(&self) -> &SlipId {
+        &self.slip_id
+    }
 }
 
 // ── Loading ──────────────────────────────────────────────────────────────────
@@ -661,6 +744,46 @@ mod tests {
         let file = load_ledger(&path).unwrap();
         assert_eq!(file.events.len(), 2);
         assert_eq!(file.bad_lines, vec![2]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn format_and_parse_are_inverses() {
+        for epoch in [0u64, 1_785_776_400, 86_399, 86_400, 4_102_444_800] {
+            assert_eq!(parse_ts(&format_ts(epoch)), Some(epoch), "epoch {epoch}");
+        }
+        assert_eq!(format_ts(1_785_776_400), "2026-08-03T17:00:00Z");
+    }
+
+    #[test]
+    fn writer_and_reader_agree_on_the_wire() {
+        let dir = std::env::temp_dir().join(format!("daemar-writer-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let mut w = LedgerWriter::create(&dir, SlipId("slip-w".into())).unwrap();
+        w.append(&Kind::SlipOpened {
+            request: "r".into(),
+            workflow: "prompt".into(),
+            engineer: "kendall".into(),
+        })
+        .unwrap();
+        w.append(&Kind::SectionWritten {
+            section: "response.v1".into(),
+            by: "responder".into(),
+            summary: "short".into(),
+            body: "the full text\nwith lines".into(),
+        })
+        .unwrap();
+        w.append(&Kind::SlipClosed { outcome: SlipOutcome::Accepted, reason: String::new() })
+            .unwrap();
+
+        // A second writer for the same slip must fail loud: born exactly once.
+        assert!(LedgerWriter::create(&dir, SlipId("slip-w".into())).is_err());
+
+        let file = load_ledger(&dir.join("slip-w.jsonl")).unwrap();
+        assert_eq!(file.bad_lines.len(), 0);
+        let slip = fold(&file.events).expect("folds");
+        assert_eq!(slip.status, Status::Accepted);
+        assert_eq!(slip.sections[0].body, "the full text\nwith lines");
         std::fs::remove_dir_all(&dir).ok();
     }
 

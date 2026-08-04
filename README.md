@@ -26,11 +26,23 @@ apps/board        the controller's instrument (axum, server-rendered)
 fixtures/         hand-authored ledgers: accepted, cocked, in-flight, rejected
 ```
 
+## The runner (phase 2)
+
+```bash
+daemar "<request>"          # cargo run -p daemar -- "<request>"
+```
+
+One slip, one phase, one model call, no tools, no checks — the board is the
+check. Config via env (direnv decrypts `secrets/daemar.enc.env`):
+`OPENAI_API_KEY`, `DAEMAR_MODEL`, `DAEMAR_BASE_URL` (OpenAI-compatible),
+`DAEMAR_LEDGERS` (default `ledgers/`). Errors close the slip honestly
+(rejected, reason on the ledger); a crash leaves no terminator and the board
+derives interrupted.
+
 ## Status
 
-Phase 1 (the board) — done, renders fixtures.
-Phase 2 (the first loop) — next: minimal Rust loop, one model API, no checks;
-the board and the controller's eyes are the check.
+Phase 1 (the board) — done.
+Phase 2 (the first loop) — done; maiden flight flown 2026-08-04.
 Everything after — earned, one real run at a time.
 
 The previous life of this repo is preserved at `archive/wayfinder-v0` (branch
