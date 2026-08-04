@@ -37,7 +37,8 @@ async fn main() {
         .route("/", get(index))
         .route("/board", get(board_fragment))
         .route("/closed", get(closed_page))
-        .route("/slip/{id}", get(slip_detail))
+        .route("/slip/{id}", get(slip_page))
+        .route("/fragment/slip/{id}", get(slip_fragment))
         .with_state(app.clone());
 
     let addr = format!("127.0.0.1:{port}");
@@ -56,15 +57,42 @@ fn now_epoch() -> u64 {
 
 // ── Pages ────────────────────────────────────────────────────────────────────
 
-async fn index(State(app): State<Arc<App>>) -> Html<String> {
-    let board = render_board(&app, &load(&app));
-    Html(format!(
+/// The two-pane shell: bays on the left, the detail panel (and, one day, the
+/// chat) docked on the right. `selected` pre-renders the panel so /slip/{id}
+/// deep links work before a single line of JS runs.
+fn shell(app: &App, selected: Option<&str>) -> String {
+    let all = load(app);
+    let board = render_board(app, &all);
+    let (init, detail) = match selected.and_then(|id| all.iter().find(|(s, _)| s.id == id)) {
+        Some((slip, events)) => (slip.id.clone(), render_detail(slip, events)),
+        None => (String::new(), PLACEHOLDER.to_string()),
+    };
+    format!(
         "{STYLE}<title>daemar — the board</title>\
          <header><h1>daemar</h1><span class=\"sub\">the board · ledgers are truth · slips are folds</span></header>\
-         <main id=\"board\">{board}</main>\
-         <script>setInterval(async()=>{{const r=await fetch('/board');\
-         document.getElementById('board').innerHTML=await r.text();}},2000);</script>"
-    ))
+         <main><section id=\"bays\">{board}</section><aside id=\"detail\">{detail}</aside></main>\
+         <script>\
+         const PLACEHOLDER={placeholder:?};let sel={init:?}||null;\
+         function mark(){{document.querySelectorAll('a.strip').forEach(a=>a.classList.toggle('selected',a.getAttribute('href')==='/slip/'+sel));}}\
+         async function loadBays(){{const r=await fetch('/board');document.getElementById('bays').innerHTML=await r.text();mark();}}\
+         async function loadDetail(id,push){{sel=id;const p=document.getElementById('detail');const st=p.scrollTop;\
+           const r=await fetch('/fragment/slip/'+id);if(r.ok){{p.innerHTML=await r.text();p.scrollTop=st;}}\
+           mark();if(push)history.pushState({{id}},'','/slip/'+id);}}\
+         document.addEventListener('click',e=>{{const a=e.target.closest('a.strip');if(!a)return;\
+           e.preventDefault();loadDetail(a.getAttribute('href').split('/').pop(),true);}});\
+         window.addEventListener('popstate',()=>{{const m=location.pathname.match(/^\\/slip\\/(.+)$/);\
+           if(m)loadDetail(m[1],false);else{{sel=null;document.getElementById('detail').innerHTML=PLACEHOLDER;mark();}}}});\
+         mark();setInterval(()=>{{loadBays();if(sel)loadDetail(sel,false);}},2000);\
+         </script>",
+        placeholder = PLACEHOLDER,
+        init = init,
+    )
+}
+
+const PLACEHOLDER: &str = "<p class=\"empty placeholder\">select a strip</p>";
+
+async fn index(State(app): State<Arc<App>>) -> Html<String> {
+    Html(shell(&app, None))
 }
 
 async fn board_fragment(State(app): State<Arc<App>>) -> Html<String> {
@@ -86,22 +114,18 @@ async fn closed_page(State(app): State<Arc<App>>) -> Html<String> {
     Html(html)
 }
 
-async fn slip_detail(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
+/// Deep link: the same two-pane shell with the panel pre-loaded.
+async fn slip_page(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
+    Html(shell(&app, Some(id.as_str()))).into_response()
+}
+
+/// The detail panel alone — what the board's JS swaps in.
+async fn slip_fragment(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
     let all = load(&app);
     let Some((slip, events)) = all.iter().find(|(s, _)| s.id == id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Html(format!("{STYLE}<main><p>no slip {}</p><p><a href=\"/\">← board</a></p></main>", esc(&id))),
-        )
-            .into_response();
+        return (StatusCode::NOT_FOUND, Html(format!("<p class=\"empty\">no slip {}</p>", esc(&id)))).into_response();
     };
-    Html(format!(
-        "{STYLE}<title>slip {}</title><header><h1><a href=\"/\">daemar</a> / {}</h1></header><main>{}</main>",
-        esc(&short(&slip.id)),
-        esc(&short(&slip.id)),
-        render_detail(slip, events)
-    ))
-    .into_response()
+    Html(render_detail(slip, events)).into_response()
 }
 
 // ── The board ────────────────────────────────────────────────────────────────
@@ -288,6 +312,11 @@ fn render_detail(slip: &Slip, events: &[ledger::Event]) -> String {
     let mut html = String::new();
 
     html.push_str(&format!(
+        "<p class=\"detailid\">slip {} · <span>{}</span></p>",
+        esc(&short(&slip.id)),
+        esc(&slip.id)
+    ));
+    html.push_str(&format!(
         "<div class=\"face\"><p class=\"req\">{}</p>\
          <table><tr><th>status</th><td>{:?}{}</td></tr>\
          <tr><th>workflow</th><td>{}</td></tr><tr><th>engineer</th><td>{}</td></tr>\
@@ -394,7 +423,13 @@ fn esc(s: &str) -> String {
 const STYLE: &str = r#"<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 :root{color-scheme:dark}
 body{background:#0f1216;color:#d7dce2;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:0 1.2rem 3rem}
-main,header{max-width:1240px}
+main,header{max-width:1720px}
+main{display:grid;grid-template-columns:minmax(600px,1100px) minmax(400px,540px);gap:0 1.4rem;align-items:start}
+#detail{position:sticky;top:0;max-height:100vh;overflow-y:auto;border-left:1px solid #232a33;padding:.4rem .2rem 2rem 1.4rem}
+.detailid{color:#5c6773;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;margin:.4rem 0 0}
+.detailid span{text-transform:none;letter-spacing:0}
+.placeholder{margin-top:2.4rem}
+.strip.selected{outline:1px solid #38bdf8;outline-offset:-1px}
 header{display:flex;align-items:baseline;gap:1rem;padding:.8rem 0;border-bottom:1px solid #232a33}
 h1{font-size:1rem;margin:0;letter-spacing:.08em;text-transform:uppercase}
 h1 a{color:inherit;text-decoration:none}
