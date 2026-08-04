@@ -1,0 +1,50 @@
+{
+  "$id": "change-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The authoring contract for a Change Request accepted by Preflight. Document size and duplicate keys are enforced by Preflight because JSON Schema operates on parsed values.",
+  "properties": {
+    "$schema": {
+      "description": "Optional non-blank path or URL that associates the document with this schema. Daemar validates it, then discards it.",
+      "pattern": "[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]",
+      "type": "string"
+    },
+    "acceptance_criteria": {
+      "description": "How a human reviewer judges success. Daemar does not machine-check these criteria.",
+      "items": {
+        "maxLength": 1024,
+        "pattern": "[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]",
+        "type": "string"
+      },
+      "maxItems": 20,
+      "minItems": 1,
+      "type": "array"
+    },
+    "id": {
+      "description": "Human-authored slug identifying this Change Request.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "objective": {
+      "description": "What the Workflow Run should achieve.",
+      "maxLength": 4096,
+      "pattern": "[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]",
+      "type": "string"
+    },
+    "schema": {
+      "const": "change_request.v1",
+      "description": "Contract version. Exact match required; no negotiation.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "objective",
+    "acceptance_criteria"
+  ],
+  "title": "Change Request",
+  "type": "object"
+}
