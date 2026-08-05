@@ -8,6 +8,10 @@ use std::fmt;
 
 use serde::Deserialize;
 
+/// Overall request deadline. Generous — reasoning models take their time —
+/// but finite: no flight parks forever on a dead socket.
+const TIMEOUT_SECS: u64 = 600;
+
 /// The connection, not the model: one provider serves many airframes, and
 /// which model flies is decided per phase by the workflow.
 pub struct Provider {
@@ -106,7 +110,11 @@ impl Provider {
             ],
         });
 
+        // A generation can legitimately take minutes; a hung connection must
+        // not take forever. The deadline turns a dead network into a
+        // Transport error — a witnessed failure — instead of a parked process.
         let response = ureq::post(&url)
+            .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
             .set("Authorization", &format!("Bearer {}", self.api_key))
             .send_json(body);
 
