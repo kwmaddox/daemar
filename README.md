@@ -43,7 +43,11 @@ airframe, tool access. The planner is grounded: it reads the territory with the 
 read-only tools before planning, and every read lands on the ledger. Config
 via env: `OPENAI_API_KEY`, `DAEMAR_MODEL` (per-role overrides
 `DAEMAR_SCOUT_MODEL` / `DAEMAR_PLAN_MODEL` / `DAEMAR_RESPOND_MODEL`),
-`DAEMAR_BASE_URL` (OpenAI-compatible), `DAEMAR_LEDGERS` (default
+`DAEMAR_EFFORT` — reasoning effort `low`/`medium`/`high`, default `medium`
+(per-role overrides `DAEMAR_SCOUT_EFFORT` / `DAEMAR_PLAN_EFFORT` /
+`DAEMAR_RESPOND_EFFORT`), `DAEMAR_BASE_URL` (a `/v1`-style base; the
+provider speaks the Responses API and appends `/responses`),
+`DAEMAR_LEDGERS` (default
 `ledgers/`). `DAEMAR_HOME` roots the relative defaults (ledgers, airframes,
 secrets) so daemar works from anywhere; on a missing env var the tower
 decrypts `$DAEMAR_HOME/secrets/daemar.enc.env` itself, in-process — the key

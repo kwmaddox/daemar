@@ -103,10 +103,15 @@ pub fn run_stage(
 
     let mut flight_tokens = 0u64;
     let mut flight_cost = 0.0f64;
-    let mut messages = vec![
-        serde_json::json!({ "role": "system", "content": agent.system }),
-        serde_json::json!({ "role": "user", "content": stage.user }),
-    ];
+    // The Responses input array, resent whole every turn (store:false).
+    // The system prompt rides separately as `instructions`; on the ledger,
+    // ModelRequested.system is the instructions and ModelRequested.user is
+    // this initial input item — the epistemic record's mapping.
+    let mut input = vec![serde_json::json!({
+        "type": "message",
+        "role": "user",
+        "content": [{ "type": "input_text", "text": stage.user }],
+    })];
     let mut complaint_logged = false;
 
     for turn in 1..=MAX_TURNS {
@@ -127,7 +132,13 @@ pub fn run_stage(
                 String::new()
             },
         })?;
-        let out = match config.provider.chat(&model, &messages, specs.as_ref()) {
+        let out = match config.provider.respond(
+            &model,
+            agent.system,
+            &input,
+            specs.as_ref(),
+            config.effort_for(role),
+        ) {
             Ok(out) => out,
             Err(error) => {
                 let reason = error.to_string();
@@ -191,7 +202,10 @@ pub fn run_stage(
                 eprintln!("daemar: {reason}");
                 return Ok(None);
             };
-            messages.push(out.assistant.clone());
+            // Stateless replay: the turn's reasoning and function_call
+            // items ride back in the next input, or the reasoning thread
+            // breaks. This is the state chat-completions never made us keep.
+            input.extend(out.continuation.iter().cloned());
             for call in &out.tool_calls {
                 let args: serde_json::Value =
                     serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
@@ -212,10 +226,10 @@ pub fn run_stage(
                     summary: summarize(&outcome.content),
                     hash: outcome.hash.clone(),
                 })?;
-                messages.push(serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": outcome.content,
+                input.push(serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": call.id,
+                    "output": outcome.content,
                 }));
             }
             continue;
