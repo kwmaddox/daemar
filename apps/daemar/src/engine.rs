@@ -161,22 +161,47 @@ pub fn run_stage(
         }
 
         if !out.tool_calls.is_empty() {
+            // A toolless seat was advertised no tools; a provider that sends
+            // tool calls anyway is misbehaving. Witness it, don't pay turns
+            // conversing with it.
+            let Some(ctx) = ctx.as_mut() else {
+                for call in &out.tool_calls {
+                    w.append(&Kind::ToolCall {
+                        phase: stage.phase.to_string(),
+                        tool: call.name.clone(),
+                        args: serde_json::from_str(&call.arguments)
+                            .unwrap_or(serde_json::Value::Null),
+                        ok: false,
+                        summary: "refused: this agent has no tools".to_string(),
+                        hash: String::new(),
+                    })?;
+                }
+                let reason = format!(
+                    "{} requested tools but holds none — provider misbehavior",
+                    agent.name
+                );
+                w.append(&Kind::Note {
+                    text: reason.clone(),
+                })?;
+                w.append(&Kind::PhaseEnded {
+                    phase: stage.phase.to_string(),
+                    outcome: PhaseOutcome::Error,
+                })?;
+                eprintln!("daemar: {reason}");
+                return Ok(None);
+            };
             messages.push(out.assistant.clone());
             for call in &out.tool_calls {
                 let args: serde_json::Value =
                     serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
-                let outcome = match (&mut ctx, args.is_null()) {
-                    (_, true) => tools::ToolOutcome {
+                let outcome = if args.is_null() {
+                    tools::ToolOutcome {
                         content: format!("{}: arguments were not valid JSON", call.name),
                         is_error: true,
                         hash: String::new(),
-                    },
-                    (Some(ctx), false) => tools::execute(&call.name, &args, ctx),
-                    (None, false) => tools::ToolOutcome {
-                        content: format!("{}: this agent has no tools", call.name),
-                        is_error: true,
-                        hash: String::new(),
-                    },
+                    }
+                } else {
+                    tools::execute(&call.name, &args, ctx)
                 };
                 w.append(&Kind::ToolCall {
                     phase: stage.phase.to_string(),

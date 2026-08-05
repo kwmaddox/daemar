@@ -499,6 +499,32 @@ fn the_scout_cannot_leave_its_territory_and_the_refusal_is_logged() {
 }
 
 #[test]
+fn a_toolless_seat_that_requests_tools_is_a_witnessed_failure() {
+    // The responder holds no tools; a provider that sends tool calls anyway
+    // is misbehaving. The engine must witness it and stop — not pay turns
+    // conversing with it.
+    let stub = stub_server();
+    let f = factory("toolless-tools", &stub);
+    stub.push_tool_call("call_1", "read", r#"{"path":"anything"}"#);
+    let out = daemar(&f, &["just answer the question"]);
+    assert_eq!(exit_code(&out), 1);
+    assert!(
+        stderr(&out).contains("holds none"),
+        "the failure names itself: {}",
+        stderr(&out)
+    );
+    let (_, slip, _) = the_slip(&f);
+    assert_eq!(
+        slip.status,
+        Status::InFlight,
+        "witnessed failure leaves the slip open for disposition"
+    );
+    assert_eq!(slip.failed.as_deref(), Some("respond"));
+    assert_eq!(slip.tool_trail.len(), 1, "the refused call is on the trail");
+    assert!(!slip.tool_trail[0].ok);
+}
+
+#[test]
 fn refuse_is_a_verdict_and_closes_directly() {
     let stub = stub_server();
     let f = factory("refused", &stub);
