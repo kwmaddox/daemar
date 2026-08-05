@@ -1,0 +1,23 @@
+# airframes.toml — the factory's model registry.
+#
+# Prices are USD per 1M tokens, and they go stale: date every entry when you
+# touch it. Cost is computed at flight time and frozen on the ledger — a
+# receipt — so editing this file never rewrites history.
+#
+# `cached_input` is the cache-hit rate; if omitted, cached tokens price at
+# the full input rate (conservative, never a hidden discount).
+#
+# A flight on a model with no entry here records cost 0.0 and a note.v1 on
+# its ledger saying the model is unregistered. Loud until fed.
+
+[models."gpt-5.6-terra"]
+input = 2.00
+cached_input = 0.20
+output = 12.00
+updated = "2026-08-04"    # developers.openai.com/api/docs/pricing, standard tier
+
+[models."gpt-5.6-luna"]
+input = 0.20
+cached_input = 0.02
+output = 1.20
+updated = "2026-08-04"    # developers.openai.com/api/docs/pricing, standard tier

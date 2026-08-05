@@ -1,0 +1,7 @@
+{"schema":"ledger.v1","slip_id":"0198a002-bbbb-7002-8000-000000000002","seq":1,"ts":"2026-08-03T18:21:00Z","kind":"slip_opened.v1","payload":{"request":"Migrate config loading from env vars to layered TOML","workflow":"sdlc","engineer":"kendall"}}
+{"schema":"ledger.v1","slip_id":"0198a002-bbbb-7002-8000-000000000002","seq":2,"ts":"2026-08-03T18:21:01Z","kind":"phase_started.v1","payload":{"phase":"plan","owner":"planner","lane":"agent"}}
+{"schema":"ledger.v1","slip_id":"0198a002-bbbb-7002-8000-000000000002","seq":3,"ts":"2026-08-03T18:22:19Z","kind":"model_call.v1","payload":{"phase":"plan","model":"fireworks/kimi-k3","tokens":26100,"cost":0.16}}
+{"schema":"ledger.v1","slip_id":"0198a002-bbbb-7002-8000-000000000002","seq":4,"ts":"2026-08-03T18:22:40Z","kind":"query_made.v1","payload":{"phase":"plan","query":"full request section and any notes on config precedence"}}
+{"schema":"ledger.v1","slip_id":"0198a002-bbbb-7002-8000-000000000002","seq":5,"ts":"2026-08-03T18:23:55Z","kind":"section_written.v1","payload":{"section":"plan.v1","by":"planner","summary":"Three-layer precedence: defaults < file < env; 6 files touched"}}
+{"schema":"ledger.v1","slip_id":"0198a002-bbbb-7002-8000-000000000002","seq":6,"ts":"2026-08-03T18:23:56Z","kind":"phase_ended.v1","payload":{"phase":"plan","outcome":"success"}}
+{"schema":"ledger.v1","slip_id":"0198a002-bbbb-7002-8000-000000000002","seq":7,"ts":"2026-08-03T18:23:57Z","kind":"clearance_requested.v1","payload":{"boundary":"plan->build","by":"planner"}}

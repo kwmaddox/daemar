@@ -1,0 +1,21 @@
+[package]
+name = "daemar"
+version = "0.1.0"
+edition = "2021"
+description = "The factory's runner. v0: one slip, one phase, one model call."
+
+[dependencies]
+ledger = { path = "../../crates/ledger" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Sync HTTP on purpose: the loop is strictly sequential, so no runtime (AGENTS.md rule 1).
+ureq = { version = "2", features = ["json"] }
+# Justified dep: UUIDv7 slip ids need a real randomness source; hand-rolling one is worse.
+uuid = { version = "1", features = ["v7"] }
+# Justified dep: the airframe registry wants comments and dated entries —
+# staleness must be visible in the file — and JSON forbids comments.
+toml = "0.8"
+
+[dev-dependencies]
+# The integration tests read the ledgers the binary writes.
+ledger = { path = "../../crates/ledger" }
