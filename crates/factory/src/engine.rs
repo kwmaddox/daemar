@@ -166,10 +166,16 @@ pub fn run_stage(
         Some(StageExecutor::Caged(cage)) => {
             let container = cage.container.clone();
             match cage.teardown() {
-                Ok(()) => {
+                Ok(proof) => {
+                    let how = match proof {
+                        crate::sandbox::Teardown::Removed => "",
+                        // Something other than us removed it — harmless for
+                        // containment (it is gone), but witnessed.
+                        crate::sandbox::Teardown::AlreadyGone => " (was already gone)",
+                    };
                     w.append(&Kind::Note {
                         text: format!(
-                            "sandbox torn down: phase={} container={container}",
+                            "sandbox torn down{how}: phase={} container={container}",
                             stage.phase
                         ),
                     })?;

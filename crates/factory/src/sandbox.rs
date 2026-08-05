@@ -70,6 +70,15 @@ pub enum CageMode {
     On,
 }
 
+/// How teardown proved the container gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Teardown {
+    /// We removed it — the ordinary ending.
+    Removed,
+    /// It was already gone: goal satisfied, anomaly worth a note.
+    AlreadyGone,
+}
+
 #[derive(Debug)]
 pub enum CageError {
     /// Docker itself is unavailable — refused before any slip is minted.
@@ -292,17 +301,23 @@ impl<'r> Cage<'r> {
 
     /// Forcibly remove the container. A stage is not finalized until this
     /// succeeds: an unproven teardown fails the phase, report or no report.
-    pub fn teardown(self) -> Result<(), CageError> {
+    /// "No such container" IS proof — the goal is the container being gone —
+    /// but it is an anomaly worth witnessing: something other than us
+    /// removed it.
+    pub fn teardown(self) -> Result<Teardown, CageError> {
         let out = self
             .runner
             .run("docker", &strings(&["rm", "-f", &self.container]), None)
             .map_err(|detail| CageError::Lifecycle { detail })?;
-        if !out.success {
-            return Err(CageError::Lifecycle {
-                detail: format!("docker rm -f failed: {}", out.stderr.trim()),
-            });
+        if out.success {
+            return Ok(Teardown::Removed);
         }
-        Ok(())
+        if out.stderr.contains("No such container") {
+            return Ok(Teardown::AlreadyGone);
+        }
+        Err(CageError::Lifecycle {
+            detail: format!("docker rm -f failed: {}", out.stderr.trim()),
+        })
     }
 }
 
@@ -428,6 +443,27 @@ mod tests {
         )
         .expect("starts");
         assert!(matches!(cage.teardown(), Err(CageError::Lifecycle { .. })));
+    }
+
+    #[test]
+    fn an_already_gone_container_satisfies_teardown_as_an_anomaly() {
+        let runner = FakeRunner::new(vec![
+            FakeRunner::ok("abc123\n"),
+            FakeRunner::fail("Error response from daemon: No such container: abc123"),
+        ]);
+        let cage = Cage::start(
+            &runner,
+            &SandboxSpec::default(),
+            Path::new("/wt"),
+            ToolAccess::ReadOnly,
+            "x",
+        )
+        .expect("starts");
+        assert_eq!(
+            cage.teardown().expect("gone is gone"),
+            Teardown::AlreadyGone,
+            "the goal is the container being gone — however that happened"
+        );
     }
 
     #[test]
