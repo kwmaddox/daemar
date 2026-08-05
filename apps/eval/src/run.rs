@@ -147,12 +147,14 @@ pub fn run(
         ));
     }
 
-    // Pin every territory BEFORE the first paid flight: a broken pin must
-    // cost zero dollars.
+    // Pin every territory BEFORE the first paid flight: a broken pin —
+    // including an unreadable answer-key file — must cost zero dollars.
     let mut worktrees: Vec<PathBuf> = Vec::new();
+    let mut pinned_files: Vec<Vec<PinnedFile>> = Vec::new();
     for case in &selected {
         let repo = roots.repo.join(&case.territory_repo);
         let worktree = pin::materialize(&repo, &case.territory_commit, &roots.territories)?;
+        pinned_files.push(key_file_hashes(case, &worktree)?);
         progress(&format!(
             "pinned {} at {} -> {}",
             case.id,
@@ -223,12 +225,13 @@ pub fn run(
         cases: selected
             .iter()
             .zip(&worktrees)
-            .map(|(case, worktree)| ManifestCase {
+            .zip(pinned_files)
+            .map(|((case, worktree), files)| ManifestCase {
                 id: case.id.clone(),
                 fixture_hash: case.fixture_hash.clone(),
                 territory_commit: case.territory_commit.clone(),
                 worktree: worktree.display().to_string(),
-                pinned_files: key_file_hashes(case, worktree),
+                pinned_files: files,
             })
             .collect(),
     };
@@ -246,8 +249,10 @@ pub fn run(
 }
 
 /// Hash every file the answer key touches, as checked out — the manifest's
-/// guard against a silently mutated worktree.
-fn key_file_hashes(case: &EvalCase, worktree: &Path) -> Vec<PinnedFile> {
+/// audit guard against a mutated worktree. An unreadable key file is a
+/// broken pin and refuses the whole run: an audit guard that silently
+/// omits entries is not one.
+fn key_file_hashes(case: &EvalCase, worktree: &Path) -> Result<Vec<PinnedFile>, EvalError> {
     let mut paths: Vec<&str> = case
         .required
         .iter()
@@ -258,8 +263,13 @@ fn key_file_hashes(case: &EvalCase, worktree: &Path) -> Vec<PinnedFile> {
     paths.dedup();
     paths
         .into_iter()
-        .filter_map(|rel| {
-            fs::read(worktree.join(rel)).ok().map(|bytes| PinnedFile {
+        .map(|rel| {
+            let path = worktree.join(rel);
+            let bytes = fs::read(&path).map_err(|e| EvalError::Io {
+                path: path.clone(),
+                detail: format!("{}: answer-key file unreadable at the pin: {e}", case.id),
+            })?;
+            Ok(PinnedFile {
                 path: rel.to_string(),
                 hash: content_hash(&bytes),
             })
@@ -383,4 +393,51 @@ fn record_flight(
         })
         .collect();
     record
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unreadable_answer_key_file_refuses_the_run_before_payment() {
+        let dir = std::env::temp_dir().join(format!("daemar-eval-keyhash-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "present\n").unwrap();
+
+        let mut case = EvalCase {
+            id: "scout.test".into(),
+            class: vec![],
+            role: "scout".into(),
+            workflow: "scout".into(),
+            request: "r".into(),
+            territory_repo: ".".into(),
+            territory_commit: "0".repeat(40),
+            required: vec![crate::cases::RequiredCitation {
+                path: "src/lib.rs".into(),
+                line: 1,
+                verbatim: "present".into(),
+            }],
+            forbidden: vec![],
+            required_text: vec![],
+            human_review: vec![],
+            fixture_hash: "hash".into(),
+            path: PathBuf::from("test.toml"),
+        };
+        let hashes = key_file_hashes(&case, &dir).expect("readable key hashes");
+        assert_eq!(hashes.len(), 1);
+        assert_eq!(hashes[0].hash.len(), 16);
+
+        case.required.push(crate::cases::RequiredCitation {
+            path: "src/gone.rs".into(),
+            line: 1,
+            verbatim: "x".into(),
+        });
+        assert!(
+            key_file_hashes(&case, &dir).is_err(),
+            "a missing key file must refuse, not vanish from the manifest"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

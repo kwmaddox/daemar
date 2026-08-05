@@ -135,6 +135,13 @@ impl fmt::Display for CaseError {
     }
 }
 
+/// Any `..` component escapes whatever root the path is joined to.
+pub(crate) fn traverses_up(path: &str) -> bool {
+    Path::new(path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
 fn is_full_sha(s: &str) -> bool {
     s.len() == 40
         && s.chars()
@@ -169,6 +176,11 @@ fn validate(wire: &WireCase) -> Vec<String> {
     }
     if wire.territory_repo.trim().is_empty() {
         problems.push("territory_repo is empty".to_string());
+    } else if Path::new(&wire.territory_repo).is_absolute() || traverses_up(&wire.territory_repo) {
+        problems.push(format!(
+            "territory_repo '{}' must stay inside this repo (relative, no '..')",
+            wire.territory_repo
+        ));
     }
     if !is_full_sha(&wire.territory_commit) {
         problems.push(format!(
@@ -222,6 +234,10 @@ fn expect_citation(
         problems.push(format!("{kind}[{index}].path is empty"));
     } else if path.starts_with('/') {
         problems.push(format!("{kind}[{index}].path '{path}' must be relative"));
+    } else if traverses_up(path) {
+        problems.push(format!(
+            "{kind}[{index}].path '{path}' must not contain '..' — keys stay inside the pin"
+        ));
     }
     if line == 0 {
         problems.push(format!("{kind}[{index}].line must be 1-based"));
@@ -387,6 +403,48 @@ territory_commit = "6ee526e"
         let file = dir.join("typo.toml");
         std::fs::write(&file, VALID.replace("[human_review]", "[human_reviw]")).unwrap();
         assert!(matches!(load_case(&file), Err(CaseError::Parse { .. })));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn territory_repo_may_not_escape_the_suite_repo() {
+        let dir = scratch("territory-escape");
+        let file = dir.join("escape.toml");
+        std::fs::write(
+            &file,
+            VALID.replace("territory_repo = \".\"", "territory_repo = \"../..\""),
+        )
+        .unwrap();
+        match load_case(&file) {
+            Err(CaseError::Invalid { problems, .. }) => {
+                assert!(
+                    problems.iter().any(|p| p.contains("must stay inside")),
+                    "{problems:?}"
+                );
+            }
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn expectation_paths_may_not_traverse_upward() {
+        let dir = scratch("key-escape");
+        let file = dir.join("escape.toml");
+        std::fs::write(
+            &file,
+            VALID.replace("path = \"src/lib.rs\"", "path = \"src/../../lib.rs\""),
+        )
+        .unwrap();
+        match load_case(&file) {
+            Err(CaseError::Invalid { problems, .. }) => {
+                assert!(
+                    problems.iter().any(|p| p.contains("must not contain '..'")),
+                    "{problems:?}"
+                );
+            }
+            other => panic!("expected Invalid, got {other:?}"),
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

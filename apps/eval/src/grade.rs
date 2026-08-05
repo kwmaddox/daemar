@@ -210,11 +210,19 @@ pub fn grade(case: &EvalCase, report: &str, worktree: &Path) -> Grade {
 
     let mut verified: Vec<VerifiedCitation> = Vec::new();
     for citation in &citations {
-        let (problem, line_text) = if citation.path.starts_with('/') {
+        // The report is UNTRUSTED input: absolute and parent-traversal paths
+        // are flagged and never joined to the worktree — the grader inherits
+        // the tools' confinement discipline.
+        let confined =
+            !citation.path.starts_with('/') && !crate::cases::traverses_up(&citation.path);
+        let (problem, line_text) = if !confined {
             (
                 Some(Finding {
                     kind: FindingKind::CitationNotRelative,
-                    detail: format!("'{}' cites an absolute path", citation.raw),
+                    detail: format!(
+                        "'{}' cites outside the pinned worktree (absolute or '..')",
+                        citation.raw
+                    ),
                 }),
                 None,
             )
@@ -478,6 +486,44 @@ mod tests {
             FindingKind::RequiredVerbatimMismatch
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parent_traversal_citations_are_flagged_and_never_read() {
+        // A file OUTSIDE the worktree that a traversal citation would reach
+        // if the grader joined it blindly. The report is untrusted input.
+        let base =
+            std::env::temp_dir().join(format!("daemar-eval-traverse-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let wt = base.join("wt");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        std::fs::write(wt.join("src/lib.rs"), "inside\n").unwrap();
+        std::fs::write(base.join("secret.rs"), "outside\n").unwrap();
+
+        let case = case_with(
+            vec![],
+            vec![],
+            vec![RequiredText {
+                contains: "src".into(),
+            }],
+        );
+        let grade = grade(&case, "See `src/../../secret.rs:1`.", &wt);
+        let flagged = grade
+            .citations
+            .iter()
+            .find(|c| c.citation.path.contains(".."))
+            .expect("citation extracted");
+        assert!(flagged.problem.is_some(), "traversal must be a problem");
+        assert_eq!(flagged.line_text, None, "outside file must never be read");
+        assert!(
+            grade
+                .findings
+                .iter()
+                .any(|f| f.kind == FindingKind::CitationNotRelative),
+            "{:?}",
+            grade.findings
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
