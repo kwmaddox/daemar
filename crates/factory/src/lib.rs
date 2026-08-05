@@ -6,7 +6,7 @@
 //! - [`engine`] — one stage, run as a turn loop, events on the ledger
 //! - [`workflows`] — the flights: prompt, plan, scout, continue
 //! - [`pens`] — the controller's writes: grant, refuse, dispose
-//! - [`provider`] — the OpenAI-compatible chat seam
+//! - [`provider`] — the OpenAI Responses API seam, stateless by doctrine
 //! - [`tools`] — read-only territory tools, confined by construction
 //! - [`registry`] — airframes.toml: real prices, never silent
 

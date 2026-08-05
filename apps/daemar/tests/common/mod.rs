@@ -2,9 +2,11 @@
 //!
 //! The test seam is the one the architecture already ships: DAEMAR_BASE_URL.
 //! A std-only TCP thread speaks just enough HTTP to serve scripted
-//! chat-completions, so whole ceremonies run offline, deterministically,
+//! Responses API bodies, so whole ceremonies run offline, deterministically,
 //! for zero tokens. Lineage: moghedien's todoing_stub, the house pattern
-//! for testing a loop at its HTTP boundary.
+//! for testing a loop at its HTTP boundary. The stub also RECORDS every
+//! request (line + body), so tests can assert what the factory actually
+//! sent — migration behavior is proven at the wire, not inferred.
 #![allow(dead_code)] // each test binary uses its own subset of the rig
 
 use std::collections::VecDeque;
@@ -21,12 +23,16 @@ use ledger::Slip;
 pub struct Stub {
     pub base_url: String,
     pub script: Arc<Mutex<VecDeque<(u16, String)>>>,
+    /// Every request as (request line, raw body), in arrival order.
+    pub requests: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl Stub {
     pub fn push_ok(&self, text: &str) {
+        // reasoning_tokens rides along on purpose: the parser must accept
+        // it while receipts intentionally carry it inside output_tokens.
         let body = format!(
-            r#"{{"choices":[{{"message":{{"content":{text}}}}}],"usage":{{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{{"cached_tokens":10}}}}}}"#,
+            r#"{{"output":[{{"type":"message","content":[{{"type":"output_text","text":{text}}}]}}],"usage":{{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{{"cached_tokens":10}},"output_tokens_details":{{"reasoning_tokens":4}}}}}}"#,
             text = json_string(text)
         );
         self.script.lock().unwrap().push_back((200, body));
@@ -39,10 +45,13 @@ impl Stub {
             .push_back((code, body.to_string()));
     }
 
-    /// A turn where the model asks for one tool call.
+    /// A turn where the model asks for one tool call. The opaque reasoning
+    /// item is deliberate: a loop that fails to replay it cannot pass the
+    /// wire tests — store:false makes replay load-bearing.
     pub fn push_tool_call(&self, id: &str, name: &str, arguments: &str) {
         let body = format!(
-            r#"{{"choices":[{{"message":{{"role":"assistant","content":null,"tool_calls":[{{"id":{id},"type":"function","function":{{"name":{name},"arguments":{args}}}}}]}}}}],"usage":{{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{{"cached_tokens":0}}}}}}"#,
+            r#"{{"output":[{{"type":"reasoning","id":{rsn},"summary":[]}},{{"type":"function_call","call_id":{id},"name":{name},"arguments":{args}}}],"usage":{{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{{"cached_tokens":0}},"output_tokens_details":{{"reasoning_tokens":8}}}}}}"#,
+            rsn = json_string(&format!("rsn_{id}")),
             id = json_string(id),
             name = json_string(name),
             args = json_string(arguments)
@@ -73,7 +82,9 @@ pub fn stub_server() -> Stub {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub");
     let base_url = format!("http://{}", listener.local_addr().expect("addr"));
     let script: Arc<Mutex<VecDeque<(u16, String)>>> = Arc::default();
+    let requests: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
     let responses = script.clone();
+    let seen = requests.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -105,6 +116,18 @@ pub fn stub_server() -> Stub {
                     }
                 }
             }
+            let line = String::from_utf8_lossy(&buf)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let sent_body = body_start
+                .map(|start| {
+                    String::from_utf8_lossy(&buf[start..(start + content_length).min(buf.len())])
+                        .to_string()
+                })
+                .unwrap_or_default();
+            seen.lock().unwrap().push((line, sent_body));
             let (code, body) = responses
                 .lock()
                 .unwrap()
@@ -118,7 +141,11 @@ pub fn stub_server() -> Stub {
             let _ = stream.write_all(response.as_bytes());
         }
     });
-    Stub { base_url, script }
+    Stub {
+        base_url,
+        script,
+        requests,
+    }
 }
 
 // ── The factory under test ───────────────────────────────────────────────────
@@ -158,6 +185,7 @@ pub fn daemar_cmd(f: &Factory, args: &[&str]) -> Command {
         .env("DAEMAR_PLAN_MODEL", "plan-model")
         .env("DAEMAR_RESPOND_MODEL", "respond-model")
         .env("DAEMAR_SCOUT_MODEL", "plan-model")
+        .env("DAEMAR_EFFORT", "medium")
         .env("DAEMAR_AIRFRAMES", &f.airframes)
         .env("USER", "testctl")
         .env_remove("DAEMAR_HOME");

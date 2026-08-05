@@ -239,7 +239,7 @@ fn object_form_tool_arguments_are_preserved_not_dropped() {
     let stub = stub_server();
     let f = factory("object-args", &stub);
     let t = territory("object-args");
-    let body = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":{"path":"src/lib.rs"}}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+    let body = r#"{"output":[{"type":"function_call","call_id":"c1","name":"read","arguments":{"path":"src/lib.rs"}}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}"#;
     stub.push_error(200, body); // raw body, 200: the object-args shape verbatim
     stub.push_ok("done");
     let out = daemar(
@@ -255,6 +255,136 @@ fn object_form_tool_arguments_are_preserved_not_dropped() {
         slip.tool_trail[0].summary
     );
     std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
+fn the_wire_speaks_responses_statelessly() {
+    // The migration's boundary proof: assert what the factory actually
+    // sends, not merely that ceremonies succeed against a friendly stub.
+    let stub = stub_server();
+    let f = factory("wire", &stub);
+    let t = territory("wire");
+    stub.push_tool_call("call_w1", "read", r#"{"path":"src/lib.rs"}"#);
+    stub.push_ok("WIRE REPORT.");
+    let out = daemar(
+        &f,
+        &["scout", "--repo", t.to_str().unwrap(), "check the wire"],
+    );
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+
+    {
+        let requests = stub.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2, "one tool turn, one report turn");
+        let (line, raw) = &requests[0];
+        assert!(line.starts_with("POST /responses"), "{line}");
+        let body: serde_json::Value = serde_json::from_str(raw).expect("json request");
+        assert_eq!(
+            body["store"],
+            serde_json::json!(false),
+            "stateless by doctrine"
+        );
+        assert!(
+            body["instructions"]
+                .as_str()
+                .expect("instructions")
+                .contains("scout"),
+            "the system prompt rides as instructions"
+        );
+        assert_eq!(body["input"][0]["type"], "message");
+        assert!(
+            body["input"][0]["content"][0]["text"]
+                .as_str()
+                .expect("input_text")
+                .contains("check the wire"),
+            "the user prompt is the initial input item"
+        );
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        let tool = &body["tools"][0];
+        assert_eq!(tool["type"], "function");
+        assert!(
+            tool["name"].is_string(),
+            "function fields at top level: {tool}"
+        );
+        assert!(
+            tool.get("function").is_none(),
+            "no chat-completions nesting: {tool}"
+        );
+        assert_eq!(tool["strict"], serde_json::json!(false));
+
+        // Turn two replays the reasoning thread and answers the call by id —
+        // the state store:false makes load-bearing.
+        let (_, raw) = &requests[1];
+        let body: serde_json::Value = serde_json::from_str(raw).expect("json request");
+        let input = body["input"].as_array().expect("input array");
+        assert!(
+            input.iter().any(|i| i["type"] == "reasoning"),
+            "the opaque reasoning item is replayed"
+        );
+        assert!(
+            input
+                .iter()
+                .any(|i| i["type"] == "function_call" && i["call_id"] == "call_w1"),
+            "the function_call item is replayed"
+        );
+        assert!(
+            input
+                .iter()
+                .any(|i| i["type"] == "function_call_output" && i["call_id"] == "call_w1"),
+            "the tool result answers the same call_id"
+        );
+    }
+
+    // Toolless seats reason too: no tools key, effort still present.
+    stub.push_ok("short answer");
+    let out = daemar(&f, &["quick question"]);
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    let requests = stub.requests.lock().unwrap();
+    let (_, raw) = requests.last().expect("responder request");
+    let body: serde_json::Value = serde_json::from_str(raw).expect("json request");
+    assert_eq!(body["reasoning"]["effort"], "medium");
+    assert!(
+        body.get("tools").is_none(),
+        "a toolless seat advertises nothing"
+    );
+    std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
+fn a_bad_reasoning_effort_refuses_at_startup_not_at_the_provider() {
+    let stub = stub_server();
+    let f = factory("bad-effort", &stub);
+    let out = daemar_cmd(&f, &["hello"])
+        .env("DAEMAR_EFFORT", "maximum")
+        .output()
+        .expect("run daemar");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not a reasoning effort"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!f.ledgers.exists(), "no slip minted from a refused config");
+}
+
+#[test]
+fn a_role_effort_override_beats_the_global() {
+    let stub = stub_server();
+    let f = factory("effort-override", &stub);
+    stub.push_ok("brief answer");
+    let out = daemar_cmd(&f, &["hi"])
+        .env("DAEMAR_RESPOND_EFFORT", "low")
+        .output()
+        .expect("run daemar");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let requests = stub.requests.lock().unwrap();
+    let (_, raw) = requests.last().expect("one request");
+    let body: serde_json::Value = serde_json::from_str(raw).expect("json request");
+    assert_eq!(body["reasoning"]["effort"], "low", "role override wins");
 }
 
 #[test]

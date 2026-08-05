@@ -1,13 +1,22 @@
-//! The model seam, v0: an OpenAI-compatible chat-completions client.
+//! The model seam, v1: an OpenAI Responses API client.
 //!
 //! A module, not a crate, on purpose — the trait boundary is earned when a
 //! second implementation exists (AGENTS.md: earned structure). Sync `ureq`:
 //! one sequential call needs no runtime.
+//!
+//! Stateless by doctrine: every request sends `store:false` and resends the
+//! full accumulated input — the ledger is the memory, sessions are caches,
+//! and server-side stored state would put truth somewhere the fold cannot
+//! reach. The price of statelessness is replay: opaque `reasoning` items
+//! and `function_call` items from each turn must ride back in the next
+//! turn's input, or the model's reasoning thread breaks mid-tool-loop.
 
 use std::fmt;
 
 use serde::Deserialize;
 use serde_json::Value;
+
+use crate::config::ReasoningEffort;
 
 /// Overall request deadline. Generous — reasoning models take their time —
 /// but finite: no flight parks forever on a dead socket.
@@ -29,10 +38,13 @@ pub struct ToolCallRequest {
     pub arguments: String,
 }
 
-/// One turn's result: the assistant message verbatim (to echo back into the
-/// conversation), whatever text and tool calls it carried, and the usage.
-pub struct ChatOut {
-    pub assistant: Value,
+/// One turn's result: the output items the next turn must replay
+/// (reasoning and function calls, verbatim), whatever text and tool calls
+/// the turn carried, and the usage.
+pub struct ResponseOut {
+    /// Opaque continuation state: `reasoning` and `function_call` output
+    /// items in arrival order, to be appended to the next request's input.
+    pub continuation: Vec<Value>,
     pub text: Option<String>,
     pub tool_calls: Vec<ToolCallRequest>,
     pub prompt_tokens: u64,
@@ -70,53 +82,53 @@ impl fmt::Display for ProviderError {
 impl std::error::Error for ProviderError {}
 
 #[derive(Deserialize)]
-struct ChatResponse {
+struct ResponsesBody {
     #[serde(default)]
-    choices: Vec<Choice>,
+    output: Vec<Value>,
     #[serde(default)]
     usage: Option<Usage>,
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    message: Value,
 }
 
 #[derive(Deserialize, Default, Clone, Copy)]
 struct Usage {
     #[serde(default)]
-    prompt_tokens: u64,
+    input_tokens: u64,
     #[serde(default)]
-    completion_tokens: u64,
+    output_tokens: u64,
     #[serde(default)]
     total_tokens: u64,
     #[serde(default)]
-    prompt_tokens_details: PromptTokensDetails,
+    input_tokens_details: InputTokensDetails,
 }
 
 #[derive(Deserialize, Default, Clone, Copy)]
-struct PromptTokensDetails {
+struct InputTokensDetails {
     #[serde(default)]
     cached_tokens: u64,
 }
 
 impl Provider {
-    /// One turn over an explicit message array, tools optional. The core.
-    pub fn chat(
+    /// One turn over an explicit input array, tools optional. The core.
+    /// `instructions` is the seat's system prompt; `input` is the full
+    /// accumulated context, resent every turn (`store:false`).
+    pub fn respond(
         &self,
         model: &str,
-        messages: &[Value],
+        instructions: &str,
+        input: &[Value],
         tools: Option<&Value>,
-    ) -> Result<ChatOut, ProviderError> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let mut body = serde_json::json!({ "model": model, "messages": messages });
+        effort: ReasoningEffort,
+    ) -> Result<ResponseOut, ProviderError> {
+        let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
+        let mut body = serde_json::json!({
+            "model": model,
+            "instructions": instructions,
+            "input": input,
+            "reasoning": { "effort": effort.as_str() },
+            "store": false,
+        });
         if let Some(tools) = tools {
             body["tools"] = tools.clone();
-            // OpenAI's chat-completions endpoint rejects function tools on
-            // reasoning models unless effort is 'none' (their 400 says so:
-            // "use /v1/responses or set reasoning_effort to 'none'"). The
-            // Responses API is the eventual fix; this is the honest v0.
-            body["reasoning_effort"] = serde_json::json!("none");
         }
 
         // A generation can legitimately take minutes; a hung connection must
@@ -138,45 +150,47 @@ impl Provider {
             }
         };
 
-        let parsed: ChatResponse = response
+        let parsed: ResponsesBody = response
             .into_json()
             .map_err(|error| ProviderError::Decode(error.to_string()))?;
-        let assistant = parsed
-            .choices
-            .into_iter()
-            .next()
-            .map(|c| c.message)
-            .ok_or(ProviderError::MissingContent)?;
 
-        let text = assistant
-            .get("content")
-            .and_then(Value::as_str)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
-        let tool_calls: Vec<ToolCallRequest> = assistant
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .map(|calls| {
-                calls
-                    .iter()
-                    .filter_map(|call| {
-                        let function = call.get("function")?;
-                        Some(ToolCallRequest {
-                            id: call.get("id")?.as_str()?.to_string(),
-                            name: function.get("name")?.as_str()?.to_string(),
-                            // Spec says arguments arrive as a JSON string,
-                            // but some OpenAI-compatible providers send the
-                            // object itself. Preserve either; drop neither.
-                            arguments: match function.get("arguments") {
-                                Some(Value::String(s)) => s.clone(),
-                                Some(Value::Null) | None => "{}".to_string(),
-                                Some(other) => other.to_string(),
-                            },
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut continuation: Vec<Value> = Vec::new();
+        let mut texts: Vec<String> = Vec::new();
+        let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+        for item in parsed.output {
+            match item.get("type").and_then(Value::as_str) {
+                // Opaque by design: replayed verbatim, never interpreted.
+                Some("reasoning") => continuation.push(item),
+                Some("function_call") => {
+                    if let Some(call) = parse_function_call(&item) {
+                        tool_calls.push(call);
+                    }
+                    continuation.push(item);
+                }
+                Some("message") => {
+                    if let Some(content) = item.get("content").and_then(Value::as_array) {
+                        for entry in content {
+                            if entry.get("type").and_then(Value::as_str) == Some("output_text") {
+                                if let Some(text) = entry
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .filter(|t| !t.is_empty())
+                                {
+                                    texts.push(text.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                // Foreign item kinds are the API's to invent; ignore.
+                _ => {}
+            }
+        }
+        let text = if texts.is_empty() {
+            None
+        } else {
+            Some(texts.join("\n"))
+        };
 
         if text.is_none() && tool_calls.is_empty() {
             return Err(ProviderError::MissingContent);
@@ -186,18 +200,33 @@ impl Provider {
         let total_tokens = if usage.total_tokens > 0 {
             usage.total_tokens
         } else {
-            usage.prompt_tokens + usage.completion_tokens
+            usage.input_tokens + usage.output_tokens
         };
-        Ok(ChatOut {
-            assistant,
+        Ok(ResponseOut {
+            continuation,
             text,
             tool_calls,
-            prompt_tokens: usage.prompt_tokens,
-            cached_tokens: usage.prompt_tokens_details.cached_tokens,
-            completion_tokens: usage.completion_tokens,
+            prompt_tokens: usage.input_tokens,
+            cached_tokens: usage.input_tokens_details.cached_tokens,
+            completion_tokens: usage.output_tokens,
             total_tokens,
         })
     }
+}
+
+fn parse_function_call(item: &Value) -> Option<ToolCallRequest> {
+    Some(ToolCallRequest {
+        id: item.get("call_id")?.as_str()?.to_string(),
+        name: item.get("name")?.as_str()?.to_string(),
+        // Spec says arguments arrive as a JSON string, but some
+        // OpenAI-compatible providers send the object itself. Preserve
+        // either; drop neither.
+        arguments: match item.get("arguments") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Null) | None => "{}".to_string(),
+            Some(other) => other.to_string(),
+        },
+    })
 }
 
 fn clip(text: &str, limit: usize) -> String {

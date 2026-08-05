@@ -46,6 +46,11 @@ pub enum ConfigError {
     Missing(String),
     /// The secrets file existed but could not be decrypted or parsed.
     Secrets(String),
+    /// An effort binding carried a value outside the closed set.
+    BadEffort {
+        name: String,
+        value: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -57,6 +62,42 @@ impl fmt::Display for ConfigError {
                  tower can decrypt its own secrets"
             ),
             ConfigError::Secrets(detail) => write!(f, "{detail}"),
+            ConfigError::BadEffort { name, value } => write!(
+                f,
+                "{name}='{value}' is not a reasoning effort — low, medium, or high"
+            ),
+        }
+    }
+}
+
+/// Reasoning effort, the closed set the Responses API accepts. A bad
+/// configured value refuses the flight at startup, never at the provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+        }
+    }
+
+    /// Parse an env-supplied value; `name` names the variable in the error.
+    fn parse(name: &str, value: &str) -> Result<Self, ConfigError> {
+        match value {
+            "low" => Ok(ReasoningEffort::Low),
+            "medium" => Ok(ReasoningEffort::Medium),
+            "high" => Ok(ReasoningEffort::High),
+            other => Err(ConfigError::BadEffort {
+                name: name.to_string(),
+                value: other.to_string(),
+            }),
         }
     }
 }
@@ -157,13 +198,25 @@ pub struct Config {
     /// Model per role, resolved fail-fast at startup from the roster's env
     /// bindings (each falls back to DAEMAR_MODEL). Indexed by Role::ALL order.
     models: [String; Role::ALL.len()],
+    /// Reasoning effort per role, resolved the same way: role env, then
+    /// DAEMAR_EFFORT, then medium. Indexed by Role::ALL order.
+    efforts: [ReasoningEffort; Role::ALL.len()],
 }
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let mut vault = Vault::new();
         let default_model = vault.get("DAEMAR_MODEL")?;
+        // The global effort is validated even when every role overrides it:
+        // a bad value in the vault is a config bug today, not on the day the
+        // last override is removed.
+        let default_effort = vault
+            .get("DAEMAR_EFFORT")?
+            .map(|value| ReasoningEffort::parse("DAEMAR_EFFORT", &value))
+            .transpose()?
+            .unwrap_or(ReasoningEffort::Medium);
         let mut models: [String; Role::ALL.len()] = Default::default();
+        let mut efforts = [ReasoningEffort::Medium; Role::ALL.len()];
         for (slot, role) in Role::ALL.iter().enumerate() {
             let agent = roster::agent(*role);
             models[slot] = vault
@@ -172,6 +225,11 @@ impl Config {
                 .ok_or_else(|| {
                     ConfigError::Missing(format!("{} (or DAEMAR_MODEL)", agent.model_env))
                 })?;
+            efforts[slot] = vault
+                .get(agent.effort_env)?
+                .map(|value| ReasoningEffort::parse(agent.effort_env, &value))
+                .transpose()?
+                .unwrap_or(default_effort);
         }
         Ok(Config {
             provider: Provider {
@@ -186,6 +244,7 @@ impl Config {
             airframes: airframes_path(),
             engineer: engineer(),
             models,
+            efforts,
         })
     }
 
@@ -197,6 +256,15 @@ impl Config {
             .position(|r| *r == role)
             .expect("Role::ALL covers every role");
         &self.models[slot]
+    }
+
+    /// The reasoning effort bound to a role, resolved beside its airframe.
+    pub fn effort_for(&self, role: Role) -> ReasoningEffort {
+        let slot = Role::ALL
+            .iter()
+            .position(|r| *r == role)
+            .expect("Role::ALL covers every role");
+        self.efforts[slot]
     }
 }
 

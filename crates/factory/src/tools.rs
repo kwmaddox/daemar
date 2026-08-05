@@ -102,53 +102,52 @@ impl ToolContext {
     }
 }
 
-/// The specs advertised to the model, in the provider's tools shape.
+/// The specs advertised to the model, in the Responses API tools shape:
+/// function fields at TOP level, not nested under a "function" object as
+/// chat-completions had them.
 pub fn specs() -> Value {
     json!([
         {
             "type": "function",
-            "function": {
-                "name": "read",
-                "description": "Read a file's contents with line numbers. Paths are relative to the territory root.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "File path, relative to the territory root."},
-                        "offset": {"type": "integer", "description": "1-based start line (optional)."},
-                        "limit": {"type": "integer", "description": "Max lines to return (optional, capped)."}
-                    },
-                    "required": ["path"]
-                }
-            }
+            "name": "read",
+            "description": "Read a file's contents with line numbers. Paths are relative to the territory root.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path, relative to the territory root."},
+                    "offset": {"type": "integer", "description": "1-based start line (optional)."},
+                    "limit": {"type": "integer", "description": "Max lines to return (optional, capped)."}
+                },
+                "required": ["path"]
+            },
+            "strict": false
         },
         {
             "type": "function",
-            "function": {
-                "name": "list_files",
-                "description": "List files and directories (gitignore-aware, hidden files skipped). Directories end with '/'.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Directory to list (default: territory root)."},
-                        "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default false)."}
-                    }
+            "name": "list_files",
+            "description": "List files and directories (gitignore-aware, hidden files skipped). Directories end with '/'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory to list (default: territory root)."},
+                    "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default false)."}
                 }
-            }
+            },
+            "strict": false
         },
         {
             "type": "function",
-            "function": {
-                "name": "search",
-                "description": "Search file contents for a substring (case-sensitive, gitignore-aware). Returns path:line: text matches.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string", "description": "Substring to find."},
-                        "path": {"type": "string", "description": "Directory to search under (default: territory root)."}
-                    },
-                    "required": ["pattern"]
-                }
-            }
+            "name": "search",
+            "description": "Search file contents for a substring (case-sensitive, gitignore-aware). Returns path:line: text matches.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Substring to find."},
+                    "path": {"type": "string", "description": "Directory to search under (default: territory root)."}
+                },
+                "required": ["pattern"]
+            },
+            "strict": false
         }
     ])
 }

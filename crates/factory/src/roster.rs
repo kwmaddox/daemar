@@ -38,6 +38,9 @@ pub struct AgentDef {
     pub system: &'static str,
     /// Env var that binds this agent's airframe; DAEMAR_MODEL is the fallback.
     pub model_env: &'static str,
+    /// Env var that binds this agent's reasoning effort; DAEMAR_EFFORT is
+    /// the fallback, and `medium` the default when neither is set.
+    pub effort_env: &'static str,
     pub tools: ToolAccess,
 }
 
@@ -52,6 +55,7 @@ pub fn agent(role: Role) -> AgentDef {
                      (cite paths), how the pieces connect, and anything surprising. Be \
                      concise and concrete.",
             model_env: "DAEMAR_SCOUT_MODEL",
+            effort_env: "DAEMAR_SCOUT_EFFORT",
             tools: ToolAccess::ReadOnly,
         },
         Role::Planner => AgentDef {
@@ -63,6 +67,7 @@ pub fn agent(role: Role) -> AgentDef {
                      change, where, in what order, and how to verify. Do not implement \
                      anything.",
             model_env: "DAEMAR_PLAN_MODEL",
+            effort_env: "DAEMAR_PLAN_EFFORT",
             tools: ToolAccess::ReadOnly,
         },
         Role::Responder => AgentDef {
@@ -70,6 +75,7 @@ pub fn agent(role: Role) -> AgentDef {
             system: "You are daemar's responder. Answer the request directly and \
                      completely, in plain text. If a plan is provided, follow it.",
             model_env: "DAEMAR_RESPOND_MODEL",
+            effort_env: "DAEMAR_RESPOND_EFFORT",
             tools: ToolAccess::None,
         },
     }
