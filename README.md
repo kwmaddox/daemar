@@ -22,6 +22,8 @@ board holds no state — ledger files are the only truth.
 ```
 CONTEXT.md        the ubiquitous language — read this first
 crates/ledger     event types (ledger.v1), the slip fold, loading
+crates/factory    the factory itself: roster, engine, workflows, pens
+apps/daemar       the CLI — a thin skin over crates/factory
 apps/board        the controller's instrument (axum, server-rendered)
 fixtures/         hand-authored ledgers: accepted, cocked, in-flight, rejected
 ```
@@ -36,8 +38,8 @@ daemar plan --repo <path> "<request>"    # grounded plan, cock at plan->respond
 ```
 
 Workflow stages name **roles** (scout, planner, responder); the **roster**
-(`apps/daemar/src/roster.rs`) binds each role to an agent — persona, airframe,
-tool access. The planner is grounded: it reads the territory with the scout's
+(`crates/factory/src/roster.rs`) binds each role to an agent — persona,
+airframe, tool access. The planner is grounded: it reads the territory with the scout's
 read-only tools before planning, and every read lands on the ledger. Config
 via env (direnv decrypts `secrets/daemar.enc.env`): `OPENAI_API_KEY`,
 `DAEMAR_MODEL` (per-role overrides `DAEMAR_SCOUT_MODEL` /

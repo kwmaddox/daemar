@@ -178,10 +178,7 @@ pub fn scout_flight(request: &str, repo: &str) -> ExitCode {
 /// Fly the stage after a granted boundary, context rebuilt purely from the
 /// ledger: the printout. A fresh process, possibly a different airframe —
 /// the ledger is the memory.
-pub fn continue_flight(args: &[String]) -> ExitCode {
-    let Some(slip_id) = args.first().filter(|a| !a.trim().is_empty()) else {
-        return crate::usage();
-    };
+pub fn continue_flight(slip_id: &str) -> ExitCode {
     let slip = match load_open_slip(slip_id) {
         Ok(slip) => slip,
         Err(message) => {
@@ -222,7 +219,7 @@ pub fn continue_flight(args: &[String]) -> ExitCode {
     };
 
     with_config(|config| {
-        let mut w = LedgerWriter::resume(config.ledgers.as_ref(), SlipId(slip_id.clone()))?;
+        let mut w = LedgerWriter::resume(config.ledgers.as_ref(), SlipId(slip_id.to_string()))?;
         // The printout: this stage's declared context, assembled from the
         // ledger and nothing else. No process memory, no session.
         let printout = format!(
