@@ -607,7 +607,7 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
     ));
 
     let now = now_epoch();
-    html.push_str("<h2>phases</h2><table><tr><th>phase</th><th>owner</th><th>lane</th><th>started</th><th>duration</th><th>outcome</th></tr>");
+    html.push_str("<h2>phases</h2><table><tr><th>phase</th><th>owner</th><th>flown by</th><th>lane</th><th>started</th><th>duration</th><th>outcome</th></tr>");
     for p in &slip.phases {
         let duration = match (
             ledger::parse_ts(&p.started),
@@ -618,9 +618,10 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
             _ => "?".to_string(),
         };
         html.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{duration}</td><td>{}</td></tr>",
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{duration}</td><td>{}</td></tr>",
             esc(&p.phase),
             esc(&p.owner),
+            esc(&p.engineer),
             p.lane,
             esc(&p.started),
             p.outcome

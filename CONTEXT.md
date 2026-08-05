@@ -36,6 +36,10 @@ a correction is a new event.
 **Slip** — the canonical record of one task, derived by folding its ledger.
 Face plus sections. The slip is always a projection — it cannot lie, because
 it cannot be written. _Avoid_: any code path that mutates a slip directly.
+A slip's engineer is permanently its **opener** — the slip belongs to who
+opened it. Each phase additionally records the engineer that flew that stage
+(`phase_started.v1`), so a flight continued by another client keeps its owner
+while the audit keeps the flyer.
 
 **Face** — the slip's frontmatter: id, request one-liner, current phase,
 owner, status, clearance state, cost. Printed into every phase's context,

@@ -98,11 +98,16 @@ fn the_tower_serves_a_prompt_flight_signed_by_its_client() {
         .iter()
         .map(|t| t["name"].as_str().expect("name"))
         .collect();
-    assert_eq!(names, vec!["scout", "plan", "prompt", "continue", "slip"]);
-    assert!(
-        !names.contains(&"grant"),
-        "a delegated agent may request clearances, never sign them"
+    assert_eq!(
+        names,
+        vec!["scout", "plan", "prompt", "continue", "slip", "board"]
     );
+    for pen in ["grant", "refuse", "dispose"] {
+        assert!(
+            !names.contains(&pen),
+            "a delegated agent may request clearances, never sign them ({pen})"
+        );
+    }
 
     stub.push_ok("THE ANSWER from the tower.");
     let (text, is_error) = tower.tool(2, "prompt", json!({ "request": "say the answer" }));
@@ -119,6 +124,10 @@ fn the_tower_serves_a_prompt_flight_signed_by_its_client() {
     assert_eq!(
         slip.engineer, "mcp:moggy",
         "slips opened over MCP name their client"
+    );
+    assert_eq!(
+        slip.phases[0].engineer, "mcp:moggy",
+        "the stage records its flyer through the full MCP path"
     );
 
     // The slip tool folds the same truth back to the client.
@@ -161,6 +170,168 @@ fn a_planned_flight_cocks_and_continue_is_refused_until_granted() {
     assert!(text.contains("awaiting clearance"), "{text}");
     let (_, slip, _) = the_slip(&f);
     assert_eq!(slip.status, Status::InFlight, "nothing flew");
+    std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
+fn a_second_client_continues_without_stealing_the_slip() {
+    let stub = stub_server();
+    let f = factory("mcp-second-client", &stub);
+    let t = territory("mcp-second-client");
+
+    // Client one plans; the slip cocks and its tower exits the scene.
+    {
+        let mut tower = Tower::launch(&f);
+        tower.handshake("moggy");
+        stub.push_ok("PLAN: answer per src/lib.rs.");
+        let (text, is_error) = tower.tool(
+            2,
+            "plan",
+            json!({
+                "request": "what is the answer",
+                "territory": t.to_str().unwrap(),
+            }),
+        );
+        assert!(!is_error, "{text}");
+    }
+    let (id, slip, _) = the_slip(&f);
+    assert_eq!(slip.cocked.as_deref(), Some("plan->respond"));
+
+    // The controller grants with the CLI pen — the seam the tower refuses
+    // to expose.
+    let granted = daemar(&f, &["grant", &id]);
+    assert_eq!(exit_code(&granted), 0, "{}", stderr(&granted));
+
+    // A different client notices the cleared slip and continues it.
+    let mut tower = Tower::launch(&f);
+    tower.handshake("moghedien");
+    stub.push_ok("DONE, per the plan.");
+    let (text, is_error) = tower.tool(2, "continue", json!({ "slip_id": id }));
+    assert!(!is_error, "{text}");
+
+    let (_, slip, _) = the_slip(&f);
+    assert_eq!(slip.status, Status::Accepted);
+    assert_eq!(
+        slip.engineer, "mcp:moggy",
+        "the slip belongs to its opener, always"
+    );
+    let respond = slip
+        .phases
+        .iter()
+        .find(|p| p.phase == "respond")
+        .expect("respond phase flew");
+    assert_eq!(
+        respond.engineer, "mcp:moghedien",
+        "the continued stage records its actual flyer"
+    );
+    std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
+fn the_board_tool_lists_open_slips_attention_first() {
+    let stub = stub_server();
+    let f = factory("mcp-board", &stub);
+    let t = territory("mcp-board");
+    let mut tower = Tower::launch(&f);
+    tower.handshake("moggy");
+
+    // A closed slip: must never appear on the board.
+    stub.push_ok("CLOSED ANSWER.");
+    let (text, is_error) = tower.tool(2, "prompt", json!({ "request": "quick one" }));
+    assert!(!is_error, "{text}");
+
+    // A cocked slip via a real plan flight.
+    stub.push_ok("PLAN: do the thing.");
+    let (text, is_error) = tower.tool(
+        3,
+        "plan",
+        json!({
+            "request": "do the thing",
+            "territory": t.to_str().unwrap(),
+        }),
+    );
+    assert!(!is_error, "{text}");
+
+    // A failed and a merely-flying slip, written at the ledger writer seam.
+    let mut w = ledger::LedgerWriter::create(
+        &f.ledgers,
+        ledger::SlipId("00000000-0000-7000-8000-0000000fa11".into()),
+    )
+    .expect("failed-slip ledger");
+    w.append(&ledger::Kind::SlipOpened {
+        request: "doomed".into(),
+        workflow: "scout".into(),
+        engineer: "mcp:handmade".into(),
+        repo: "/tmp/elsewhere".into(),
+    })
+    .unwrap();
+    w.append(&ledger::Kind::PhaseStarted {
+        phase: "scout".into(),
+        owner: "scout".into(),
+        lane: ledger::Lane::Agent,
+        engineer: "mcp:handmade".into(),
+    })
+    .unwrap();
+    w.append(&ledger::Kind::PhaseEnded {
+        phase: "scout".into(),
+        outcome: ledger::PhaseOutcome::Error,
+    })
+    .unwrap();
+    let mut w = ledger::LedgerWriter::create(
+        &f.ledgers,
+        ledger::SlipId("00000000-0000-7000-8000-00000f1e".into()),
+    )
+    .expect("flying-slip ledger");
+    w.append(&ledger::Kind::SlipOpened {
+        request: "cruising".into(),
+        workflow: "scout".into(),
+        engineer: "mcp:handmade".into(),
+        repo: "/tmp/elsewhere".into(),
+    })
+    .unwrap();
+    w.append(&ledger::Kind::PhaseStarted {
+        phase: "scout".into(),
+        owner: "scout".into(),
+        lane: ledger::Lane::Agent,
+        engineer: "mcp:handmade".into(),
+    })
+    .unwrap();
+
+    let (text, is_error) = tower.tool(4, "board", json!({}));
+    assert!(!is_error, "{text}");
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "one line per OPEN slip, closed absent: {text}"
+    );
+    assert!(
+        lines[0].contains("FAILED at scout") && lines[0].contains("fa11"),
+        "failed leads the attention order: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("COCKED at plan->respond"),
+        "cocked follows failed: {}",
+        lines[1]
+    );
+    assert!(
+        lines[1].contains("plan")
+            && lines[1].contains("mcp:moggy")
+            && lines[1].contains("tok")
+            && lines[1].contains('$'),
+        "the strip carries workflow, opener, and receipts: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].contains("in flight") && lines[2].contains("f1e"),
+        "ordinary traffic trails: {}",
+        lines[2]
+    );
+    assert!(
+        !text.contains("quick one") && !text.contains("do the thing"),
+        "strip lines carry no request bodies: {text}"
+    );
     std::fs::remove_dir_all(&t).ok();
 }
 

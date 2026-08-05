@@ -202,6 +202,14 @@ fn tool_defs() -> Value {
                 "required": ["slip_id"],
             },
         },
+        {
+            "name": "board",
+            "description": "The board's open strips: every in-flight slip as one \
+                            terse line, attention first — failed, cocked, holding, \
+                            then active traffic. Discover slips awaiting clearance \
+                            or disposition; read one in full with the slip tool.",
+            "inputSchema": { "type": "object", "properties": {} },
+        },
     ])
 }
 
@@ -241,6 +249,7 @@ fn call_tool(config: &Config, tool: &str, arguments: &Value) -> (String, bool) {
             Some(slip_id) => slip_summary(&slip_id),
             None => missing("slip_id"),
         },
+        "board" => board_summary(),
         _ => (format!("unknown tool: {tool}"), true),
     }
 }
@@ -274,6 +283,97 @@ fn flight_result(outcome: Result<FlightReport, FlightError>) -> (String, bool) {
             true,
         ),
         Err(FlightError::Ledger(error)) => (format!("ledger failure: {error}"), true),
+    }
+}
+
+/// The board as strip lines: open slips only, attention first. Ordering
+/// follows the web board's bays (failed, cocked, holding, then traffic);
+/// within attention bays the longest-quiet strip leads — it has waited
+/// longest for the controller. One line per slip, no bodies: the slip tool
+/// is the disclosure.
+fn board_summary() -> (String, bool) {
+    let dir = config::ledgers_dir();
+    let report = match ledger::load_dir(std::path::Path::new(&dir)) {
+        Ok(report) => report,
+        // A board we cannot read must not masquerade as an empty one.
+        Err(error) => return (format!("board unavailable: {error}"), true),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut failed = Vec::new();
+    let mut cocked = Vec::new();
+    let mut holding = Vec::new();
+    let mut flying = Vec::new();
+    for folded in &report.slips {
+        let slip = &folded.slip;
+        if slip.status != ledger::Status::InFlight {
+            continue;
+        }
+        if slip.failed.is_some() {
+            failed.push(slip);
+        } else if slip.cocked.is_some() {
+            cocked.push(slip);
+        } else if slip.holding.is_some() {
+            holding.push(slip);
+        } else {
+            flying.push(slip);
+        }
+    }
+    let quiet = |slip: &ledger::Slip| ledger::parse_ts(&slip.last_ts).unwrap_or(0);
+    failed.sort_by_key(|s| quiet(s));
+    cocked.sort_by_key(|s| quiet(s));
+    holding.sort_by_key(|s| quiet(s));
+    flying.sort_by_key(|s| std::cmp::Reverse(quiet(s)));
+
+    let strips: Vec<&ledger::Slip> = failed
+        .into_iter()
+        .chain(cocked)
+        .chain(holding)
+        .chain(flying)
+        .collect();
+    if strips.is_empty() {
+        return ("— clean board — no open slips".to_string(), false);
+    }
+    let lines: Vec<String> = strips
+        .into_iter()
+        .map(|slip| {
+            let state = if let Some(phase) = &slip.failed {
+                format!("FAILED at {phase} — awaiting disposition")
+            } else if let Some(boundary) = &slip.cocked {
+                format!("COCKED at {boundary} — awaiting clearance")
+            } else if let Some(boundary) = &slip.holding {
+                format!("holding at {boundary} — awaiting continue")
+            } else {
+                "in flight".to_string()
+            };
+            let territory = std::path::Path::new(&slip.repo)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| slip.repo.clone());
+            format!(
+                "{} · {} · {state} · {} · {territory} · {} tok · ${:.4} · {} ago",
+                slip.id,
+                slip.workflow,
+                slip.engineer,
+                slip.tokens,
+                slip.cost,
+                human_age(now.saturating_sub(quiet(slip)))
+            )
+        })
+        .collect();
+    (lines.join("\n"), false)
+}
+
+fn human_age(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86_399 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86_400),
     }
 }
 
@@ -315,8 +415,14 @@ fn slip_summary(slip_id: &str) -> (String, bool) {
             .as_ref()
             .map(|o| format!("{o:?}"))
             .unwrap_or_else(|| "open".to_string());
+        // Pre-attribution ledgers fold to an empty flyer; stay quiet then.
+        let flew = if phase.engineer.is_empty() {
+            String::new()
+        } else {
+            format!(" · flown by {}", phase.engineer)
+        };
         lines.push(format!(
-            "phase {} ({}) · {outcome}",
+            "phase {} ({}) · {outcome}{flew}",
             phase.phase, phase.owner
         ));
     }
