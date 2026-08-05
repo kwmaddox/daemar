@@ -376,10 +376,8 @@ fn object_form_tool_arguments_are_preserved_not_dropped() {
     let stub = stub_server();
     let f = factory("object-args", &stub);
     let t = territory("object-args");
-    let body = format!(
-        r#"{{"choices":[{{"message":{{"role":"assistant","content":null,"tool_calls":[{{"id":"c1","type":"function","function":{{"name":"read","arguments":{{"path":"src/lib.rs"}}}}}}]}}}}],"usage":{{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}}}"#
-    );
-    stub.push_error(200, &body); // push raw body with 200
+    let body = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":{"path":"src/lib.rs"}}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+    stub.push_error(200, body); // raw body, 200: the object-args shape verbatim
     stub.push_ok("done");
     let out = daemar(
         &f,
