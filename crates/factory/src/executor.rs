@@ -30,9 +30,20 @@ use crate::tools::{self, ToolContext, ToolOutcome};
 pub struct ToolRequest {
     pub name: String,
     pub args: Value,
+    /// Defaulted to ReadOnly: the cage boundary is a WIRE PROTOCOL, and a
+    /// host old enough to omit this field is a read-era host — least
+    /// privilege is also backward compatibility. (Learned live: a phase-1
+    /// host against a phase-2 image broke every tool call.)
+    #[serde(default = "ToolRequest::default_access")]
     pub access: ToolAccess,
     #[serde(default)]
     pub expected_hash: Option<String>,
+}
+
+impl ToolRequest {
+    fn default_access() -> ToolAccess {
+        ToolAccess::ReadOnly
+    }
 }
 
 pub enum StageExecutor<'r> {
