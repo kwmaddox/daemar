@@ -8,8 +8,8 @@ use ledger::{Kind, LedgerWriter, PhaseOutcome, Slip, SlipId, SlipOutcome, Status
 use crate::config::{engineer, ledgers_dir};
 
 /// Grant the pending clearance: the strip un-cocks, the flight may continue.
-pub fn grant(args: &[String]) -> ExitCode {
-    controller_pen(args, |slip, _reason| {
+pub fn grant(slip_id: &str, reason: &str) -> ExitCode {
+    controller_pen(slip_id, reason, |slip, _reason| {
         let Some(boundary) = slip.cocked.clone() else {
             return Err(format!("{} is not awaiting any clearance", slip.id));
         };
@@ -25,8 +25,8 @@ pub fn grant(args: &[String]) -> ExitCode {
 
 /// Refuse the pending clearance: a verdict-carrying rejection, so the slip
 /// closes directly — attention was paid here, at the boundary.
-pub fn refuse(args: &[String]) -> ExitCode {
-    controller_pen(args, |slip, reason| {
+pub fn refuse(slip_id: &str, reason: &str) -> ExitCode {
+    controller_pen(slip_id, reason, |slip, reason| {
         let Some(boundary) = slip.cocked.clone() else {
             return Err(format!("{} is not awaiting any clearance", slip.id));
         };
@@ -55,8 +55,8 @@ pub fn refuse(args: &[String]) -> ExitCode {
 
 /// Close a flight that could not close itself. Ends any still-open phase as
 /// an error first. Refuses already-closed slips: history is not re-litigated.
-pub fn dispose(args: &[String]) -> ExitCode {
-    controller_pen(args, |slip, reason| {
+pub fn dispose(slip_id: &str, reason: &str) -> ExitCode {
+    controller_pen(slip_id, reason, |slip, reason| {
         let reason = if reason.is_empty() {
             "disposed by controller".to_string()
         } else {
@@ -80,14 +80,11 @@ pub fn dispose(args: &[String]) -> ExitCode {
 
 /// Shared shape of every controller write: load the open slip, decide the
 /// events, append them, say what happened.
-fn controller_pen<F>(args: &[String], decide: F) -> ExitCode
+fn controller_pen<F>(slip_id: &str, reason: &str, decide: F) -> ExitCode
 where
     F: FnOnce(&Slip, String) -> Result<(Vec<Kind>, String), String>,
 {
-    let Some(slip_id) = args.first().filter(|a| !a.trim().is_empty()) else {
-        return crate::usage();
-    };
-    let reason = args[1..].join(" ");
+    let reason = reason.to_string();
     let slip = match load_open_slip(slip_id) {
         Ok(slip) => slip,
         Err(message) => {
@@ -103,7 +100,7 @@ where
         }
     };
     let result = (|| -> Result<(), ledger::LedgerError> {
-        let mut w = LedgerWriter::resume(ledgers_dir().as_ref(), SlipId(slip_id.clone()))?;
+        let mut w = LedgerWriter::resume(ledgers_dir().as_ref(), SlipId(slip_id.to_string()))?;
         for event in &events {
             w.append(event)?;
         }

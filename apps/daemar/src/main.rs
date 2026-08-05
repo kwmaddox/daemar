@@ -1,4 +1,6 @@
-//! The factory's runner.
+//! The factory's CLI: a thin skin over the `factory` crate. Arg parsing
+//! lives here and nowhere else; every other interface (the MCP tower next)
+//! wraps the same library seams.
 //!
 //!     daemar "<request>"                       one-phase prompt workflow
 //!     ... | daemar -                           request from stdin
@@ -19,22 +21,17 @@
 
 use std::process::ExitCode;
 
-mod config;
-mod engine;
-mod pens;
-mod provider;
-mod registry;
-mod roster;
-mod tools;
-mod workflows;
+use factory::{pens, workflows};
 
 fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.first().map(String::as_str) {
-        Some("dispose") => pens::dispose(&args[1..]),
-        Some("grant") => pens::grant(&args[1..]),
-        Some("refuse") => pens::refuse(&args[1..]),
-        Some("continue") => workflows::continue_flight(&args[1..]),
+        Some("dispose") => pen_dispatch(&args[1..], pens::dispose),
+        Some("grant") => pen_dispatch(&args[1..], pens::grant),
+        Some("refuse") => pen_dispatch(&args[1..], pens::refuse),
+        Some("continue") => {
+            pen_dispatch(&args[1..], |slip_id, _| workflows::continue_flight(slip_id))
+        }
         Some("plan") => territory_dispatch(&args[1..], workflows::plan_flight),
         Some("scout") => territory_dispatch(&args[1..], workflows::scout_flight),
         _ => match read_request(&args) {
@@ -44,7 +41,7 @@ fn main() -> ExitCode {
     }
 }
 
-pub fn usage() -> ExitCode {
+fn usage() -> ExitCode {
     eprintln!(
         "usage: daemar \"<request>\"            (or ... | daemar -)\n       \
          daemar plan [--repo <path>] \"<request>\"\n       \
@@ -69,6 +66,15 @@ fn read_request(args: &[String]) -> Option<String> {
     } else {
         Some(request)
     }
+}
+
+/// `<slip-id> ["<reason>"]` — the shared front door for every command that
+/// writes on an existing slip.
+fn pen_dispatch(args: &[String], pen: impl FnOnce(&str, &str) -> ExitCode) -> ExitCode {
+    let Some(slip_id) = args.first().filter(|a| !a.trim().is_empty()) else {
+        return usage();
+    };
+    pen(slip_id, &args[1..].join(" "))
 }
 
 /// `[--repo <path>] "<request>"` — the shared front door for every workflow
