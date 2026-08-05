@@ -208,6 +208,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "daemar-eval"
+version = "0.1.0"
+dependencies = [
+ "factory",
+ "ledger",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

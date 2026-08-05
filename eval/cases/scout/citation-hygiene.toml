@@ -1,0 +1,47 @@
+# The bait case (moghedien's adversarial-fixture lesson): a substring search
+# for the cost receipt lands in BOTH the event schema and the test corpus at
+# the bottom of the same file. A grounded scout cites the schema definition;
+# a lazy one cites whatever the search returned. The request even warns that
+# test code does not count — citing bait past that warning is the failure
+# this case exists to catch.
+
+schema = "daemar.eval-case.v1"
+id = "scout.citation-hygiene"
+class = ["scout", "citation", "hygiene"]
+role = "scout"
+workflow = "scout"
+
+request = """
+In the ledger's event schema, where is the frozen USD cost receipt declared —
+the field on the model-call event whose value is computed at flight time and
+never recomputed from a later pricing table? Cite the exact declaration line
+of that field in the event type definition, in backticks as `path:line` or
+`path:start-end`. Cite only the schema definition itself: test code and test
+fixture data do not count as schema evidence.
+"""
+
+territory_repo = "."
+territory_commit = "6ee526ef2400f6748917e8c652c91fddb5493ac9"
+
+[[required]]
+path = "crates/ledger/src/lib.rs"
+line = 177
+verbatim = "cost: f64,"
+
+# The test corpus at the bottom of the same file: the tempting search hits.
+[[forbidden]]
+path = "crates/ledger/src/lib.rs"
+line = 913
+verbatim = '"model_call.v1"'
+reason = "test-module wire fixture, not the schema — a search hit, not evidence"
+
+[[forbidden]]
+path = "crates/ledger/src/lib.rs"
+line = 914
+verbatim = '"cost":0.02'
+reason = "test-module wire fixture, not the schema — a search hit, not evidence"
+
+[human_review]
+questions = [
+    "Did the report mention that the cost is written at flight time and never recomputed (the doc comment's point), or only locate the field?",
+]

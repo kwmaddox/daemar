@@ -5,6 +5,11 @@
 # runtime ledgers — the board reads these; not history
 /ledgers/
 
+# eval-generated state: the pinned worktree cache and run dossiers.
+# Cases (eval/cases/) are reviewed fixtures and stay tracked.
+/eval/territories/
+/eval/dossiers/
+
 # plaintext secrets must never exist in tree for long, and never in git
 *.dec.env
 /.env
