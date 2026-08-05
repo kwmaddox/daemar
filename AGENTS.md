@@ -53,6 +53,10 @@ fixtures/       hand-authored ledgers — the schema's test corpus. Tracked.
 
 ## Operating
 
+- `daemar scout [--repo <path>] "<question>"` — read-only reconnaissance
+  over a territory (default: cwd). Tools: read / list_files / search —
+  confined to the territory, every call on the ledger with a content-hash
+  pointer. No shell, no writes, no network.
 - `daemar plan "<request>"` — plan phase, then the slip cocks at
   plan->respond and the process EXITS (exit-and-resume: boundary waits and
   crashes share one recovery). `daemar grant|refuse <slip-id>` — the

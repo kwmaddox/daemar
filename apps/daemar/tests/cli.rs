@@ -38,6 +38,17 @@ impl Stub {
             .unwrap()
             .push_back((code, body.to_string()));
     }
+
+    /// A turn where the model asks for one tool call.
+    fn push_tool_call(&self, id: &str, name: &str, arguments: &str) {
+        let body = format!(
+            r#"{{"choices":[{{"message":{{"role":"assistant","content":null,"tool_calls":[{{"id":{id},"type":"function","function":{{"name":{name},"arguments":{args}}}}}]}}}}],"usage":{{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{{"cached_tokens":0}}}}}}"#,
+            id = json_string(id),
+            name = json_string(name),
+            args = json_string(arguments)
+        );
+        self.script.lock().unwrap().push_back((200, body));
+    }
 }
 
 fn json_string(s: &str) -> String {
@@ -144,6 +155,7 @@ fn daemar(f: &Factory, args: &[&str]) -> Output {
         .env("OPENAI_API_KEY", "test-key")
         .env("DAEMAR_PLAN_MODEL", "plan-model")
         .env("DAEMAR_RESPOND_MODEL", "respond-model")
+        .env("DAEMAR_SCOUT_MODEL", "plan-model")
         .env("DAEMAR_AIRFRAMES", &f.airframes)
         .env("USER", "testctl")
         .output()
@@ -298,6 +310,135 @@ fn failure_is_witnessed_then_disposed() {
     let out = daemar(&f, &["dispose", &id, "again"]);
     assert_eq!(exit_code(&out), 2);
     assert!(stderr(&out).contains("already closed"), "{}", stderr(&out));
+}
+
+/// A seeded territory for the scout to investigate.
+fn territory(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("daemar-territory-{}-{name}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+    std::fs::write(dir.join("src/lib.rs"), "pub fn answer() -> u8 { 42 }\n").expect("seed");
+    dir.canonicalize().expect("canonical territory")
+}
+
+#[test]
+fn the_scout_reads_the_territory_and_reports() {
+    let stub = stub_server();
+    let f = factory("scout", &stub);
+    let t = territory("scout");
+
+    // Turn 1: the model asks to read the seeded file. Turn 2: it reports.
+    stub.push_tool_call("call_1", "read", r#"{"path":"src/lib.rs"}"#);
+    stub.push_ok("FOUND: src/lib.rs defines answer(), returning 42.");
+    let out = daemar(
+        &f,
+        &[
+            "scout",
+            "--repo",
+            t.to_str().unwrap(),
+            "where is answer defined",
+        ],
+    );
+    assert_eq!(exit_code(&out), 0, "scout flight: {}", stderr(&out));
+
+    let (_, slip, events) = the_slip(&f);
+    assert_eq!(slip.status, Status::Accepted);
+    assert_eq!(
+        slip.repo,
+        t.display().to_string(),
+        "the slip remembers its territory"
+    );
+    assert_eq!(slip.tool_trail.len(), 1);
+    assert!(slip.tool_trail[0].ok);
+    assert_eq!(slip.tool_trail[0].tool, "read");
+
+    // The tool call is on the ledger with its epistemic pointer.
+    let pinned = events.iter().any(|e| {
+        if let EventKind::Known(Kind::ToolCall { tool, ok, hash, .. }) = &e.kind {
+            tool == "read" && *ok && hash.len() == 16
+        } else {
+            false
+        }
+    });
+    assert!(pinned, "reads carry a content-hash pointer");
+    let reported = slip
+        .sections
+        .iter()
+        .any(|s| s.section == "scout.v1" && s.body.contains("FOUND"));
+    assert!(reported, "the scout files a scout.v1 section");
+    std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
+fn object_form_tool_arguments_are_preserved_not_dropped() {
+    // Some OpenAI-compatible providers send `arguments` as a JSON object
+    // instead of the spec's string. Those inputs must reach the tool.
+    let stub = stub_server();
+    let f = factory("object-args", &stub);
+    let t = territory("object-args");
+    let body = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":{"path":"src/lib.rs"}}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+    stub.push_error(200, body); // raw body, 200: the object-args shape verbatim
+    stub.push_ok("done");
+    let out = daemar(
+        &f,
+        &["scout", "--repo", t.to_str().unwrap(), "read the lib"],
+    );
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    let (_, slip, _) = the_slip(&f);
+    assert_eq!(slip.tool_trail.len(), 1);
+    assert!(
+        slip.tool_trail[0].ok,
+        "object-form args must execute: {}",
+        slip.tool_trail[0].summary
+    );
+    std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
+fn a_bare_repo_flag_is_a_usage_error_not_a_flight() {
+    let stub = stub_server();
+    let f = factory("bare-flag", &stub);
+    let out = daemar(&f, &["scout", "--repo"]);
+    assert_eq!(exit_code(&out), 2);
+    assert!(stderr(&out).contains("usage"), "{}", stderr(&out));
+    let out = daemar(&f, &["scout", "--territory", "question"]);
+    assert_eq!(exit_code(&out), 2, "unknown flags refuse rather than fly");
+    assert!(
+        !f.ledgers.exists(),
+        "no slip may be minted from a malformed invocation"
+    );
+}
+
+#[test]
+fn the_scout_cannot_leave_its_territory_and_the_refusal_is_logged() {
+    let stub = stub_server();
+    let f = factory("scout-confined", &stub);
+    let t = territory("confined");
+
+    // The model tries to escape; the refusal becomes a tool result it can
+    // read, and the flight continues to a report.
+    stub.push_tool_call("call_1", "read", r#"{"path":"../../../../etc/hosts"}"#);
+    stub.push_ok("Understood — staying inside the territory.");
+    let out = daemar(
+        &f,
+        &["scout", "--repo", t.to_str().unwrap(), "read the host file"],
+    );
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+
+    let (_, slip, _) = the_slip(&f);
+    assert_eq!(slip.status, Status::Accepted);
+    assert_eq!(slip.tool_trail.len(), 1);
+    assert!(
+        !slip.tool_trail[0].ok,
+        "the escape attempt is a logged failure"
+    );
+    assert!(
+        slip.tool_trail[0].summary.contains("outside the territory")
+            || slip.tool_trail[0].summary.contains("cannot resolve"),
+        "refusal names itself: {}",
+        slip.tool_trail[0].summary
+    );
+    std::fs::remove_dir_all(&t).ok();
 }
 
 #[test]

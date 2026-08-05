@@ -83,6 +83,12 @@ the controller. Always derived from the ledger, never asserted — the same rule
 as liveness, where a missing terminator event means interrupted, and no event
 ever claims "still running."
 
+**Territory** — the repository a flight operates on, recorded on
+`slip_opened` and remembered by the slip (a resumed flight lands in the
+right repo because the ledger says so, not because anyone re-typed a flag).
+The tower model: one factory, many territories — daemar stays home, its
+agents visit. Tools are confined to the territory by construction.
+
 **Board** — the observability front end: slip faces in bays, ordered by
 attention; progressive disclosure from face to sections to raw ledger. The
 controller's instrument. Built first, because every later piece of the factory
