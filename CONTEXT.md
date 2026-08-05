@@ -97,6 +97,23 @@ is born with a place to be seen.
 **Controller** — the engineer. Manages by exception: watches the board, works
 the cocked slips, grants or refuses clearances. Does not fly the aircraft.
 
+**Role** — the seat a workflow stage requires: scout, planner, responder. A
+stage names a role, never an agent — the stage owns how the seat is used
+(phase name, section kind, task prompt); it never owns who sits in it. Roles
+are a closed set (a Rust enum): adding one is a variant, and the compiler
+walks you to every decision that must care.
+
+**Agent** — who fills a seat: name (signed as `owner` and `by` on the
+ledger), persona, airframe binding, tool access. Config defines who an agent
+IS; the call site defines how it is USED — the decoupling inherited from
+SSSF. _Avoid_: stage concerns leaking into an agent definition, or persona
+text living at a call site.
+
+**Roster** — the binding from role to agent. Today it is 1:1 and lives in
+Rust; when multiple candidates per role exist it becomes data
+(`roster.toml` beside `airframes.toml`) and bindings can be assigned per
+flight — by policy, or someday by measured competence.
+
 ## The three-tier context economy
 
 1. **Pushed always** — the face. On every printout, no exceptions.

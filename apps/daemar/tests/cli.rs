@@ -370,6 +370,63 @@ fn the_scout_reads_the_territory_and_reports() {
 }
 
 #[test]
+fn the_planner_reads_the_territory_before_planning() {
+    // The grounded planner: same seat shape as the scout — tools, turn
+    // loop, trail — but the stage cocks at the boundary instead of closing.
+    let stub = stub_server();
+    let f = factory("grounded-plan", &stub);
+    let t = territory("grounded-plan");
+
+    // Turn 1: the planner asks to read the file its plan will touch.
+    // Turn 2: it files the plan.
+    stub.push_tool_call("call_1", "read", r#"{"path":"src/lib.rs"}"#);
+    stub.push_ok("PLAN: change answer() in src/lib.rs:1 to return 43.");
+    let out = daemar(
+        &f,
+        &[
+            "plan",
+            "--repo",
+            t.to_str().unwrap(),
+            "make answer return 43",
+        ],
+    );
+    assert_eq!(exit_code(&out), 0, "plan flight: {}", stderr(&out));
+
+    let (_, slip, events) = the_slip(&f);
+    assert_eq!(slip.status, Status::InFlight);
+    assert_eq!(
+        slip.cocked.as_deref(),
+        Some("plan->respond"),
+        "a grounded plan still cocks at the boundary"
+    );
+    assert_eq!(
+        slip.repo,
+        t.display().to_string(),
+        "the slip remembers its territory"
+    );
+    assert_eq!(slip.tool_trail.len(), 1);
+    assert!(slip.tool_trail[0].ok);
+    assert_eq!(slip.tool_trail[0].tool, "read");
+    let read_on_plan_phase = events.iter().any(|e| {
+        if let EventKind::Known(Kind::ToolCall {
+            phase, tool, ok, ..
+        }) = &e.kind
+        {
+            phase == "plan" && tool == "read" && *ok
+        } else {
+            false
+        }
+    });
+    assert!(read_on_plan_phase, "the read belongs to the plan phase");
+    let planned = slip
+        .sections
+        .iter()
+        .any(|s| s.section == "plan.v1" && s.by == "planner" && s.body.contains("src/lib.rs"));
+    assert!(planned, "the planner files a plan.v1 section, signed");
+    std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
 fn object_form_tool_arguments_are_preserved_not_dropped() {
     // Some OpenAI-compatible providers send `arguments` as a JSON object
     // instead of the spec's string. Those inputs must reach the tool.
@@ -439,6 +496,32 @@ fn the_scout_cannot_leave_its_territory_and_the_refusal_is_logged() {
         slip.tool_trail[0].summary
     );
     std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
+fn a_toolless_seat_that_requests_tools_is_a_witnessed_failure() {
+    // The responder holds no tools; a provider that sends tool calls anyway
+    // is misbehaving. The engine must witness it and stop — not pay turns
+    // conversing with it.
+    let stub = stub_server();
+    let f = factory("toolless-tools", &stub);
+    stub.push_tool_call("call_1", "read", r#"{"path":"anything"}"#);
+    let out = daemar(&f, &["just answer the question"]);
+    assert_eq!(exit_code(&out), 1);
+    assert!(
+        stderr(&out).contains("holds none"),
+        "the failure names itself: {}",
+        stderr(&out)
+    );
+    let (_, slip, _) = the_slip(&f);
+    assert_eq!(
+        slip.status,
+        Status::InFlight,
+        "witnessed failure leaves the slip open for disposition"
+    );
+    assert_eq!(slip.failed.as_deref(), Some("respond"));
+    assert_eq!(slip.tool_trail.len(), 1, "the refused call is on the trail");
+    assert!(!slip.tool_trail[0].ok);
 }
 
 #[test]
