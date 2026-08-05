@@ -217,7 +217,7 @@ fn read(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
         }
         let mut line = line.to_string();
         if line.len() > READ_LINE_BYTES {
-            line.truncate(READ_LINE_BYTES);
+            truncate_at_boundary(&mut line, READ_LINE_BYTES);
             line.push_str(" …(line truncated)");
         }
         out.push_str(&format!("{lineno:>6}\t{line}\n"));
@@ -319,7 +319,7 @@ fn search(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
             if line.contains(pattern) {
                 let mut shown = line.trim().to_string();
                 if shown.len() > 200 {
-                    shown.truncate(200);
+                    truncate_at_boundary(&mut shown, 200);
                     shown.push('…');
                 }
                 matches.push(format!("{}:{}: {shown}", ctx.relative(p), idx + 1));
@@ -338,6 +338,21 @@ fn search(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
         out.push_str(&format!("\n... (truncated at {SEARCH_MATCH_CAP} matches)"));
     }
     ToolOutcome::ok(out)
+}
+
+/// Byte-bounded truncation that never splits a UTF-8 sequence.
+/// `String::truncate` panics off a char boundary — a scout reading a source
+/// file with a long non-ASCII line would crash on valid input. (Caught by
+/// review; inherited from sedai's read tool, which has the same latent bug.)
+fn truncate_at_boundary(text: &mut String, max_bytes: usize) {
+    if text.len() <= max_bytes {
+        return;
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text.truncate(cut);
 }
 
 /// Content hash: sha256, truncated to 16 hex chars — enough to pin what was
@@ -429,6 +444,22 @@ mod tests {
         let out = execute("search", &json!({"pattern": "answer"}), &mut ctx);
         assert!(!out.is_error);
         assert!(out.content.contains("src/lib.rs:1:"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn long_multibyte_lines_truncate_without_panicking() {
+        let dir = territory("multibyte");
+        // '€' is 3 bytes; 700 of them = 2100 bytes, and byte 2000 falls
+        // mid-sequence — the exact input the old truncate panicked on.
+        std::fs::write(dir.join("src/unicode.rs"), "€".repeat(700)).unwrap();
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        let out = execute("read", &json!({"path": "src/unicode.rs"}), &mut ctx);
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("(line truncated)"));
+
+        let out = execute("search", &json!({"pattern": "€"}), &mut ctx);
+        assert!(!out.is_error, "{}", out.content);
         std::fs::remove_dir_all(&dir).ok();
     }
 
