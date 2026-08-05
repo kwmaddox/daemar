@@ -12,9 +12,11 @@ use std::path::{Path, PathBuf};
 use ledger::{Kind, LedgerWriter, SlipId, SlipOutcome};
 
 use crate::config::Config;
-use crate::engine::{run_stage, StageOut, StageSpec};
+use crate::engine::{run_stage, PinnedTerritory, StageOut, StageSpec};
 use crate::pens::load_open_slip;
 use crate::roster::Role;
+use crate::sandbox::{self, CageMode, SystemRunner};
+use crate::worktree;
 
 pub const BOUNDARY: &str = "plan->respond";
 
@@ -79,6 +81,22 @@ fn canonical_territory(repo: &str) -> Result<PathBuf, FlightError> {
         )));
     }
     Ok(canonical)
+}
+
+/// Pin a territory before minting: canonical path AND a resolvable HEAD.
+/// A territory that cannot pin — not a repo, unborn HEAD — refuses the
+/// flight while it still costs nothing. When the cage is on, docker and
+/// the image preflight here too, for the same reason.
+fn pinned_territory(config: &Config, repo: &str) -> Result<PinnedTerritory, FlightError> {
+    let source = canonical_territory(repo)?;
+    let base = worktree::head(&source).map_err(|e| {
+        FlightError::Refused(format!("territory {} cannot pin: {e}", source.display()))
+    })?;
+    if config.cage == CageMode::On {
+        sandbox::preflight(&SystemRunner, &config.sandbox)
+            .map_err(|e| FlightError::Refused(e.to_string()))?;
+    }
+    Ok(PinnedTerritory { source, base })
 }
 
 fn open_flight(
@@ -162,8 +180,13 @@ pub fn plan_flight(
     request: &str,
     repo: &str,
 ) -> Result<FlightReport, FlightError> {
-    let territory = canonical_territory(repo)?;
-    let mut w = open_flight(config, "plan", request, &territory.display().to_string())?;
+    let territory = pinned_territory(config, repo)?;
+    let mut w = open_flight(
+        config,
+        "plan",
+        request,
+        &territory.source.display().to_string(),
+    )?;
     let stage = StageSpec {
         phase: "plan",
         section: "plan.v1",
@@ -191,8 +214,13 @@ pub fn scout_flight(
     request: &str,
     repo: &str,
 ) -> Result<FlightReport, FlightError> {
-    let territory = canonical_territory(repo)?;
-    let mut w = open_flight(config, "scout", request, &territory.display().to_string())?;
+    let territory = pinned_territory(config, repo)?;
+    let mut w = open_flight(
+        config,
+        "scout",
+        request,
+        &territory.source.display().to_string(),
+    )?;
     let stage = StageSpec {
         phase: "scout",
         section: "scout.v1",

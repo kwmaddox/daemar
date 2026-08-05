@@ -1,0 +1,16 @@
+# The cage image: exactly one static binary in an otherwise empty root.
+# No shell, no libc, no package manager — a tool escape finds nothing to
+# run. Build and tag locally (never pulled implicitly by the factory):
+#
+#     docker build -f Dockerfile.cage -t daemar-cage:latest .
+
+FROM rust:1-alpine AS builder
+RUN apk add --no-cache musl-dev
+WORKDIR /build
+COPY . .
+RUN cargo build --release -p daemar --bin cage_executor
+
+FROM scratch
+COPY --from=builder /build/target/release/cage_executor /cage-executor
+USER 65532:65532
+ENTRYPOINT ["/cage-executor", "hold"]

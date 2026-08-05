@@ -3,25 +3,39 @@
 //!
 //! A stage is one bounded phase of a workflow. It names a Role (the seat)
 //! and carries only stage concerns — phase name, the section kind it must
-//! produce, the task prompt, the territory. Who fills the seat (persona,
-//! airframe, tool access) is the roster's business. Toolless agents simply
-//! finish in one turn; tooled agents loop, every call logged with its
-//! epistemic pointer.
+//! produce, the task prompt, the pinned territory. Who fills the seat
+//! (persona, airframe, tool access) is the roster's business. Toolless
+//! agents simply finish in one turn; tooled agents loop over a DETACHED
+//! WORKTREE of the territory — never the live checkout — with every call
+//! logged with its epistemic pointer, optionally executing inside the cage.
 //!
-//! Failure must be witnessed: on provider error or turn-cap exhaustion the
+//! Failure must be witnessed: on provider error, turn-cap exhaustion, or a
+//! cage that cannot vouch for itself (including an unproven teardown), the
 //! engine records the reason, ends the phase in error, and returns None —
-//! the slip stays open for the controller's disposition.
+//! the slip stays open for the controller's disposition. A teardown failure
+//! fails the phase even when the model already reported: no success section
+//! rides above an unproven cage.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ledger::{Kind, Lane, LedgerWriter, PhaseOutcome};
 
 use crate::config::{Config, Pricing};
-use crate::roster::{self, Role, ToolAccess};
-use crate::tools;
+use crate::executor::StageExecutor;
+use crate::roster::{self, AgentDef, Role, ToolAccess};
+use crate::sandbox::{Cage, CageMode, SystemRunner};
+use crate::tools::{self, ToolContext};
+use crate::worktree;
 
 /// Turn cap for tool loops: enough for real recon, finite by construction.
 const MAX_TURNS: usize = 12;
+
+/// A territory validated and pinned BEFORE the slip was minted: the
+/// canonical source checkout and the exact commit the stage will see.
+pub struct PinnedTerritory {
+    pub source: PathBuf,
+    pub base: String,
+}
 
 /// Stage concerns only. The seat is named at the call site; everything about
 /// its occupant comes from the roster.
@@ -29,9 +43,9 @@ pub struct StageSpec {
     pub phase: &'static str,
     pub section: &'static str,
     pub user: String,
-    /// Required when the seated agent has tool access; the tools are
-    /// confined to it.
-    pub territory: Option<PathBuf>,
+    /// Required when the seated agent has tool access; the stage flies over
+    /// a detached worktree of it.
+    pub territory: Option<PinnedTerritory>,
 }
 
 /// What a completed stage hands back to its workflow.
@@ -40,6 +54,17 @@ pub struct StageOut {
     pub tokens: u64,
     pub cost: f64,
     pub turns: usize,
+}
+
+/// How the turn loop ended, before teardown has its say.
+enum LoopEnd {
+    Report {
+        text: String,
+        turns: usize,
+    },
+    /// The reason is already on the ledger as a note; the phase ends in
+    /// error after teardown runs.
+    Failure,
 }
 
 /// Fly one stage. `Ok(Some)` on success — the section is written and the
@@ -65,44 +90,173 @@ pub fn run_stage(
         engineer: config.engineer.clone(),
     })?;
 
-    // Tool context, when the seat carries tools. A bad territory is a
-    // witnessed failure, not a crash.
-    let mut ctx = match agent.tools {
-        ToolAccess::None => None,
-        ToolAccess::ReadOnly => {
-            let Some(territory) = stage.territory.as_deref() else {
-                w.append(&Kind::Note {
-                    text: format!(
-                        "stage {} seated a tooled agent with no territory — workflow bug",
-                        stage.phase
-                    ),
-                })?;
-                w.append(&Kind::PhaseEnded {
-                    phase: stage.phase.to_string(),
-                    outcome: PhaseOutcome::Error,
-                })?;
-                return Ok(None);
-            };
-            match tools::ToolContext::new(territory) {
-                Ok(ctx) => Some(ctx),
-                Err(error) => {
-                    w.append(&Kind::Note {
-                        text: error.clone(),
-                    })?;
-                    w.append(&Kind::PhaseEnded {
-                        phase: stage.phase.to_string(),
-                        outcome: PhaseOutcome::Error,
-                    })?;
-                    eprintln!("daemar: {error}");
-                    return Ok(None);
+    // Tooled seats fly over a pinned worktree, in-process or caged. Any
+    // preparation failure after the phase started is witnessed, not thrown.
+    let runner = SystemRunner;
+    let mut executor: Option<StageExecutor> = None;
+    if agent.tools != ToolAccess::None {
+        let Some(territory) = stage.territory.as_ref() else {
+            return witness(
+                w,
+                &stage,
+                format!(
+                    "stage {} seated a tooled agent with no territory — workflow bug",
+                    stage.phase
+                ),
+            );
+        };
+        let dest = Path::new(&config.worktrees)
+            .join(w.slip_id().to_string())
+            .join(stage.phase);
+        let wt = match worktree::add_detached(&territory.source, &territory.base, &dest) {
+            Ok(wt) => wt,
+            Err(error) => return witness(w, &stage, format!("worktree failed: {error}")),
+        };
+        w.append(&Kind::Note {
+            text: format!(
+                "worktree materialized: phase={} base={} path={}",
+                stage.phase,
+                territory.base,
+                wt.display()
+            ),
+        })?;
+        executor = Some(match config.cage {
+            CageMode::Off => match ToolContext::new(&wt) {
+                Ok(ctx) => StageExecutor::InProcess(ctx),
+                Err(error) => return witness(w, &stage, error),
+            },
+            CageMode::On => {
+                let hint = format!("{}-{}", short(&w.slip_id().to_string()), stage.phase);
+                match Cage::start(&runner, &config.sandbox, &wt, agent.tools, &hint) {
+                    Ok(cage) => {
+                        w.append(&Kind::Note {
+                            text: format!(
+                                "sandbox started: phase={} container={} image={}",
+                                stage.phase, cage.container, config.sandbox.image
+                            ),
+                        })?;
+                        StageExecutor::Caged(cage)
+                    }
+                    Err(error) => return witness(w, &stage, format!("cage failed: {error}")),
                 }
             }
-        }
-    };
-    let specs = ctx.as_ref().map(|_| tools::specs());
+        });
+    }
+    let specs = executor.as_ref().map(|_| tools::specs());
 
     let mut flight_tokens = 0u64;
     let mut flight_cost = 0.0f64;
+    let end = fly_loop(
+        w,
+        config,
+        role,
+        &agent,
+        &model,
+        &pricing,
+        &stage,
+        &mut executor,
+        specs,
+        &mut flight_tokens,
+        &mut flight_cost,
+    )?;
+
+    // Teardown runs on EVERY path out of the loop. A phase is not finalized
+    // until the cage is proven gone.
+    let teardown_clean = match executor {
+        Some(StageExecutor::Caged(cage)) => {
+            let container = cage.container.clone();
+            match cage.teardown() {
+                Ok(()) => {
+                    w.append(&Kind::Note {
+                        text: format!(
+                            "sandbox torn down: phase={} container={container}",
+                            stage.phase
+                        ),
+                    })?;
+                    true
+                }
+                Err(error) => {
+                    w.append(&Kind::Note {
+                        text: format!(
+                            "sandbox teardown FAILED: phase={} container={container}: {error}",
+                            stage.phase
+                        ),
+                    })?;
+                    eprintln!("daemar: sandbox teardown failed: {error}");
+                    false
+                }
+            }
+        }
+        _ => true,
+    };
+
+    match (end, teardown_clean) {
+        (LoopEnd::Report { text, turns }, true) => {
+            w.append(&Kind::SectionWritten {
+                section: stage.section.to_string(),
+                by: agent.name.to_string(),
+                summary: summarize(&text),
+                body: text.clone(),
+            })?;
+            w.append(&Kind::PhaseEnded {
+                phase: stage.phase.to_string(),
+                outcome: PhaseOutcome::Success,
+            })?;
+            Ok(Some(StageOut {
+                text,
+                tokens: flight_tokens,
+                cost: flight_cost,
+                turns,
+            }))
+        }
+        (LoopEnd::Report { .. }, false) | (LoopEnd::Failure, _) => {
+            w.append(&Kind::PhaseEnded {
+                phase: stage.phase.to_string(),
+                outcome: PhaseOutcome::Error,
+            })?;
+            Ok(None)
+        }
+    }
+}
+
+/// Witness a preparation failure: note, phase ended in error, slip open.
+fn witness(
+    w: &mut LedgerWriter,
+    stage: &StageSpec,
+    reason: String,
+) -> Result<Option<StageOut>, ledger::LedgerError> {
+    w.append(&Kind::Note {
+        text: reason.clone(),
+    })?;
+    w.append(&Kind::PhaseEnded {
+        phase: stage.phase.to_string(),
+        outcome: PhaseOutcome::Error,
+    })?;
+    eprintln!("daemar: {reason}");
+    Ok(None)
+}
+
+fn short(slip_id: &str) -> String {
+    slip_id.chars().take(8).collect()
+}
+
+/// The turn loop, ended by a report, a witnessed failure, or the cap. It
+/// appends notes and calls but never PhaseEnded or the section — those wait
+/// for teardown's verdict.
+#[allow(clippy::too_many_arguments)] // the stage's full context, deliberately explicit
+fn fly_loop(
+    w: &mut LedgerWriter,
+    config: &Config,
+    role: Role,
+    agent: &AgentDef,
+    model: &str,
+    pricing: &Pricing,
+    stage: &StageSpec,
+    executor: &mut Option<StageExecutor>,
+    specs: Option<serde_json::Value>,
+    flight_tokens: &mut u64,
+    flight_cost: &mut f64,
+) -> Result<LoopEnd, ledger::LedgerError> {
     // The Responses input array, resent whole every turn (store:false).
     // The system prompt rides separately as `instructions`; on the ledger,
     // ModelRequested.system is the instructions and ModelRequested.user is
@@ -120,7 +274,7 @@ pub fn run_stage(
         // turn 1 — later context is derivable from the tool trail.
         w.append(&Kind::ModelRequested {
             phase: stage.phase.to_string(),
-            model: model.clone(),
+            model: model.to_string(),
             system: if turn == 1 {
                 agent.system.to_string()
             } else {
@@ -133,7 +287,7 @@ pub fn run_stage(
             },
         })?;
         let out = match config.provider.respond(
-            &model,
+            model,
             agent.system,
             &input,
             specs.as_ref(),
@@ -145,26 +299,22 @@ pub fn run_stage(
                 w.append(&Kind::Note {
                     text: format!("model call failed: {reason}"),
                 })?;
-                w.append(&Kind::PhaseEnded {
-                    phase: stage.phase.to_string(),
-                    outcome: PhaseOutcome::Error,
-                })?;
                 eprintln!("daemar: model call failed: {reason}");
-                return Ok(None);
+                return Ok(LoopEnd::Failure);
             }
         };
         let cost = pricing.cost(out.prompt_tokens, out.cached_tokens, out.completion_tokens);
         w.append(&Kind::ModelCall {
             phase: stage.phase.to_string(),
-            model: model.clone(),
+            model: model.to_string(),
             tokens: out.total_tokens,
             prompt_tokens: out.prompt_tokens,
             cached_tokens: out.cached_tokens,
             completion_tokens: out.completion_tokens,
             cost,
         })?;
-        flight_tokens += out.total_tokens;
-        flight_cost += cost;
+        *flight_tokens += out.total_tokens;
+        *flight_cost += cost;
         if !complaint_logged {
             if let Some(complaint) = pricing.complaint() {
                 w.append(&Kind::Note { text: complaint })?;
@@ -176,7 +326,7 @@ pub fn run_stage(
             // A toolless seat was advertised no tools; a provider that sends
             // tool calls anyway is misbehaving. Witness it, don't pay turns
             // conversing with it.
-            let Some(ctx) = ctx.as_mut() else {
+            let Some(executor) = executor.as_mut() else {
                 for call in &out.tool_calls {
                     w.append(&Kind::ToolCall {
                         phase: stage.phase.to_string(),
@@ -195,12 +345,8 @@ pub fn run_stage(
                 w.append(&Kind::Note {
                     text: reason.clone(),
                 })?;
-                w.append(&Kind::PhaseEnded {
-                    phase: stage.phase.to_string(),
-                    outcome: PhaseOutcome::Error,
-                })?;
                 eprintln!("daemar: {reason}");
-                return Ok(None);
+                return Ok(LoopEnd::Failure);
             };
             // Stateless replay: the turn's reasoning and function_call
             // items ride back in the next input, or the reasoning thread
@@ -216,7 +362,7 @@ pub fn run_stage(
                         hash: String::new(),
                     }
                 } else {
-                    tools::execute(&call.name, &args, ctx)
+                    executor.execute(&call.name, &args)
                 };
                 w.append(&Kind::ToolCall {
                     phase: stage.phase.to_string(),
@@ -231,27 +377,22 @@ pub fn run_stage(
                     "call_id": call.id,
                     "output": outcome.content,
                 }));
+                // A dead cage cannot vouch for another call: the failed
+                // outcome is on the trail; end the stage as witnessed.
+                if executor.dead() {
+                    let reason = "cage failed mid-stage — the flight cannot continue".to_string();
+                    w.append(&Kind::Note {
+                        text: reason.clone(),
+                    })?;
+                    eprintln!("daemar: {reason}");
+                    return Ok(LoopEnd::Failure);
+                }
             }
             continue;
         }
 
         if let Some(text) = out.text {
-            w.append(&Kind::SectionWritten {
-                section: stage.section.to_string(),
-                by: agent.name.to_string(),
-                summary: summarize(&text),
-                body: text.clone(),
-            })?;
-            w.append(&Kind::PhaseEnded {
-                phase: stage.phase.to_string(),
-                outcome: PhaseOutcome::Success,
-            })?;
-            return Ok(Some(StageOut {
-                text,
-                tokens: flight_tokens,
-                cost: flight_cost,
-                turns: turn,
-            }));
+            return Ok(LoopEnd::Report { text, turns: turn });
         }
     }
 
@@ -260,15 +401,11 @@ pub fn run_stage(
     w.append(&Kind::Note {
         text: format!("turn cap ({MAX_TURNS}) reached without a report"),
     })?;
-    w.append(&Kind::PhaseEnded {
-        phase: stage.phase.to_string(),
-        outcome: PhaseOutcome::Error,
-    })?;
     eprintln!(
         "daemar: {} hit the turn cap ({MAX_TURNS}) without reporting",
         agent.name
     );
-    Ok(None)
+    Ok(LoopEnd::Failure)
 }
 
 /// The strip's table line: first line of the text, clipped.

@@ -1,16 +1,13 @@
-//! Territory pinning: materialize an immutable Git commit as a real
-//! directory the UNCHANGED production tools can canonicalize and confine.
-//!
-//! The commit object is the pin. The runner refuses drift — wrong HEAD,
-//! dirty checkout, short spec — instead of tolerating it: no current
-//! live-tree line number is ever an answer key.
+//! Territory pinning for eval cases: fixture-facing rules (full 40-hex SHA
+//! only, content-addressed cache, reuse-with-verification) layered over the
+//! factory's worktree machinery — one materialization implementation for
+//! the whole tower, promoted from this module into `factory::worktree`.
 
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use factory::tools::content_hash;
+use factory::worktree::{self, WorktreeError};
 
 #[derive(Debug)]
 pub enum PinError {
@@ -67,25 +64,24 @@ impl fmt::Display for PinError {
     }
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, PinError> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|e| PinError::Git {
-            detail: format!("could not run git: {e}"),
-        })?;
-    if !out.status.success() {
-        return Err(PinError::Git {
-            detail: format!(
-                "git {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        });
+impl From<WorktreeError> for PinError {
+    fn from(error: WorktreeError) -> Self {
+        match error {
+            WorktreeError::Io { path, detail } => PinError::Io { path, detail },
+            WorktreeError::Git { detail } => PinError::Git { detail },
+            WorktreeError::NotACommit { spec, detail } => PinError::NotACommit { spec, detail },
+            WorktreeError::WrongHead {
+                worktree,
+                expected,
+                found,
+            } => PinError::WrongHead {
+                worktree,
+                expected,
+                found,
+            },
+            WorktreeError::Dirty { worktree, status } => PinError::Dirty { worktree, status },
+        }
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 /// Materialize `commit` from `repo` as a detached worktree under
@@ -96,14 +92,11 @@ pub fn materialize(repo: &Path, commit: &str, cache_root: &Path) -> Result<PathB
         path: repo.to_path_buf(),
         detail: e.to_string(),
     })?;
-    let resolved = git(
-        &repo,
-        &["rev-parse", "--verify", &format!("{commit}^{{commit}}")],
-    )?;
-    if resolved.trim() != commit {
+    let resolved = worktree::resolve_commit(&repo, commit)?;
+    if resolved != commit {
         return Err(PinError::NotACommit {
             spec: commit.to_string(),
-            detail: format!("resolves to {}", resolved.trim()),
+            detail: format!("resolves to {resolved}"),
         });
     }
 
@@ -111,39 +104,9 @@ pub fn materialize(repo: &Path, commit: &str, cache_root: &Path) -> Result<PathB
         .join(content_hash(repo.display().to_string().as_bytes()))
         .join(commit);
     if !dest.exists() {
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|e| PinError::Io {
-                path: parent.to_path_buf(),
-                detail: e.to_string(),
-            })?;
-        }
-        git(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                "--detach",
-                &dest.display().to_string(),
-                commit,
-            ],
-        )?;
+        return Ok(worktree::add_detached(&repo, commit, &dest)?);
     }
-
-    let head = git(&dest, &["rev-parse", "HEAD"])?;
-    if head.trim() != commit {
-        return Err(PinError::WrongHead {
-            worktree: dest,
-            expected: commit.to_string(),
-            found: head.trim().to_string(),
-        });
-    }
-    let status = git(&dest, &["status", "--porcelain"])?;
-    if !status.trim().is_empty() {
-        return Err(PinError::Dirty {
-            worktree: dest,
-            status: status.trim().to_string(),
-        });
-    }
+    worktree::verify(&dest, commit)?;
     dest.canonicalize().map_err(|e| PinError::Io {
         path: dest,
         detail: e.to_string(),
@@ -159,7 +122,7 @@ pub fn pinned_line(
     path: &str,
     line: u64,
 ) -> Result<Option<String>, PinError> {
-    let text = git(repo, &["show", &format!("{commit}:{path}")])?;
+    let text = worktree::run_git(repo, &["show", &format!("{commit}:{path}")])?;
     let index = usize::try_from(line.saturating_sub(1)).unwrap_or(usize::MAX);
     Ok(text.lines().nth(index).map(str::to_string))
 }

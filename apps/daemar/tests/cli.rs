@@ -14,10 +14,14 @@ use ledger::{EventKind, Kind, Status};
 fn the_full_planned_ceremony_offline() {
     let stub = stub_server();
     let f = factory("ceremony", &stub);
+    let t = territory("ceremony");
 
     // Plan: terra-stand-in plans, the slip cocks, the process exits 0.
     stub.push_ok("THE PLAN: cover A, then B.");
-    let out = daemar(&f, &["plan", "compare A and B"]);
+    let out = daemar(
+        &f,
+        &["plan", "--repo", t.to_str().unwrap(), "compare A and B"],
+    );
     assert_eq!(exit_code(&out), 0, "plan flight: {}", stderr(&out));
     let (id, slip, _) = the_slip(&f);
     assert_eq!(slip.status, Status::InFlight);
@@ -82,6 +86,7 @@ fn the_full_planned_ceremony_offline() {
         "the printout must carry the plan and the request"
     );
     assert!(grant_signed, "clearances are signed");
+    std::fs::remove_dir_all(&t).ok();
 }
 
 #[test]
@@ -167,6 +172,24 @@ fn the_scout_reads_the_territory_and_reports() {
         }
     });
     assert!(pinned, "reads carry a content-hash pointer");
+
+    // The stage flew a pinned worktree, and the ledger says so exactly.
+    let worktree_note = events.iter().find_map(|e| {
+        if let EventKind::Known(Kind::Note { text }) = &e.kind {
+            text.strip_prefix("worktree materialized: ")
+                .map(str::to_string)
+        } else {
+            None
+        }
+    });
+    let note = worktree_note.expect("a materialization note is on the ledger");
+    let base = note
+        .split("base=")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .expect("note carries base=");
+    assert_eq!(base.len(), 40, "the base is a full SHA: {note}");
+    assert!(note.contains("path="), "{note}");
     let reported = slip
         .sections
         .iter()
@@ -464,9 +487,18 @@ fn a_toolless_seat_that_requests_tools_is_a_witnessed_failure() {
 fn refuse_is_a_verdict_and_closes_directly() {
     let stub = stub_server();
     let f = factory("refused", &stub);
+    let t = territory("refused");
 
     stub.push_ok("a plan the controller will not like");
-    let out = daemar(&f, &["plan", "do something questionable"]);
+    let out = daemar(
+        &f,
+        &[
+            "plan",
+            "--repo",
+            t.to_str().unwrap(),
+            "do something questionable",
+        ],
+    );
     assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
     let (id, _, _) = the_slip(&f);
 
@@ -492,6 +524,7 @@ fn refuse_is_a_verdict_and_closes_directly() {
     let out = daemar(&f, &["continue", &id]);
     assert_eq!(exit_code(&out), 2);
     assert!(stderr(&out).contains("already closed"), "{}", stderr(&out));
+    std::fs::remove_dir_all(&t).ok();
 }
 
 #[test]

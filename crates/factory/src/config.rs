@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::provider::Provider;
 use crate::registry::{self, Registry};
 use crate::roster::{self, Role};
+use crate::sandbox::{CageMode, SandboxSpec};
 
 pub fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
@@ -41,6 +42,12 @@ fn airframes_path() -> String {
     env("DAEMAR_AIRFRAMES").unwrap_or_else(|| homed_default("airframes.toml"))
 }
 
+/// Where stage worktrees are materialized: one per slip and phase,
+/// retained after the flight — the stage's auditable frozen territory.
+pub fn worktrees_dir() -> String {
+    env("DAEMAR_WORKTREES").unwrap_or_else(|| homed_default("worktrees"))
+}
+
 #[derive(Debug)]
 pub enum ConfigError {
     Missing(String),
@@ -49,6 +56,10 @@ pub enum ConfigError {
     /// An effort binding carried a value outside the closed set.
     BadEffort {
         name: String,
+        value: String,
+    },
+    /// DAEMAR_CAGE carried something other than 1, 0, or nothing.
+    BadCage {
         value: String,
     },
 }
@@ -65,6 +76,10 @@ impl fmt::Display for ConfigError {
             ConfigError::BadEffort { name, value } => write!(
                 f,
                 "{name}='{value}' is not a reasoning effort — low, medium, or high"
+            ),
+            ConfigError::BadCage { value } => write!(
+                f,
+                "DAEMAR_CAGE='{value}' is not a cage mode — 1 (caged) or 0/unset (in-process)"
             ),
         }
     }
@@ -194,6 +209,14 @@ pub struct Config {
     pub provider: Provider,
     pub ledgers: String,
     pub airframes: String,
+    /// Root for stage worktrees (DAEMAR_WORKTREES, homed default).
+    pub worktrees: String,
+    /// Whether tool execution is caged (DAEMAR_CAGE=1). Phase-1 opt-in;
+    /// write-capable seats will cage unconditionally.
+    pub cage: CageMode,
+    /// The sandbox shape. Hardcoded default today; sandbox.toml later —
+    /// the roster pattern.
+    pub sandbox: SandboxSpec,
     pub engineer: String,
     /// Model per role, resolved fail-fast at startup from the roster's env
     /// bindings (each falls back to DAEMAR_MODEL). Indexed by Role::ALL order.
@@ -242,6 +265,17 @@ impl Config {
             },
             ledgers: ledgers_dir(),
             airframes: airframes_path(),
+            worktrees: worktrees_dir(),
+            cage: match env("DAEMAR_CAGE").as_deref() {
+                None | Some("0") => CageMode::Off,
+                Some("1") => CageMode::On,
+                Some(other) => {
+                    return Err(ConfigError::BadCage {
+                        value: other.to_string(),
+                    })
+                }
+            },
+            sandbox: SandboxSpec::default(),
             engineer: engineer(),
             models,
             efforts,
