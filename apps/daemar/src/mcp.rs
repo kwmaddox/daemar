@@ -354,14 +354,15 @@ fn board_summary() -> (String, bool) {
                 .map(|n| n.to_string_lossy().to_string())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| slip.repo.clone());
+            let id = &slip.id;
+            let workflow = &slip.workflow;
+            let engineer = &slip.engineer;
+            let tokens = slip.tokens;
+            let cost = slip.cost;
+            let age = human_age(now.saturating_sub(quiet(slip)));
             format!(
-                "{} · {} · {state} · {} · {territory} · {} tok · ${:.4} · {} ago",
-                slip.id,
-                slip.workflow,
-                slip.engineer,
-                slip.tokens,
-                slip.cost,
-                human_age(now.saturating_sub(quiet(slip)))
+                "{id} · {workflow} · {state} · {engineer} · {territory} · \
+                 {tokens} tok · ${cost:.4} · {age} ago"
             )
         })
         .collect();
