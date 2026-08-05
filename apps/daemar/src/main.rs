@@ -560,6 +560,10 @@ fn scout_flight(request: &str, repo: &str) -> ExitCode {
             eprintln!("daemar: {complaint}");
         }
         let specs = tools::specs();
+        // Flight totals: the footer must never present one turn's usage as
+        // the whole flight's.
+        let mut flight_tokens = 0u64;
+        let mut flight_cost = 0.0f64;
         let mut messages = vec![
             serde_json::json!({ "role": "system", "content": SCOUT_SYSTEM }),
             serde_json::json!({ "role": "user", "content": request }),
@@ -610,6 +614,8 @@ fn scout_flight(request: &str, repo: &str) -> ExitCode {
                 completion_tokens: out.completion_tokens,
                 cost,
             })?;
+            flight_tokens += out.total_tokens;
+            flight_cost += cost;
             if !priced_complaint_logged {
                 if let Some(complaint) = pricing.complaint() {
                     w.append(&Kind::Note { text: complaint })?;
@@ -662,9 +668,7 @@ fn scout_flight(request: &str, repo: &str) -> ExitCode {
                 close_accepted(&mut w)?;
                 println!("{}", text.trim_end());
                 eprintln!(
-                    "\nslip {id} · accepted · {} tokens · {} turns · board: /slip/{id}",
-                    out.total_tokens,
-                    turn,
+                    "\nslip {id} · accepted · {flight_tokens} tokens · ${flight_cost:.4} · {turn} turns · board: /slip/{id}",
                     id = w.slip_id()
                 );
                 return Ok(true);

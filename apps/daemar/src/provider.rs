@@ -173,11 +173,14 @@ impl Provider {
                         Some(ToolCallRequest {
                             id: call.get("id")?.as_str()?.to_string(),
                             name: function.get("name")?.as_str()?.to_string(),
-                            arguments: function
-                                .get("arguments")
-                                .and_then(Value::as_str)
-                                .unwrap_or("{}")
-                                .to_string(),
+                            // Spec says arguments arrive as a JSON string,
+                            // but some OpenAI-compatible providers send the
+                            // object itself. Preserve either; drop neither.
+                            arguments: match function.get("arguments") {
+                                Some(Value::String(s)) => s.clone(),
+                                Some(Value::Null) | None => "{}".to_string(),
+                                Some(other) => other.to_string(),
+                            },
                         })
                     })
                     .collect()

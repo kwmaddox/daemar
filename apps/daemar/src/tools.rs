@@ -254,7 +254,17 @@ fn list_files(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
         walker.max_depth(Some(1));
     }
     let mut entries: Vec<String> = Vec::new();
-    for entry in walker.build().flatten() {
+    let mut unreadable = 0usize;
+    for entry in walker.build() {
+        // Traversal errors are counted, never silently flattened away —
+        // partial results must say they are partial.
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                unreadable += 1;
+                continue;
+            }
+        };
         let p = entry.path();
         if p == abs {
             continue;
@@ -276,6 +286,9 @@ fn list_files(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
     if out.is_empty() {
         out.push_str("(empty)");
     }
+    if unreadable > 0 {
+        out.push_str(&format!("\n({unreadable} entries unreadable)"));
+    }
     ToolOutcome::ok(out)
 }
 
@@ -292,11 +305,15 @@ fn search(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
     };
     let mut matches: Vec<String> = Vec::new();
     let mut truncated = false;
-    'files: for entry in ignore::WalkBuilder::new(&abs)
-        .require_git(false)
-        .build()
-        .flatten()
-    {
+    let mut unreadable = 0usize;
+    'files: for entry in ignore::WalkBuilder::new(&abs).require_git(false).build() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                unreadable += 1;
+                continue;
+            }
+        };
         let p = entry.path();
         if !p.is_file() {
             continue;
@@ -309,6 +326,7 @@ fn search(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
             continue;
         }
         let Ok(bytes) = std::fs::read(p) else {
+            unreadable += 1;
             continue;
         };
         if bytes.contains(&0) {
@@ -330,13 +348,19 @@ fn search(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
             }
         }
     }
+    let note = if unreadable > 0 {
+        format!("\n({unreadable} entries unreadable)")
+    } else {
+        String::new()
+    };
     if matches.is_empty() {
-        return ToolOutcome::ok(format!("no matches for '{pattern}'"));
+        return ToolOutcome::ok(format!("no matches for '{pattern}'{note}"));
     }
     let mut out = matches.join("\n");
     if truncated {
         out.push_str(&format!("\n... (truncated at {SEARCH_MATCH_CAP} matches)"));
     }
+    out.push_str(&note);
     ToolOutcome::ok(out)
 }
 

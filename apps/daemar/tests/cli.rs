@@ -370,6 +370,33 @@ fn the_scout_reads_the_territory_and_reports() {
 }
 
 #[test]
+fn object_form_tool_arguments_are_preserved_not_dropped() {
+    // Some OpenAI-compatible providers send `arguments` as a JSON object
+    // instead of the spec's string. Those inputs must reach the tool.
+    let stub = stub_server();
+    let f = factory("object-args", &stub);
+    let t = territory("object-args");
+    let body = format!(
+        r#"{{"choices":[{{"message":{{"role":"assistant","content":null,"tool_calls":[{{"id":"c1","type":"function","function":{{"name":"read","arguments":{{"path":"src/lib.rs"}}}}}}]}}}}],"usage":{{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}}}"#
+    );
+    stub.push_error(200, &body); // push raw body with 200
+    stub.push_ok("done");
+    let out = daemar(
+        &f,
+        &["scout", "--repo", t.to_str().unwrap(), "read the lib"],
+    );
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    let (_, slip, _) = the_slip(&f);
+    assert_eq!(slip.tool_trail.len(), 1);
+    assert!(
+        slip.tool_trail[0].ok,
+        "object-form args must execute: {}",
+        slip.tool_trail[0].summary
+    );
+    std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
 fn a_bare_repo_flag_is_a_usage_error_not_a_flight() {
     let stub = stub_server();
     let f = factory("bare-flag", &stub);
