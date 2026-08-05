@@ -501,15 +501,23 @@ fn continue_flight(args: &[String]) -> ExitCode {
 /// `daemar scout [--repo <path>] "<question>"` — parse the territory flag,
 /// then fly.
 fn scout_dispatch(args: &[String]) -> ExitCode {
-    let (repo, rest): (String, &[String]) =
-        if args.first().map(String::as_str) == Some("--repo") && args.len() >= 2 {
-            (args[1].clone(), &args[2..])
-        } else {
-            (".".to_string(), args)
-        };
-    match read_request(rest) {
-        Some(request) => scout_flight(&request, &repo),
-        None => usage(),
+    match args.first().map(String::as_str) {
+        Some("--repo") => {
+            // A --repo with no path must not fall through and fly the flag
+            // as the question — that would mint a real, paid, nonsense slip.
+            if args.len() < 2 {
+                return usage();
+            }
+            match read_request(&args[2..]) {
+                Some(request) => scout_flight(&request, &args[1]),
+                None => usage(),
+            }
+        }
+        Some(flag) if flag.starts_with("--") => usage(),
+        _ => match read_request(args) {
+            Some(request) => scout_flight(&request, "."),
+            None => usage(),
+        },
     }
 }
 

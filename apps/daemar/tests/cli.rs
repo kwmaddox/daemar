@@ -370,6 +370,21 @@ fn the_scout_reads_the_territory_and_reports() {
 }
 
 #[test]
+fn a_bare_repo_flag_is_a_usage_error_not_a_flight() {
+    let stub = stub_server();
+    let f = factory("bare-flag", &stub);
+    let out = daemar(&f, &["scout", "--repo"]);
+    assert_eq!(exit_code(&out), 2);
+    assert!(stderr(&out).contains("usage"), "{}", stderr(&out));
+    let out = daemar(&f, &["scout", "--territory", "question"]);
+    assert_eq!(exit_code(&out), 2, "unknown flags refuse rather than fly");
+    assert!(
+        !f.ledgers.exists(),
+        "no slip may be minted from a malformed invocation"
+    );
+}
+
+#[test]
 fn the_scout_cannot_leave_its_territory_and_the_refusal_is_logged() {
     let stub = stub_server();
     let f = factory("scout-confined", &stub);
