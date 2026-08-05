@@ -184,8 +184,10 @@ fn tool_defs() -> Value {
         {
             "name": "continue",
             "description": "Fly the stage after a granted clearance, context rebuilt \
-                            purely from the ledger. Refused unless the controller has \
-                            granted the boundary.",
+                            purely from the ledger — the responder for plan->respond, \
+                            the deterministic gate legs for build->apply and \
+                            apply->land. Refused unless the controller's pen has \
+                            granted the boundary; this tool cannot grant anything.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "slip_id": slip_id },

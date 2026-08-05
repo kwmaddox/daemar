@@ -20,6 +20,7 @@ use crate::worktree;
 
 pub const PLAN_TO_RESPOND: &str = "plan->respond";
 pub const BUILD_TO_APPLY: &str = "build->apply";
+pub const APPLY_TO_LAND: &str = "apply->land";
 
 /// What a completed flight hands its interface.
 pub struct FlightReport {
@@ -306,7 +307,7 @@ pub fn build_flight(
         w.append(&Kind::SectionWritten {
             section: "diff.v1".to_string(),
             by: "gate:diff".to_string(),
-            summary: format!("no changes: base={base} worktree={}", wt.display()),
+            summary: diff_receipt(&base, &wt),
             body: String::new(),
         })?;
         w.append(&Kind::PhaseEnded {
@@ -319,7 +320,7 @@ pub fn build_flight(
     w.append(&Kind::SectionWritten {
         section: "diff.v1".to_string(),
         by: "gate:diff".to_string(),
-        summary: format!("base={base} worktree={}", wt.display()),
+        summary: diff_receipt(&base, &wt),
         body: patch,
     })?;
     w.append(&Kind::PhaseEnded {
@@ -335,9 +336,84 @@ pub fn build_flight(
     Ok(report)
 }
 
+/// The diff receipt: diff.v1's summary is the CANONICAL machine carrier
+/// of the stamped artifact's coordinates — versioned JSON, decoded once at
+/// the ledger boundary. The materialization note stays audit-only prose.
+fn diff_receipt(base: &str, worktree: &Path) -> String {
+    serde_json::json!({
+        "v": 1,
+        "base": base,
+        "worktree": worktree.display().to_string(),
+    })
+    .to_string()
+}
+
+struct DiffReceipt {
+    base: String,
+    worktree: PathBuf,
+}
+
+fn decode_diff_receipt(summary: &str) -> Option<DiffReceipt> {
+    let v: serde_json::Value = serde_json::from_str(summary).ok()?;
+    let base = v.get("base")?.as_str()?.to_string();
+    let worktree = PathBuf::from(v.get("worktree")?.as_str()?);
+    if base.len() != 40 || !worktree.is_absolute() {
+        return None;
+    }
+    Some(DiffReceipt { base, worktree })
+}
+
+/// The park receipt: apply.v1's summary carries everything the land leg
+/// needs — no note re-parsing.
+fn park_receipt(base: &str, worktree: &Path, commit: &str, branch: &str) -> String {
+    serde_json::json!({
+        "v": 1,
+        "base": base,
+        "worktree": worktree.display().to_string(),
+        "commit": commit,
+        "branch": branch,
+    })
+    .to_string()
+}
+
+struct ParkReceipt {
+    base: String,
+    worktree: PathBuf,
+    commit: String,
+    branch: String,
+}
+
+fn decode_park_receipt(summary: &str) -> Option<ParkReceipt> {
+    let v: serde_json::Value = serde_json::from_str(summary).ok()?;
+    Some(ParkReceipt {
+        base: v.get("base")?.as_str()?.to_string(),
+        worktree: PathBuf::from(v.get("worktree")?.as_str()?),
+        commit: v.get("commit")?.as_str()?.to_string(),
+        branch: v.get("branch")?.as_str()?.to_string(),
+    })
+}
+
+/// A code leg's report: no model flew, no tokens burned.
+fn code_report(slip_id: &str, text: String, cocked_at: Option<&'static str>) -> FlightReport {
+    FlightReport {
+        slip_id: slip_id.to_string(),
+        text,
+        tokens: 0,
+        cost: 0.0,
+        turns: 0,
+        cocked_at,
+    }
+}
+
+fn short_id(slip_id: &str) -> String {
+    slip_id.chars().take(8).collect()
+}
+
 /// Fly the stage after a granted boundary, context rebuilt purely from the
-/// ledger: the printout. A fresh process, possibly a different airframe —
-/// the ledger is the memory.
+/// ledger. Routing follows the fold's HOLDING projection — the granted
+/// boundary nothing has flown since: plan->respond seats the responder;
+/// build->apply and apply->land fly the deterministic gate legs, where no
+/// model exists at all.
 pub fn continue_flight(config: &Config, slip_id: &str) -> Result<FlightReport, FlightError> {
     let slip = load_open_slip(slip_id).map_err(FlightError::Refused)?;
     if let Some(boundary) = &slip.cocked {
@@ -345,35 +421,25 @@ pub fn continue_flight(config: &Config, slip_id: &str) -> Result<FlightReport, F
             "{slip_id} is awaiting clearance at {boundary} — daemar grant {slip_id} first"
         )));
     }
-    // Phase 2 ends at the cocked diff: a granted build->apply has no
-    // machinery yet, and saying so beats a misleading plan->respond error.
-    let apply_granted = slip.clearances.iter().any(|c| {
-        c.boundary == BUILD_TO_APPLY
-            && c.response
-                .as_ref()
-                .is_some_and(|r| r.verdict == ledger::ClearanceVerdict::Granted)
-    });
-    if apply_granted {
-        return Err(FlightError::Refused(format!(
-            "{slip_id} has {BUILD_TO_APPLY} granted — APPLY is phase 3 and is not built yet"
-        )));
+    match slip.holding.as_deref() {
+        Some(b) if b == PLAN_TO_RESPOND => respond_leg(config, slip_id, &slip),
+        Some(b) if b == BUILD_TO_APPLY => apply_leg(config, slip_id, &slip),
+        Some(b) if b == APPLY_TO_LAND => land_leg(config, slip_id, &slip),
+        Some(other) => Err(FlightError::Refused(format!(
+            "{slip_id} holds an unknown boundary '{other}' — this daemar does not fly it"
+        ))),
+        None => Err(FlightError::Refused(format!(
+            "{slip_id} has no granted boundary awaiting throttle — nothing to continue"
+        ))),
     }
-    let granted = slip.clearances.iter().any(|c| {
-        c.boundary == PLAN_TO_RESPOND
-            && c.response
-                .as_ref()
-                .is_some_and(|r| r.verdict == ledger::ClearanceVerdict::Granted)
-    });
-    if !granted {
-        return Err(FlightError::Refused(format!(
-            "{slip_id} has no granted {PLAN_TO_RESPOND} clearance — nothing to continue"
-        )));
-    }
-    if slip.phases.iter().any(|p| p.phase == "respond") {
-        return Err(FlightError::Refused(format!(
-            "{slip_id} already flew its respond phase"
-        )));
-    }
+}
+
+/// The responder leg: unchanged behavior, now one arm of the routing.
+fn respond_leg(
+    config: &Config,
+    slip_id: &str,
+    slip: &ledger::Slip,
+) -> Result<FlightReport, FlightError> {
     let Some(plan_body) = slip
         .sections
         .iter()
@@ -407,4 +473,332 @@ pub fn continue_flight(config: &Config, slip_id: &str) -> Result<FlightReport, F
         }
         None => Err(witnessed_failure(&w)),
     }
+}
+
+/// The APPLY leg: deterministic, code-lane, gate:apply. Verifies the
+/// stamped artifact byte-for-byte, commits it (parent = base by
+/// construction), then the ruled hybrid ladder: clean-and-unmoved
+/// fast-forwards and closes; anything else parks the commit on a branch —
+/// a pure ref operation — and RE-COCKS at apply->land, because nothing
+/// waits invisibly.
+fn apply_leg(
+    config: &Config,
+    slip_id: &str,
+    slip: &ledger::Slip,
+) -> Result<FlightReport, FlightError> {
+    // Malformed continuation state refuses BEFORE any phase begins.
+    let Some(receipt) = slip
+        .sections
+        .iter()
+        .rev()
+        .find(|s| s.section == "diff.v1")
+        .and_then(|s| decode_diff_receipt(&s.summary))
+    else {
+        return Err(FlightError::Refused(format!(
+            "{slip_id} has no decodable diff.v1 receipt — cannot apply"
+        )));
+    };
+    let diff_body = slip
+        .sections
+        .iter()
+        .rev()
+        .find(|s| s.section == "diff.v1")
+        .map(|s| s.body.clone())
+        .unwrap_or_default();
+    let territory = PathBuf::from(&slip.repo);
+    let granter = slip
+        .clearances
+        .iter()
+        .rev()
+        .find(|c| c.boundary == BUILD_TO_APPLY)
+        .and_then(|c| c.response.as_ref())
+        .map(|r| r.by.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut w = LedgerWriter::resume(config.ledgers.as_ref(), SlipId(slip_id.to_string()))?;
+    w.append(&Kind::PhaseStarted {
+        phase: "apply".to_string(),
+        owner: "gate:apply".to_string(),
+        lane: Lane::Code,
+        engineer: config.engineer.clone(),
+    })?;
+    let witness = |w: &mut LedgerWriter, reason: String| -> Result<(), ledger::LedgerError> {
+        w.append(&Kind::Note {
+            text: reason.clone(),
+        })?;
+        w.append(&Kind::PhaseEnded {
+            phase: "apply".to_string(),
+            outcome: PhaseOutcome::Error,
+        })?;
+        eprintln!("daemar: {reason}");
+        Ok(())
+    };
+
+    // Post-grant defects are witnessed: the controller cleared an artifact
+    // the world no longer honors, and the strip must say so.
+    if worktree::head(&territory).is_err() {
+        witness(
+            &mut w,
+            format!(
+                "territory {} is no longer a repository",
+                territory.display()
+            ),
+        )?;
+        return Err(witnessed_failure(&w));
+    }
+    if !receipt.worktree.is_dir() {
+        witness(
+            &mut w,
+            format!(
+                "retained worktree {} is missing",
+                receipt.worktree.display()
+            ),
+        )?;
+        return Err(witnessed_failure(&w));
+    }
+    match worktree::head(&receipt.worktree) {
+        Ok(head) if head == receipt.base => {}
+        _ => {
+            witness(
+                &mut w,
+                "retained worktree is not at the stamped base".to_string(),
+            )?;
+            return Err(witnessed_failure(&w));
+        }
+    }
+    match worktree::diff_against_base(&receipt.worktree, &receipt.base) {
+        Ok(patch) if patch.as_bytes() == diff_body.as_bytes() => {}
+        Ok(_) => {
+            witness(
+                &mut w,
+                "stamped diff mismatch — the worktree no longer matches what was cleared"
+                    .to_string(),
+            )?;
+            return Err(witnessed_failure(&w));
+        }
+        Err(error) => {
+            witness(&mut w, format!("diff verification failed: {error}"))?;
+            return Err(witnessed_failure(&w));
+        }
+    }
+
+    let message = format!(
+        "slip {slip_id}: {}\n\ngranted-by: {granter}\nvia: daemar gate:apply",
+        crate::engine::summarize(&slip.request)
+    );
+    let commit = match worktree::commit_all(&receipt.worktree, &message) {
+        Ok(commit) => commit,
+        Err(error) => {
+            witness(&mut w, format!("apply commit failed: {error}"))?;
+            return Err(witnessed_failure(&w));
+        }
+    };
+    w.append(&Kind::Note {
+        text: format!("apply commit {commit} (parent {})", receipt.base),
+    })?;
+
+    let dirty = match worktree::is_dirty(&territory) {
+        Ok(dirty) => dirty,
+        Err(error) => {
+            witness(&mut w, format!("territory status failed: {error}"))?;
+            return Err(witnessed_failure(&w));
+        }
+    };
+    let head_now = match worktree::head(&territory) {
+        Ok(head) => head,
+        Err(error) => {
+            witness(&mut w, format!("territory HEAD failed: {error}"))?;
+            return Err(witnessed_failure(&w));
+        }
+    };
+
+    if !dirty && head_now == receipt.base {
+        if let Err(error) = worktree::merge_ff_only(&territory, &commit) {
+            witness(
+                &mut w,
+                format!("fast-forward failed despite checks: {error}"),
+            )?;
+            return Err(witnessed_failure(&w));
+        }
+        w.append(&Kind::Note {
+            text: format!("landed {commit} onto {}", territory.display()),
+        })?;
+        if let Err(error) = worktree::remove(&territory, &receipt.worktree) {
+            witness(&mut w, format!("worktree removal failed: {error}"))?;
+            return Err(witnessed_failure(&w));
+        }
+        w.append(&Kind::Note {
+            text: format!("worktree removed: {}", receipt.worktree.display()),
+        })?;
+        w.append(&Kind::PhaseEnded {
+            phase: "apply".to_string(),
+            outcome: PhaseOutcome::Success,
+        })?;
+        w.append(&Kind::SlipClosed {
+            outcome: SlipOutcome::Accepted,
+            reason: format!("landed {commit}"),
+            by: "gate:apply".to_string(),
+        })?;
+        return Ok(code_report(slip_id, format!("landed {commit}"), None));
+    }
+
+    // The park: pure ref creation, zero working-tree interaction. Reuse an
+    // existing branch only when it already points at this exact commit.
+    let branch = format!("daemar/slip-{}", short_id(slip_id));
+    match worktree::branch_target(&territory, &branch) {
+        Ok(None) => {
+            if let Err(error) = worktree::branch_create(&territory, &branch, &commit) {
+                witness(&mut w, format!("branch park failed: {error}"))?;
+                return Err(witnessed_failure(&w));
+            }
+        }
+        Ok(Some(existing)) if existing == commit => {
+            w.append(&Kind::Note {
+                text: format!("branch {branch} already parked at {commit}"),
+            })?;
+        }
+        Ok(Some(existing)) => {
+            witness(
+                &mut w,
+                format!("branch {branch} exists at {existing}, not {commit} — collision"),
+            )?;
+            return Err(witnessed_failure(&w));
+        }
+        Err(error) => {
+            witness(&mut w, format!("branch inspection failed: {error}"))?;
+            return Err(witnessed_failure(&w));
+        }
+    }
+    let why = if dirty {
+        "territory dirty"
+    } else {
+        "territory HEAD moved"
+    };
+    w.append(&Kind::SectionWritten {
+        section: "apply.v1".to_string(),
+        by: "gate:apply".to_string(),
+        summary: park_receipt(&receipt.base, &receipt.worktree, &commit, &branch),
+        body: format!(
+            "{why}: commit {commit} parked on {branch}. Land it with daemar grant + \
+             continue when the territory is ready, or merge the branch yourself — \
+             continue will recognize the landing either way."
+        ),
+    })?;
+    w.append(&Kind::PhaseEnded {
+        phase: "apply".to_string(),
+        outcome: PhaseOutcome::Success,
+    })?;
+    w.append(&Kind::ClearanceRequested {
+        boundary: APPLY_TO_LAND.to_string(),
+        by: "gate:apply".to_string(),
+    })?;
+    Ok(code_report(
+        slip_id,
+        format!("{why}: parked {commit} on {branch}"),
+        Some(APPLY_TO_LAND),
+    ))
+}
+
+/// The LAND leg: the parked commit's journey home. The factory cares that
+/// the change is IN — reachable from the territory's HEAD — not who landed
+/// it: a manual merge is recognized and closed. Stale or dirty conditions
+/// REFUSE without events; the slip stays granted-and-holding, retryable.
+fn land_leg(
+    config: &Config,
+    slip_id: &str,
+    slip: &ledger::Slip,
+) -> Result<FlightReport, FlightError> {
+    let Some(receipt) = slip
+        .sections
+        .iter()
+        .rev()
+        .find(|s| s.section == "apply.v1")
+        .and_then(|s| decode_park_receipt(&s.summary))
+    else {
+        return Err(FlightError::Refused(format!(
+            "{slip_id} has no decodable apply.v1 receipt — cannot land"
+        )));
+    };
+    let territory = PathBuf::from(&slip.repo);
+
+    let landed_already = worktree::is_ancestor(&territory, &receipt.commit)
+        .map_err(|e| FlightError::Refused(format!("cannot inspect territory: {e}")))?;
+    let clean_and_unmoved = if landed_already {
+        false
+    } else {
+        let dirty = worktree::is_dirty(&territory)
+            .map_err(|e| FlightError::Refused(format!("cannot inspect territory: {e}")))?;
+        let head = worktree::head(&territory)
+            .map_err(|e| FlightError::Refused(format!("cannot inspect territory: {e}")))?;
+        !dirty && head == receipt.base
+    };
+    if !landed_already && !clean_and_unmoved {
+        return Err(FlightError::Refused(format!(
+            "{slip_id} cannot land yet — territory dirty or moved; merge {} manually and \
+             continue again, or continue once the territory is clean at the stamped base",
+            receipt.branch
+        )));
+    }
+
+    let mut w = LedgerWriter::resume(config.ledgers.as_ref(), SlipId(slip_id.to_string()))?;
+    w.append(&Kind::PhaseStarted {
+        phase: "land".to_string(),
+        owner: "gate:land".to_string(),
+        lane: Lane::Code,
+        engineer: config.engineer.clone(),
+    })?;
+    let witness = |w: &mut LedgerWriter, reason: String| -> Result<(), ledger::LedgerError> {
+        w.append(&Kind::Note {
+            text: reason.clone(),
+        })?;
+        w.append(&Kind::PhaseEnded {
+            phase: "land".to_string(),
+            outcome: PhaseOutcome::Error,
+        })?;
+        eprintln!("daemar: {reason}");
+        Ok(())
+    };
+
+    if landed_already {
+        w.append(&Kind::Note {
+            text: format!(
+                "commit {} already reachable from territory HEAD — landed by hand",
+                receipt.commit
+            ),
+        })?;
+    } else {
+        if let Err(error) = worktree::merge_ff_only(&territory, &receipt.commit) {
+            witness(
+                &mut w,
+                format!("fast-forward failed despite checks: {error}"),
+            )?;
+            return Err(witnessed_failure(&w));
+        }
+        w.append(&Kind::Note {
+            text: format!("landed {} onto {}", receipt.commit, territory.display()),
+        })?;
+    }
+    if receipt.worktree.is_dir() {
+        if let Err(error) = worktree::remove(&territory, &receipt.worktree) {
+            witness(&mut w, format!("worktree removal failed: {error}"))?;
+            return Err(witnessed_failure(&w));
+        }
+        w.append(&Kind::Note {
+            text: format!("worktree removed: {}", receipt.worktree.display()),
+        })?;
+    }
+    w.append(&Kind::PhaseEnded {
+        phase: "land".to_string(),
+        outcome: PhaseOutcome::Success,
+    })?;
+    w.append(&Kind::SlipClosed {
+        outcome: SlipOutcome::Accepted,
+        reason: format!("landed {}", receipt.commit),
+        by: "gate:land".to_string(),
+    })?;
+    Ok(code_report(
+        slip_id,
+        format!("landed {}", receipt.commit),
+        None,
+    ))
 }

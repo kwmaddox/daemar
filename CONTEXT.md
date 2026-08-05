@@ -40,6 +40,10 @@ A slip's engineer is permanently its **opener** — the slip belongs to who
 opened it. Each phase additionally records the engineer that flew that stage
 (`phase_started.v1`), so a flight continued by another client keeps its owner
 while the audit keeps the flyer.
+A build slip closes **accepted only when its apply commit is reachable from
+the territory's HEAD** — however it got there. Everything before that is
+attention on the board: a stamped-but-unlanded change is a cocked strip,
+never a closed slip. Nothing waits invisibly.
 
 **Face** — the slip's frontmatter: id, request one-liner, current phase,
 owner, status, clearance state, cost. Printed into every phase's context,

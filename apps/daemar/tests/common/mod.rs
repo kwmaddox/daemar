@@ -304,3 +304,98 @@ pub fn territory_at(dir: PathBuf) -> PathBuf {
     git(&["commit", "-q", "-m", "seed"]);
     dir.canonicalize().expect("canonical territory")
 }
+
+// ── A stamped build, fabricated at the wire ──────────────────────────────────
+
+/// Everything a gate-leg ceremony needs: a REAL territory, a REAL detached
+/// worktree with a real mutation, the REAL computed diff — and the build
+/// ledger hand-authored around them exactly as a build flight writes it.
+pub struct StampedBuild {
+    pub slip_id: String,
+    pub territory: PathBuf,
+    pub worktree: PathBuf,
+    pub base: String,
+}
+
+pub fn stamped_build(f: &Factory, name: &str, n: u8) -> StampedBuild {
+    let slip_id = format!("00000000-0000-7000-8000-0000000000{n:02}");
+    let territory = territory(name);
+    let base = factory::worktree::head(&territory).expect("territory pins");
+    let dest = f.worktrees.join(&slip_id).join("build");
+    let wt = factory::worktree::add_detached(&territory, &base, &dest).expect("worktree");
+    std::fs::write(wt.join("src/lib.rs"), "pub fn answer() -> u8 { 43 }\n").expect("mutate");
+    let patch = factory::worktree::diff_against_base(&wt, &base).expect("diff");
+    assert!(!patch.trim().is_empty());
+
+    let receipt = format!(r#"{{"v":1,"base":"{base}","worktree":"{}"}}"#, wt.display());
+    let mut w =
+        ledger::LedgerWriter::create(&f.ledgers, ledger::SlipId(slip_id.clone())).expect("ledger");
+    w.append(&ledger::Kind::SlipOpened {
+        request: "make answer 43".into(),
+        workflow: "build".into(),
+        engineer: "testctl".into(),
+        repo: territory.display().to_string(),
+    })
+    .unwrap();
+    w.append(&ledger::Kind::PhaseStarted {
+        phase: "build".into(),
+        owner: "builder".into(),
+        lane: ledger::Lane::Agent,
+        engineer: "testctl".into(),
+    })
+    .unwrap();
+    w.append(&ledger::Kind::SectionWritten {
+        section: "build.v1".into(),
+        by: "builder".into(),
+        summary: "changed answer to 43".into(),
+        body: "changed answer to 43".into(),
+    })
+    .unwrap();
+    w.append(&ledger::Kind::PhaseEnded {
+        phase: "build".into(),
+        outcome: ledger::PhaseOutcome::Success,
+    })
+    .unwrap();
+    w.append(&ledger::Kind::SectionWritten {
+        section: "diff.v1".into(),
+        by: "gate:diff".into(),
+        summary: receipt,
+        body: patch,
+    })
+    .unwrap();
+    w.append(&ledger::Kind::ClearanceRequested {
+        boundary: "build->apply".into(),
+        by: "gate:diff".into(),
+    })
+    .unwrap();
+    StampedBuild {
+        slip_id,
+        territory,
+        worktree: wt,
+        base,
+    }
+}
+
+/// git in a test territory, asserting success.
+pub fn territory_git(dir: &PathBuf, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.email=territory@test",
+            "-c",
+            "user.name=territory",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}

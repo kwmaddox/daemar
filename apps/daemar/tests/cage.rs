@@ -245,6 +245,58 @@ fn the_builder_mutates_a_caged_worktree_and_the_diff_cocks() {
 
 #[test]
 #[ignore = "requires docker and the daemar-cage:latest image"]
+fn the_full_write_ceremony_lands_a_caged_change() {
+    // Build through the cage, grant with the pen, continue through the
+    // gate: request to reachable commit, end to end.
+    let stub = stub_server();
+    let f = factory("cage-land", &stub);
+    let t = cage_territory("cage-land");
+
+    stub.push_tool_call("call_1", "read", r#"{"path":"src/lib.rs"}"#);
+    stub.push_tool_call(
+        "call_2",
+        "edit",
+        r#"{"path":"src/lib.rs","old":"42","new":"43"}"#,
+    );
+    stub.push_ok("BUILT: answer returns 43.");
+    let out = daemar_cmd(
+        &f,
+        &["build", "--repo", t.to_str().unwrap(), "make answer 43"],
+    )
+    .output()
+    .expect("run daemar");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (id, slip, _) = the_slip(&f);
+    assert_eq!(slip.cocked.as_deref(), Some("build->apply"));
+
+    let out = daemar(&f, &["grant", &id]);
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    let out = daemar(&f, &["continue", &id]);
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+
+    let source = std::fs::read_to_string(t.join("src/lib.rs")).unwrap();
+    assert!(source.contains("43"), "the change is in the territory");
+    let log = Command::new("git")
+        .arg("-C")
+        .arg(&t)
+        .args(["log", "-1", "--format=%an|%s"])
+        .output()
+        .expect("git");
+    let log = String::from_utf8_lossy(&log.stdout).to_string();
+    assert!(log.starts_with("daemar|"), "{log}");
+    assert!(log.contains(&id), "the landed commit names its slip: {log}");
+    let (_, slip, _) = the_slip(&f);
+    assert_eq!(slip.status, Status::Accepted);
+    std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
+#[ignore = "requires docker and the daemar-cage:latest image"]
 fn a_killed_cage_is_a_witnessed_failure() {
     let stub = stub_server();
     let f = factory("cage-killed", &stub);
