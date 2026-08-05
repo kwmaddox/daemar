@@ -79,7 +79,17 @@ enum GitRun {
 }
 
 fn run_git_raw(dir: &Path, args: &[&str]) -> Result<GitRun, WorktreeError> {
+    // The factory's git behaves identically on every machine: global and
+    // system config are silenced (no surprise diff drivers, filters, or
+    // hooksPath under a code-owned receipt), and ambient GIT_* overrides
+    // cannot redirect `-C dir` somewhere else. Commit identity, when a
+    // caller needs one, is passed explicitly via `-c`.
     let out = Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .arg("-C")
         .arg(dir)
         .args(args)
