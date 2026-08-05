@@ -32,15 +32,19 @@ fixtures/         hand-authored ledgers: accepted, cocked, in-flight, rejected
 daemar "<request>"                       # cargo run -p daemar -- "<request>"
 git diff | daemar -                      # request from stdin
 daemar scout --repo <path> "<question>"  # read-only recon over any repo
-daemar plan "<request>"                  # plan, then cock at plan->respond
+daemar plan --repo <path> "<request>"    # grounded plan, cock at plan->respond
 ```
 
-One slip, one phase, one model call, no tools, no checks — the board is the
-check. Config via env (direnv decrypts `secrets/daemar.enc.env`):
-`OPENAI_API_KEY`, `DAEMAR_MODEL`, `DAEMAR_BASE_URL` (OpenAI-compatible),
-`DAEMAR_LEDGERS` (default `ledgers/`). Errors close the slip honestly
-(rejected, reason on the ledger); a crash leaves no terminator and the board
-derives interrupted.
+Workflow stages name **roles** (scout, planner, responder); the **roster**
+(`apps/daemar/src/roster.rs`) binds each role to an agent — persona, airframe,
+tool access. The planner is grounded: it reads the territory with the scout's
+read-only tools before planning, and every read lands on the ledger. Config
+via env (direnv decrypts `secrets/daemar.enc.env`): `OPENAI_API_KEY`,
+`DAEMAR_MODEL` (per-role overrides `DAEMAR_SCOUT_MODEL` /
+`DAEMAR_PLAN_MODEL` / `DAEMAR_RESPOND_MODEL`), `DAEMAR_BASE_URL`
+(OpenAI-compatible), `DAEMAR_LEDGERS` (default `ledgers/`). Failure is
+witnessed: a failed flight stays open until the controller disposes it; a
+crash leaves no terminator and the board derives interrupted.
 
 ## Status
 

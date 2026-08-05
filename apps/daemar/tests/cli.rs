@@ -370,6 +370,63 @@ fn the_scout_reads_the_territory_and_reports() {
 }
 
 #[test]
+fn the_planner_reads_the_territory_before_planning() {
+    // The grounded planner: same seat shape as the scout — tools, turn
+    // loop, trail — but the stage cocks at the boundary instead of closing.
+    let stub = stub_server();
+    let f = factory("grounded-plan", &stub);
+    let t = territory("grounded-plan");
+
+    // Turn 1: the planner asks to read the file its plan will touch.
+    // Turn 2: it files the plan.
+    stub.push_tool_call("call_1", "read", r#"{"path":"src/lib.rs"}"#);
+    stub.push_ok("PLAN: change answer() in src/lib.rs:1 to return 43.");
+    let out = daemar(
+        &f,
+        &[
+            "plan",
+            "--repo",
+            t.to_str().unwrap(),
+            "make answer return 43",
+        ],
+    );
+    assert_eq!(exit_code(&out), 0, "plan flight: {}", stderr(&out));
+
+    let (_, slip, events) = the_slip(&f);
+    assert_eq!(slip.status, Status::InFlight);
+    assert_eq!(
+        slip.cocked.as_deref(),
+        Some("plan->respond"),
+        "a grounded plan still cocks at the boundary"
+    );
+    assert_eq!(
+        slip.repo,
+        t.display().to_string(),
+        "the slip remembers its territory"
+    );
+    assert_eq!(slip.tool_trail.len(), 1);
+    assert!(slip.tool_trail[0].ok);
+    assert_eq!(slip.tool_trail[0].tool, "read");
+    let read_on_plan_phase = events.iter().any(|e| {
+        if let EventKind::Known(Kind::ToolCall {
+            phase, tool, ok, ..
+        }) = &e.kind
+        {
+            phase == "plan" && tool == "read" && *ok
+        } else {
+            false
+        }
+    });
+    assert!(read_on_plan_phase, "the read belongs to the plan phase");
+    let planned = slip
+        .sections
+        .iter()
+        .any(|s| s.section == "plan.v1" && s.by == "planner" && s.body.contains("src/lib.rs"));
+    assert!(planned, "the planner files a plan.v1 section, signed");
+    std::fs::remove_dir_all(&t).ok();
+}
+
+#[test]
 fn object_form_tool_arguments_are_preserved_not_dropped() {
     // Some OpenAI-compatible providers send `arguments` as a JSON object
     // instead of the spec's string. Those inputs must reach the tool.

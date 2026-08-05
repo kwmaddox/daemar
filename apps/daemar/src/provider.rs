@@ -20,15 +20,6 @@ pub struct Provider {
     pub api_key: String,
 }
 
-pub struct ModelReply {
-    pub text: String,
-    pub prompt_tokens: u64,
-    /// Cache-hit subset of prompt_tokens — billed at the cached rate.
-    pub cached_tokens: u64,
-    pub completion_tokens: u64,
-    pub total_tokens: u64,
-}
-
 /// One tool invocation the model asked for. `arguments` stays the raw JSON
 /// string the provider sent — the executor parses it, and a malformed one
 /// becomes an error outcome the model gets to read.
@@ -205,29 +196,6 @@ impl Provider {
             cached_tokens: usage.prompt_tokens_details.cached_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens,
-        })
-    }
-
-    /// One toolless turn: system + user in, text out. The original seam,
-    /// now a wrapper over `chat`.
-    pub fn complete(
-        &self,
-        model: &str,
-        system: &str,
-        user: &str,
-    ) -> Result<ModelReply, ProviderError> {
-        let messages = [
-            serde_json::json!({ "role": "system", "content": system }),
-            serde_json::json!({ "role": "user", "content": user }),
-        ];
-        let out = self.chat(model, &messages, None)?;
-        let text = out.text.ok_or(ProviderError::MissingContent)?;
-        Ok(ModelReply {
-            text,
-            prompt_tokens: out.prompt_tokens,
-            cached_tokens: out.cached_tokens,
-            completion_tokens: out.completion_tokens,
-            total_tokens: out.total_tokens,
         })
     }
 }
