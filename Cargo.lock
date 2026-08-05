@@ -204,6 +204,7 @@ version = "0.1.0"
 dependencies = [
  "factory",
  "ledger",
+ "serde_json",
 ]
 
 [[package]]

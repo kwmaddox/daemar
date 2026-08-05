@@ -41,12 +41,40 @@ Workflow stages name **roles** (scout, planner, responder); the **roster**
 (`crates/factory/src/roster.rs`) binds each role to an agent — persona,
 airframe, tool access. The planner is grounded: it reads the territory with the scout's
 read-only tools before planning, and every read lands on the ledger. Config
-via env (direnv decrypts `secrets/daemar.enc.env`): `OPENAI_API_KEY`,
-`DAEMAR_MODEL` (per-role overrides `DAEMAR_SCOUT_MODEL` /
-`DAEMAR_PLAN_MODEL` / `DAEMAR_RESPOND_MODEL`), `DAEMAR_BASE_URL`
-(OpenAI-compatible), `DAEMAR_LEDGERS` (default `ledgers/`). Failure is
-witnessed: a failed flight stays open until the controller disposes it; a
-crash leaves no terminator and the board derives interrupted.
+via env: `OPENAI_API_KEY`, `DAEMAR_MODEL` (per-role overrides
+`DAEMAR_SCOUT_MODEL` / `DAEMAR_PLAN_MODEL` / `DAEMAR_RESPOND_MODEL`),
+`DAEMAR_BASE_URL` (OpenAI-compatible), `DAEMAR_LEDGERS` (default
+`ledgers/`). `DAEMAR_HOME` roots the relative defaults (ledgers, airframes,
+secrets) so daemar works from anywhere; on a missing env var the tower
+decrypts `$DAEMAR_HOME/secrets/daemar.enc.env` itself, in-process — the key
+never rides in any exec environment. Failure is witnessed: a failed flight
+stays open until the controller disposes it; a crash leaves no terminator
+and the board derives interrupted.
+
+## The tower over MCP
+
+```bash
+daemar mcp        # stdio MCP server: one process per client
+```
+
+Any MCP client becomes a factory interface. Tools: `scout`, `plan`,
+`prompt`, `continue`, `slip` — flights and reads only; the controller's pens
+(grant/refuse/dispose) are deliberately not exposed, so a delegated agent
+may request clearances but never sign them. Slips opened over MCP are
+signed `engineer: "mcp:<client>"` from the handshake's `clientInfo.name`.
+Client config (`cargo install --path apps/daemar` puts `daemar` on PATH):
+
+```json
+{
+  "mcpServers": {
+    "daemar": {
+      "command": "daemar",
+      "args": ["mcp"],
+      "env": { "DAEMAR_HOME": "/path/to/daemar" }
+    }
+  }
+}
+```
 
 ## Status
 
