@@ -632,7 +632,14 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
 
     if !slip.model_requests.is_empty() {
         html.push_str("<h2>prompts</h2>");
+        let mut continuations = 0usize;
         for r in &slip.model_requests {
+            // Continuation turns carry no prompts — their context is the tool
+            // trail. One counted line, not a bare row per turn.
+            if r.system.is_empty() && r.user.is_empty() {
+                continuations += 1;
+                continue;
+            }
             html.push_str(&format!(
                 "<p class=\"promptmeta\">{} · {} · {}</p>",
                 esc(&r.phase),
@@ -647,6 +654,11 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
                     ));
                 }
             }
+        }
+        if continuations > 0 {
+            html.push_str(&format!(
+                "<p class=\"promptmeta\">+ {continuations} continuation turn(s) — context is the tool trail below</p>"
+            ));
         }
     }
 
