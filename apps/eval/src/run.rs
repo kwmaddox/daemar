@@ -111,6 +111,39 @@ fn dossier_dir_name() -> String {
     )
 }
 
+/// Claim a fresh dossier directory with create-new semantics — the same
+/// born-exactly-once rule as a slip's ledger. A name collision bumps a
+/// suffix instead of overwriting: dossiers are immutable, so an existing
+/// directory is never reused.
+fn claim_dossier_dir(root: &Path) -> Result<PathBuf, EvalError> {
+    fs::create_dir_all(root).map_err(|e| EvalError::Io {
+        path: root.to_path_buf(),
+        detail: e.to_string(),
+    })?;
+    let base = dossier_dir_name();
+    for attempt in 0..100u32 {
+        let candidate = if attempt == 0 {
+            root.join(&base)
+        } else {
+            root.join(format!("{base}-{attempt}"))
+        };
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(EvalError::Io {
+                    path: candidate,
+                    detail: e.to_string(),
+                })
+            }
+        }
+    }
+    Err(EvalError::Io {
+        path: root.join(base),
+        detail: "could not claim a fresh dossier directory in 100 attempts".to_string(),
+    })
+}
+
 fn build_commit(repo: &Path) -> String {
     std::process::Command::new("git")
         .arg("-C")
@@ -172,11 +205,7 @@ pub fn run(
     let model = config.model_for(Role::Scout).to_string();
     progress(&format!("scout airframe: {model}"));
 
-    let dossier_dir = roots.dossiers.join(dossier_dir_name());
-    fs::create_dir_all(&dossier_dir).map_err(|e| EvalError::Io {
-        path: dossier_dir.clone(),
-        detail: e.to_string(),
-    })?;
+    let dossier_dir = claim_dossier_dir(&roots.dossiers)?;
 
     let mut records: Vec<CaseRecord> = Vec::new();
     for (case, worktree) in selected.iter().zip(&worktrees) {
@@ -439,5 +468,16 @@ mod tests {
             "a missing key file must refuse, not vanish from the manifest"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn same_second_claims_get_distinct_dossier_dirs_never_overwrites() {
+        let root = std::env::temp_dir().join(format!("daemar-eval-claim-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let first = claim_dossier_dir(&root).expect("first claim");
+        let second = claim_dossier_dir(&root).expect("second claim");
+        assert_ne!(first, second, "same-second claims must not collide");
+        assert!(first.is_dir() && second.is_dir());
+        std::fs::remove_dir_all(&root).ok();
     }
 }
