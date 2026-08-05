@@ -223,6 +223,7 @@ fn render_board(app: &App, report: &LoadReport) -> String {
 
     let mut failed: Vec<&Slip> = Vec::new();
     let mut cocked: Vec<&Slip> = Vec::new();
+    let mut holding: Vec<&Slip> = Vec::new();
     let mut stale: Vec<&Slip> = Vec::new();
     let mut flying: Vec<&Slip> = Vec::new();
     let mut closed_count = 0usize;
@@ -234,6 +235,8 @@ fn render_board(app: &App, report: &LoadReport) -> String {
                     failed.push(slip);
                 } else if slip.cocked.is_some() {
                     cocked.push(slip);
+                } else if slip.holding.is_some() {
+                    holding.push(slip);
                 } else if silence(slip, now) >= app.stale_secs {
                     stale.push(slip);
                 } else {
@@ -244,22 +247,24 @@ fn render_board(app: &App, report: &LoadReport) -> String {
         }
     }
     // Attention order: confirmed failures first (oldest unwitnessed first),
-    // then waiting clearances, then suspected trouble by silence.
+    // then waiting clearances, then cleared-and-holding, then suspected
+    // trouble by silence.
     failed.sort_by_key(|s| std::cmp::Reverse(failed_age(s, now)));
     cocked.sort_by_key(|s| std::cmp::Reverse(cocked_wait(s, now)));
+    holding.sort_by_key(|s| std::cmp::Reverse(holding_age(s, now)));
     stale.sort_by_key(|s| std::cmp::Reverse(silence(s, now)));
     // Healthy traffic: most recent activity first.
     flying.sort_by_key(|s| silence(s, now));
 
+    let attention = failed.len() + cocked.len() + holding.len() + stale.len();
     let mut html = String::new();
     html.push_str(&format!(
-        "<section><h2>ATTENTION <span class=\"count\">{}</span></h2>",
-        failed.len() + cocked.len() + stale.len()
+        "<section><h2>ATTENTION <span class=\"count\">{attention}</span></h2>"
     ));
-    if failed.is_empty() && cocked.is_empty() && stale.is_empty() {
+    if attention == 0 {
         html.push_str("<p class=\"empty\">— clean board —</p>");
     }
-    for slip in failed.iter().chain(cocked.iter()).chain(stale.iter()) {
+    for slip in failed.iter().chain(cocked.iter()).chain(holding.iter()).chain(stale.iter()) {
         html.push_str(&render_strip(slip, now, app.stale_secs));
     }
     html.push_str("</section>");
@@ -326,6 +331,8 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
 
     let (class, status, age) = if slip.status == Status::InFlight && slip.failed.is_some() {
         ("failed", "FLD", format!("⚠{}", human(failed_age(slip, now))))
+    } else if slip.status == Status::InFlight && slip.cocked.is_none() && slip.holding.is_some() {
+        ("holding", "RDY", format!("holding {}", human(holding_age(slip, now))))
     } else {
         match (&slip.cocked, &slip.status) {
         (Some(_), _) => ("cocked", "CKD", format!("⚠{}", human(cocked_wait(slip, now)))),
@@ -351,6 +358,9 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
         .join(" ");
     if let Some(boundary) = &slip.cocked {
         route.push_str(&format!(" <i class=\"pend\">→{}</i>", boundary_code(boundary)));
+    }
+    if let Some(boundary) = &slip.holding {
+        route.push_str(&format!(" <i class=\"ok\">▸{}</i>", boundary_code(boundary)));
     }
 
     format!(
@@ -381,6 +391,17 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
 /// Seconds since the ledger last spoke.
 fn silence(slip: &Slip, now: u64) -> u64 {
     ledger::parse_ts(&slip.last_ts).map(|t| now.saturating_sub(t)).unwrap_or(0)
+}
+
+/// Seconds since the clearance was granted with nothing flown after it.
+fn holding_age(slip: &Slip, now: u64) -> u64 {
+    slip.clearances
+        .iter()
+        .rev()
+        .find_map(|c| c.response.as_ref())
+        .and_then(|r| ledger::parse_ts(&r.ts))
+        .map(|t| now.saturating_sub(t))
+        .unwrap_or(0)
 }
 
 /// Seconds since the unwitnessed failure — the last phase's error ended.
@@ -470,18 +491,23 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
          <tr><th>spend</th><td>{} model calls · {} tokens · ${:.2} · {} queries</td></tr>{}</table></div>",
         esc(&slip.request),
         slip.status,
-        match (&slip.failed, &slip.cocked) {
-            (Some(phase), _) => format!(
+        match (&slip.failed, &slip.cocked, &slip.holding) {
+            (Some(phase), _, _) => format!(
                 " — FAILED at {}; dispose: <code>daemar dispose {}</code>",
                 esc(phase),
                 esc(&slip.id.0)
             ),
-            (None, Some(boundary)) => format!(
+            (None, Some(boundary), _) => format!(
                 " — COCKED at {}; <code>daemar grant {id}</code> · <code>daemar refuse {id}</code>",
                 esc(boundary),
                 id = esc(&slip.id.0)
             ),
-            (None, None) => String::new(),
+            (None, None, Some(boundary)) => format!(
+                " — CLEARED at {}, holding; <code>daemar continue {}</code>",
+                esc(boundary),
+                esc(&slip.id.0)
+            ),
+            (None, None, None) => String::new(),
         },
         esc(&slip.workflow),
         esc(&slip.engineer),
@@ -681,6 +707,9 @@ main.viewing .strip .wf,main.viewing .strip .model,main.viewing .strip .num{opac
 .strip.failed{border-left-color:#f87171;transform:rotate(-1.2deg);background:#1d1113}
 .strip.failed .status{color:#f87171}
 .strip.failed:hover{transform:rotate(-1.2deg) translateX(3px)}
+.strip.holding{border-left-color:#4ade80;transform:rotate(-1.2deg);background:#101a13}
+.strip.holding .status{color:#4ade80}
+.strip.holding:hover{transform:rotate(-1.2deg) translateX(3px)}
 .strip.stale{border-left-color:#f87171;opacity:.75}
 .strip.stale .status{color:#f87171}
 .strip.inflight{border-left-color:#38bdf8}

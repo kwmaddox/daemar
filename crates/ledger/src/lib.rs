@@ -338,6 +338,9 @@ pub struct Slip {
     /// The phase whose error is unwitnessed: last phase ended in error and
     /// nothing has happened since, on a slip still open. Awaiting disposition.
     pub failed: Option<String>,
+    /// Cleared and holding: the latest clearance was granted and no phase has
+    /// flown since — the flight is waiting for `continue`. Awaiting throttle.
+    pub holding: Option<String>,
     pub current_phase: Option<String>,
     pub close_reason: Option<String>,
     pub phases: Vec<PhaseRow>,
@@ -379,6 +382,7 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                     status: Status::InFlight,
                     cocked: None,
                     failed: None,
+                    holding: None,
                     current_phase: None,
                     close_reason: None,
                     phases: Vec::new(),
@@ -484,9 +488,24 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                 .last()
                 .filter(|p| p.outcome == Some(PhaseOutcome::Error))
                 .map(|p| p.phase.clone());
+            // Holding: cleared for the next leg, nothing flown since — the
+            // flight waits for `continue`. Fixed-width UTC timestamps make
+            // string order time order.
+            s.holding = if s.cocked.is_none() && s.failed.is_none() {
+                s.clearances.iter().rev().find_map(|c| match &c.response {
+                    Some(r) if r.verdict == ClearanceVerdict::Granted => {
+                        let flown = s.phases.iter().any(|p| p.started >= r.ts);
+                        (!flown).then(|| c.boundary.clone())
+                    }
+                    _ => None,
+                })
+            } else {
+                None
+            };
         } else {
             s.cocked = None;
             s.failed = None;
+            s.holding = None;
         }
     }
     slip
@@ -899,6 +918,31 @@ mod tests {
         );
         let slip = fold(&retried).unwrap();
         assert_eq!(slip.failed, None); // a new phase is progress, not a corpse
+    }
+
+    #[test]
+    fn a_granted_clearance_with_nothing_flown_is_holding() {
+        let base = [
+            line(1, "2026-01-01T00:00:01Z", "slip_opened.v1", r#"{"request":"r","workflow":"plan","engineer":"e"}"#),
+            line(2, "2026-01-01T00:00:02Z", "phase_started.v1", r#"{"phase":"plan","owner":"o","lane":"agent"}"#),
+            line(3, "2026-01-01T00:00:03Z", "phase_ended.v1", r#"{"phase":"plan","outcome":"success"}"#),
+            line(4, "2026-01-01T00:00:04Z", "clearance_requested.v1", r#"{"boundary":"plan->respond","by":"planner"}"#),
+            line(5, "2026-01-01T00:00:05Z", "clearance_granted.v1", r#"{"boundary":"plan->respond","by":"kendall"}"#),
+        ];
+        let slip = fold(&parse(&base)).unwrap();
+        assert_eq!(slip.cocked, None); // answered, so not cocked...
+        assert_eq!(slip.holding.as_deref(), Some("plan->respond")); // ...but waiting for throttle
+
+        // Pushing the throttle clears holding.
+        let continued = parse(
+            &base
+                .iter()
+                .cloned()
+                .chain([line(6, "2026-01-01T00:00:06Z", "phase_started.v1",
+                    r#"{"phase":"respond","owner":"o","lane":"agent"}"#)])
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(fold(&continued).unwrap().holding, None);
     }
 
     #[test]
