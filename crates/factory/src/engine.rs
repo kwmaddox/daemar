@@ -62,6 +62,7 @@ pub fn run_stage(
         phase: stage.phase.to_string(),
         owner: agent.name.to_string(),
         lane: Lane::Agent,
+        engineer: config.engineer.clone(),
     })?;
 
     // Tool context, when the seat carries tools. A bad territory is a

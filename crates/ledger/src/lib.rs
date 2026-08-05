@@ -116,6 +116,11 @@ pub enum Kind {
         phase: String,
         owner: String,
         lane: Lane,
+        /// Who flew this stage. The slip's engineer is permanently the
+        /// opener; this field keeps the flyer when a later client continues
+        /// the flight. Defaulted: pre-attribution ledgers fold cleanly.
+        #[serde(default)]
+        engineer: String,
     },
     #[serde(rename = "phase_ended.v1")]
     PhaseEnded {
@@ -316,6 +321,8 @@ pub struct PhaseRow {
     pub phase: String,
     pub owner: String,
     pub lane: Lane,
+    /// The engineer that flew this stage; empty on pre-attribution ledgers.
+    pub engineer: String,
     pub started: String,
     pub ended: Option<String>,
     pub outcome: Option<PhaseOutcome>,
@@ -460,13 +467,19 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                 let Some(s) = slip.as_mut() else { continue };
                 match other {
                     Kind::SlipOpened { .. } => unreachable!("handled above"),
-                    Kind::PhaseStarted { phase, owner, lane } => {
+                    Kind::PhaseStarted {
+                        phase,
+                        owner,
+                        lane,
+                        engineer,
+                    } => {
                         throttle_awaited = None; // the throttle was pushed
                         s.current_phase = Some(phase.clone());
                         s.phases.push(PhaseRow {
                             phase,
                             owner,
                             lane,
+                            engineer,
                             started: ts,
                             ended: None,
                             outcome: None,
@@ -946,6 +959,10 @@ mod tests {
         assert_eq!(slip.phases.len(), 1);
         assert_eq!(slip.phases[0].outcome, Some(PhaseOutcome::Success));
         assert_eq!(slip.phases[0].lane, Lane::Agent);
+        assert_eq!(
+            slip.phases[0].engineer, "",
+            "pre-attribution wire folds to an empty flyer, not a parse failure"
+        );
         assert_eq!(slip.sections.len(), 1);
         assert_eq!(slip.tokens, 1000);
         assert_eq!(slip.last_model.as_deref(), Some("m"));
@@ -1106,6 +1123,37 @@ mod tests {
         let slip = fold(&file.events).expect("folds");
         assert_eq!(slip.status, Status::Accepted);
         assert_eq!(slip.sections[0].body, "the full text\nwith lines");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn phase_engineers_ride_the_wire_and_survive_the_fold() {
+        let dir = std::env::temp_dir().join(format!("daemar-flyer-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let mut w = LedgerWriter::create(&dir, SlipId("slip-flyer".into())).unwrap();
+        w.append(&Kind::SlipOpened {
+            request: "r".into(),
+            workflow: "plan".into(),
+            engineer: "mcp:moggy".into(),
+            repo: String::new(),
+        })
+        .unwrap();
+        w.append(&Kind::PhaseStarted {
+            phase: "respond".into(),
+            owner: "responder".into(),
+            lane: Lane::Agent,
+            engineer: "mcp:moghedien".into(),
+        })
+        .unwrap();
+
+        let file = load_ledger(&dir.join("slip-flyer.jsonl")).unwrap();
+        assert!(file.bad_lines.is_empty());
+        let slip = fold(&file.events).unwrap();
+        assert_eq!(slip.engineer, "mcp:moggy", "the slip belongs to its opener");
+        assert_eq!(
+            slip.phases[0].engineer, "mcp:moghedien",
+            "the stage records its flyer"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
