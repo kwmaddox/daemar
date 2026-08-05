@@ -76,7 +76,9 @@ impl Config {
             .ok_or(ConfigError::Missing("DAEMAR_PLAN_MODEL (or DAEMAR_MODEL)"))?;
         let respond_model = env("DAEMAR_RESPOND_MODEL")
             .or_else(|| default_model.clone())
-            .ok_or(ConfigError::Missing("DAEMAR_RESPOND_MODEL (or DAEMAR_MODEL)"))?;
+            .ok_or(ConfigError::Missing(
+                "DAEMAR_RESPOND_MODEL (or DAEMAR_MODEL)",
+            ))?;
         Ok(Config {
             provider: Provider {
                 base_url: env("DAEMAR_BASE_URL")
@@ -113,9 +115,13 @@ impl Pricing {
         match Registry::load(airframes.as_ref()) {
             Ok(registry) => match registry.price(model) {
                 Some(price) => Pricing::Priced(price),
-                None => Pricing::Unregistered { model: model.to_string() },
+                None => Pricing::Unregistered {
+                    model: model.to_string(),
+                },
             },
-            Err(error) => Pricing::RegistryBroken { detail: error.to_string() },
+            Err(error) => Pricing::RegistryBroken {
+                detail: error.to_string(),
+            },
         }
     }
 
@@ -132,9 +138,9 @@ impl Pricing {
             Pricing::Unregistered { model } => Some(format!(
                 "airframe {model} is not in airframes.toml; cost unrecorded"
             )),
-            Pricing::RegistryBroken { detail } => {
-                Some(format!("airframe registry unreadable; cost unrecorded — {detail}"))
-            }
+            Pricing::RegistryBroken { detail } => Some(format!(
+                "airframe registry unreadable; cost unrecorded — {detail}"
+            )),
         }
     }
 }
@@ -242,9 +248,16 @@ fn agent_phase(
         system: spec.system.to_string(),
         user: spec.user.clone(),
     })?;
-    match config.provider.complete(spec.model, spec.system, &spec.user) {
+    match config
+        .provider
+        .complete(spec.model, spec.system, &spec.user)
+    {
         Ok(reply) => {
-            let cost = pricing.cost(reply.prompt_tokens, reply.cached_tokens, reply.completion_tokens);
+            let cost = pricing.cost(
+                reply.prompt_tokens,
+                reply.cached_tokens,
+                reply.completion_tokens,
+            );
             w.append(&Kind::ModelCall {
                 phase: spec.phase.to_string(),
                 model: spec.model.to_string(),
@@ -271,7 +284,9 @@ fn agent_phase(
         }
         Err(error) => {
             let reason = error.to_string();
-            w.append(&Kind::Note { text: format!("model call failed: {reason}") })?;
+            w.append(&Kind::Note {
+                text: format!("model call failed: {reason}"),
+            })?;
             w.append(&Kind::PhaseEnded {
                 phase: spec.phase.to_string(),
                 outcome: PhaseOutcome::Error,
@@ -395,10 +410,12 @@ fn continue_flight(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let granted = slip
-        .clearances
-        .iter()
-        .any(|c| c.boundary == BOUNDARY && c.response.as_ref().is_some_and(|r| r.verdict == ledger::ClearanceVerdict::Granted));
+    let granted = slip.clearances.iter().any(|c| {
+        c.boundary == BOUNDARY
+            && c.response
+                .as_ref()
+                .is_some_and(|r| r.verdict == ledger::ClearanceVerdict::Granted)
+    });
     if !granted {
         eprintln!("daemar: {slip_id} has no granted {BOUNDARY} clearance — nothing to continue");
         return ExitCode::from(2);
@@ -472,7 +489,10 @@ fn grant(args: &[String]) -> ExitCode {
             return Err(format!("{} is not awaiting any clearance", slip.id));
         };
         Ok((
-            vec![Kind::ClearanceGranted { boundary: boundary.clone(), by: engineer() }],
+            vec![Kind::ClearanceGranted {
+                boundary: boundary.clone(),
+                by: engineer(),
+            }],
             format!("cleared at {boundary} · daemar continue {}", slip.id),
         ))
     })
@@ -485,7 +505,11 @@ fn refuse(args: &[String]) -> ExitCode {
         let Some(boundary) = slip.cocked.clone() else {
             return Err(format!("{} is not awaiting any clearance", slip.id));
         };
-        let reason = if reason.is_empty() { "clearance refused".to_string() } else { reason };
+        let reason = if reason.is_empty() {
+            "clearance refused".to_string()
+        } else {
+            reason
+        };
         Ok((
             vec![
                 Kind::ClearanceRefused {
@@ -508,10 +532,17 @@ fn refuse(args: &[String]) -> ExitCode {
 /// an error first. Refuses already-closed slips: history is not re-litigated.
 fn dispose(args: &[String]) -> ExitCode {
     controller_pen(args, |slip, reason| {
-        let reason = if reason.is_empty() { "disposed by controller".to_string() } else { reason };
+        let reason = if reason.is_empty() {
+            "disposed by controller".to_string()
+        } else {
+            reason
+        };
         let mut events = Vec::new();
         if let Some(open_phase) = slip.current_phase.clone() {
-            events.push(Kind::PhaseEnded { phase: open_phase, outcome: PhaseOutcome::Error });
+            events.push(Kind::PhaseEnded {
+                phase: open_phase,
+                outcome: PhaseOutcome::Error,
+            });
         }
         events.push(Kind::SlipClosed {
             outcome: SlipOutcome::Rejected,
@@ -583,7 +614,11 @@ fn load_open_slip(slip_id: &str) -> Result<Slip, String> {
 
 /// The strip's table line: first line of the response, clipped.
 fn summarize(text: &str) -> String {
-    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let first = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     if first.chars().count() <= 110 {
         first.to_string()
     } else {

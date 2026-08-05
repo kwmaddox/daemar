@@ -28,7 +28,10 @@ pub struct ModelReply {
 #[derive(Debug)]
 pub enum ProviderError {
     Transport(String),
-    Status { code: u16, body: String },
+    Status {
+        code: u16,
+        body: String,
+    },
     Decode(String),
     /// 200 OK but no assistant text — a response shape we refuse to guess at.
     MissingContent,
@@ -88,7 +91,12 @@ struct PromptTokensDetails {
 
 impl Provider {
     /// One turn: system + user in, assistant text and usage out.
-    pub fn complete(&self, model: &str, system: &str, user: &str) -> Result<ModelReply, ProviderError> {
+    pub fn complete(
+        &self,
+        model: &str,
+        system: &str,
+        user: &str,
+    ) -> Result<ModelReply, ProviderError> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let body = serde_json::json!({
             "model": model,

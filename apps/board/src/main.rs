@@ -35,9 +35,18 @@ struct App {
 async fn main() {
     // Real flights by default; DAEMAR_LEDGERS=fixtures for the test corpus.
     let ledgers = std::env::var("DAEMAR_LEDGERS").unwrap_or_else(|_| "ledgers".to_string());
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(4700);
-    let stale_secs: u64 = std::env::var("DAEMAR_STALE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
-    let app = Arc::new(App { ledgers: PathBuf::from(ledgers), stale_secs });
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(4700);
+    let stale_secs: u64 = std::env::var("DAEMAR_STALE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
+    let app = Arc::new(App {
+        ledgers: PathBuf::from(ledgers),
+        stale_secs,
+    });
 
     let router = Router::new()
         .route("/", get(index))
@@ -49,7 +58,10 @@ async fn main() {
         .with_state(app.clone());
 
     let addr = format!("127.0.0.1:{port}");
-    println!("[board] serving http://{addr}  ledgers: {}", app.ledgers.display());
+    println!(
+        "[board] serving http://{addr}  ledgers: {}",
+        app.ledgers.display()
+    );
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     axum::serve(listener, router).await.expect("serve");
 }
@@ -71,7 +83,10 @@ fn find<'a>(report: &'a LoadReport, id: &str) -> Option<&'a FoldedSlip> {
 }
 
 fn now_epoch() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ── Change push ──────────────────────────────────────────────────────────────
@@ -104,7 +119,9 @@ fn fingerprint(dir: &std::path::Path) -> u64 {
 /// "change" the moment anything moves. The client refetches on push, so the
 /// board reacts to a ledger write in ~300ms instead of a blind 2s poll. Files
 /// stay the only truth — this is a doorbell, not a data channel.
-async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+async fn events(
+    State(app): State<Arc<App>>,
+) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let (tx, rx) = tokio::sync::mpsc::channel::<()>(8);
     let dir = app.ledgers.clone();
     tokio::spawn(async move {
@@ -136,7 +153,11 @@ async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<Ss
 /// a closed slip's detail must never dump you back into live traffic.
 fn shell(app: &App, selected: Option<&str>, closed_view: bool) -> String {
     let report = load(app);
-    let board = if closed_view { render_closed(&report) } else { render_board(app, &report) };
+    let board = if closed_view {
+        render_closed(&report)
+    } else {
+        render_board(app, &report)
+    };
     let (init, detail) = match selected.and_then(|id| find(&report, id)) {
         Some(folded) => (
             folded.slip.id.0.clone(),
@@ -144,8 +165,16 @@ fn shell(app: &App, selected: Option<&str>, closed_view: bool) -> String {
         ),
         None => (String::new(), String::new()),
     };
-    let viewing = if init.is_empty() { "" } else { " class=\"viewing\"" };
-    let (bays_url, home) = if closed_view { ("/board?view=closed", "/closed") } else { ("/board", "/") };
+    let viewing = if init.is_empty() {
+        ""
+    } else {
+        " class=\"viewing\""
+    };
+    let (bays_url, home) = if closed_view {
+        ("/board?view=closed", "/closed")
+    } else {
+        ("/board", "/")
+    };
     format!(
         "{STYLE}<title>daemar — the board</title>\
          <header><h1>daemar</h1><span class=\"sub\">the board · ledgers are truth · slips are folds</span></header>\
@@ -193,7 +222,11 @@ async fn index(State(app): State<Arc<App>>) -> Html<String> {
 async fn board_fragment(State(app): State<Arc<App>>, RawQuery(query): RawQuery) -> Html<String> {
     let report = load(&app);
     let closed_view = query.as_deref().is_some_and(|q| q.contains("view=closed"));
-    Html(if closed_view { render_closed(&report) } else { render_board(&app, &report) })
+    Html(if closed_view {
+        render_closed(&report)
+    } else {
+        render_board(&app, &report)
+    })
 }
 
 async fn closed_page(State(app): State<Arc<App>>) -> Html<String> {
@@ -211,9 +244,18 @@ async fn slip_page(State(app): State<Arc<App>>, Path(id): Path<String>) -> Respo
 async fn slip_fragment(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
     let report = load(&app);
     let Some(folded) = find(&report, &id) else {
-        return (StatusCode::NOT_FOUND, Html(format!("<p class=\"empty\">no slip {}</p>", esc(&id)))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Html(format!("<p class=\"empty\">no slip {}</p>", esc(&id))),
+        )
+            .into_response();
     };
-    Html(render_detail(&folded.slip, &folded.events, &folded.bad_lines)).into_response()
+    Html(render_detail(
+        &folded.slip,
+        &folded.events,
+        &folded.bad_lines,
+    ))
+    .into_response()
 }
 
 // ── The board ────────────────────────────────────────────────────────────────
@@ -264,12 +306,20 @@ fn render_board(app: &App, report: &LoadReport) -> String {
     if attention == 0 {
         html.push_str("<p class=\"empty\">— clean board —</p>");
     }
-    for slip in failed.iter().chain(cocked.iter()).chain(holding.iter()).chain(stale.iter()) {
+    for slip in failed
+        .iter()
+        .chain(cocked.iter())
+        .chain(holding.iter())
+        .chain(stale.iter())
+    {
         html.push_str(&render_strip(slip, now, app.stale_secs));
     }
     html.push_str("</section>");
 
-    html.push_str(&format!("<section><h2>IN FLIGHT <span class=\"count\">{}</span></h2>", flying.len()));
+    html.push_str(&format!(
+        "<section><h2>IN FLIGHT <span class=\"count\">{}</span></h2>",
+        flying.len()
+    ));
     if flying.is_empty() {
         html.push_str("<p class=\"empty\">— none —</p>");
     }
@@ -311,7 +361,10 @@ fn render_closed(report: &LoadReport) -> String {
         .filter(|s| s.status != Status::InFlight)
         .collect();
     closed.sort_by(|a, b| b.last_ts.cmp(&a.last_ts));
-    let mut html = format!("<section><h2>CLOSED <span class=\"count\">{}</span></h2>", closed.len());
+    let mut html = format!(
+        "<section><h2>CLOSED <span class=\"count\">{}</span></h2>",
+        closed.len()
+    );
     if closed.is_empty() {
         html.push_str("<p class=\"empty\">— nothing closed yet —</p>");
     }
@@ -330,16 +383,30 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
     let is_stale = slip.status == Status::InFlight && slip.cocked.is_none() && quiet >= stale_secs;
 
     let (class, status, age) = if slip.status == Status::InFlight && slip.failed.is_some() {
-        ("failed", "FLD", format!("⚠{}", human(failed_age(slip, now))))
+        (
+            "failed",
+            "FLD",
+            format!("⚠{}", human(failed_age(slip, now))),
+        )
     } else if slip.status == Status::InFlight && slip.cocked.is_none() && slip.holding.is_some() {
-        ("holding", "RDY", format!("holding {}", human(holding_age(slip, now))))
+        (
+            "holding",
+            "RDY",
+            format!("holding {}", human(holding_age(slip, now))),
+        )
     } else {
         match (&slip.cocked, &slip.status) {
-        (Some(_), _) => ("cocked", "CKD", format!("⚠{}", human(cocked_wait(slip, now)))),
-        (None, Status::InFlight) if is_stale => ("stale", "STL", format!("silent {}", human(quiet))),
-        (None, Status::InFlight) => ("inflight", "FLY", human(quiet)),
-        (None, Status::Accepted) => ("accepted", "ACC", String::new()),
-        (None, Status::Rejected) => ("rejected", "REJ", String::new()),
+            (Some(_), _) => (
+                "cocked",
+                "CKD",
+                format!("⚠{}", human(cocked_wait(slip, now))),
+            ),
+            (None, Status::InFlight) if is_stale => {
+                ("stale", "STL", format!("silent {}", human(quiet)))
+            }
+            (None, Status::InFlight) => ("inflight", "FLY", human(quiet)),
+            (None, Status::Accepted) => ("accepted", "ACC", String::new()),
+            (None, Status::Rejected) => ("rejected", "REJ", String::new()),
         }
     };
 
@@ -357,10 +424,16 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     if let Some(boundary) = &slip.cocked {
-        route.push_str(&format!(" <i class=\"pend\">→{}</i>", boundary_code(boundary)));
+        route.push_str(&format!(
+            " <i class=\"pend\">→{}</i>",
+            boundary_code(boundary)
+        ));
     }
     if let Some(boundary) = &slip.holding {
-        route.push_str(&format!(" <i class=\"ok\">▸{}</i>", boundary_code(boundary)));
+        route.push_str(&format!(
+            " <i class=\"ok\">▸{}</i>",
+            boundary_code(boundary)
+        ));
     }
 
     format!(
@@ -390,7 +463,9 @@ fn render_strip(slip: &Slip, now: u64, stale_secs: u64) -> String {
 
 /// Seconds since the ledger last spoke.
 fn silence(slip: &Slip, now: u64) -> u64 {
-    ledger::parse_ts(&slip.last_ts).map(|t| now.saturating_sub(t)).unwrap_or(0)
+    ledger::parse_ts(&slip.last_ts)
+        .map(|t| now.saturating_sub(t))
+        .unwrap_or(0)
 }
 
 /// Seconds since the clearance was granted with nothing flown after it.
@@ -460,7 +535,9 @@ fn boundary_code(boundary: &str) -> String {
 
 /// The airframe column: model id without the provider, clipped.
 fn airframe(slip: &Slip) -> String {
-    let Some(model) = &slip.last_model else { return "—".into() };
+    let Some(model) = &slip.last_model else {
+        return "—".into();
+    };
     let bare = model.rsplit('/').next().unwrap_or(model);
     bare.chars().take(12).collect()
 }
@@ -526,7 +603,10 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
     let now = now_epoch();
     html.push_str("<h2>phases</h2><table><tr><th>phase</th><th>owner</th><th>lane</th><th>started</th><th>duration</th><th>outcome</th></tr>");
     for p in &slip.phases {
-        let duration = match (ledger::parse_ts(&p.started), p.ended.as_deref().and_then(ledger::parse_ts)) {
+        let duration = match (
+            ledger::parse_ts(&p.started),
+            p.ended.as_deref().and_then(ledger::parse_ts),
+        ) {
             (Some(start), Some(end)) => human(end.saturating_sub(start)),
             (Some(start), None) => format!("{}…", human(now.saturating_sub(start))),
             _ => "?".to_string(),
@@ -537,7 +617,9 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
             esc(&p.owner),
             p.lane,
             esc(&p.started),
-            p.outcome.map(|o| o.to_string()).unwrap_or_else(|| "running".to_string()),
+            p.outcome
+                .map(|o| o.to_string())
+                .unwrap_or_else(|| "running".to_string()),
         ));
     }
     html.push_str("</table>");
@@ -591,12 +673,24 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
     if slip.clearances.is_empty() {
         html.push_str("<p class=\"empty\">— none requested —</p>");
     } else {
-        html.push_str("<table><tr><th>boundary</th><th>requested by</th><th>at</th><th>response</th></tr>");
+        html.push_str(
+            "<table><tr><th>boundary</th><th>requested by</th><th>at</th><th>response</th></tr>",
+        );
         for c in &slip.clearances {
             let response = match &c.response {
                 Some(r) => {
-                    let reason = if r.reason.is_empty() { String::new() } else { format!(" — {}", esc(&r.reason)) };
-                    format!("{} by {} at {}{}", r.verdict, esc(&r.by), esc(&r.ts), reason)
+                    let reason = if r.reason.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", esc(&r.reason))
+                    };
+                    format!(
+                        "{} by {} at {}{}",
+                        r.verdict,
+                        esc(&r.by),
+                        esc(&r.ts),
+                        reason
+                    )
                 }
                 None => "<b>PENDING — strip is cocked</b>".to_string(),
             };
@@ -617,14 +711,20 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
         format!(
             " <span class=\"warn\">⚠ {} unreadable line(s): {}</span>",
             bad_lines.len(),
-            bad_lines.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+            bad_lines
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     };
     html.push_str(&format!(
         "<h2>raw ledger <span class=\"count\">{} events</span>{bad_note}</h2>",
         events.len()
     ));
-    html.push_str("<table class=\"ledger\"><tr><th>seq</th><th>ts</th><th>kind</th><th>payload</th></tr>");
+    html.push_str(
+        "<table class=\"ledger\"><tr><th>seq</th><th>ts</th><th>kind</th><th>payload</th></tr>",
+    );
     for e in events {
         let (kind, payload) = e.kind.wire();
         let payload = serde_json::to_string(&payload).unwrap_or_default();
@@ -643,11 +743,20 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn short(id: &str) -> String {
-    id.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect()
+    id.chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 const STYLE: &str = r#"<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>

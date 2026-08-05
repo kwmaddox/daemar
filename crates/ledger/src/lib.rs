@@ -113,7 +113,10 @@ pub enum Kind {
         lane: Lane,
     },
     #[serde(rename = "phase_ended.v1")]
-    PhaseEnded { phase: String, outcome: PhaseOutcome },
+    PhaseEnded {
+        phase: String,
+        outcome: PhaseOutcome,
+    },
     #[serde(rename = "section_written.v1")]
     SectionWritten {
         section: String,
@@ -196,7 +199,10 @@ impl EventKind {
             EventKind::Known(kind) => {
                 let v = serde_json::to_value(kind).expect("Kind serializes");
                 (
-                    v.get("kind").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    v.get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
                     v.get("payload").cloned().unwrap_or(Value::Null),
                 )
             }
@@ -234,7 +240,10 @@ impl Event {
         let attempt = serde_json::json!({ "kind": wire.kind, "payload": wire.payload });
         let kind = match serde_json::from_value::<Kind>(attempt) {
             Ok(known) => EventKind::Known(known),
-            Err(_) => EventKind::Unknown { kind: wire.kind, payload: wire.payload },
+            Err(_) => EventKind::Unknown {
+                kind: wire.kind,
+                payload: wire.payload,
+            },
         };
         Ok(Event {
             schema: wire.schema,
@@ -363,6 +372,10 @@ pub struct Slip {
 /// a ledger that never opened has no face to show.
 pub fn fold(events: &[Event]) -> Option<Slip> {
     let mut slip: Option<Slip> = None;
+    // Cleared-and-holding is tracked in EVENT ORDER, not by timestamp:
+    // timestamps are second-granular display, and a grant and a phase start
+    // can share a second. Sequence is the truth.
+    let mut throttle_awaited: Option<String> = None;
 
     for event in events {
         let ts = event.ts.clone();
@@ -370,10 +383,16 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
             s.last_ts = ts.clone();
             s.event_count += 1;
         }
-        let EventKind::Known(kind) = &event.kind else { continue };
+        let EventKind::Known(kind) = &event.kind else {
+            continue;
+        };
 
         match kind.clone() {
-            Kind::SlipOpened { request, workflow, engineer } => {
+            Kind::SlipOpened {
+                request,
+                workflow,
+                engineer,
+            } => {
                 slip = Some(Slip {
                     id: event.slip_id.clone(),
                     request,
@@ -404,6 +423,7 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                 match other {
                     Kind::SlipOpened { .. } => unreachable!("handled above"),
                     Kind::PhaseStarted { phase, owner, lane } => {
+                        throttle_awaited = None; // the throttle was pushed
                         s.current_phase = Some(phase.clone());
                         s.phases.push(PhaseRow {
                             phase,
@@ -428,8 +448,19 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                             s.current_phase = None;
                         }
                     }
-                    Kind::SectionWritten { section, by, summary, body } => {
-                        s.sections.push(SectionRow { section, by, summary, body, ts });
+                    Kind::SectionWritten {
+                        section,
+                        by,
+                        summary,
+                        body,
+                    } => {
+                        s.sections.push(SectionRow {
+                            section,
+                            by,
+                            summary,
+                            body,
+                            ts,
+                        });
                     }
                     Kind::ClearanceRequested { boundary, by } => {
                         s.clearances.push(ClearanceRow {
@@ -440,24 +471,55 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                         });
                     }
                     Kind::ClearanceGranted { boundary, by } => {
-                        answer_clearance(s, &boundary, ClearanceVerdict::Granted, by, ts, String::new());
+                        if answer_clearance(
+                            s,
+                            &boundary,
+                            ClearanceVerdict::Granted,
+                            by,
+                            ts,
+                            String::new(),
+                        ) {
+                            throttle_awaited = Some(boundary);
+                        }
                     }
-                    Kind::ClearanceRefused { boundary, by, reason } => {
+                    Kind::ClearanceRefused {
+                        boundary,
+                        by,
+                        reason,
+                    } => {
                         answer_clearance(s, &boundary, ClearanceVerdict::Refused, by, ts, reason);
                     }
                     Kind::QueryMade { .. } => s.queries += 1,
-                    Kind::ModelRequested { phase, model, system, user } => {
+                    Kind::ModelRequested {
+                        phase,
+                        model,
+                        system,
+                        user,
+                    } => {
                         s.last_model = Some(model.clone());
-                        s.model_requests.push(ModelRequestRow { phase, model, system, user, ts });
+                        s.model_requests.push(ModelRequestRow {
+                            phase,
+                            model,
+                            system,
+                            user,
+                            ts,
+                        });
                     }
-                    Kind::ModelCall { model, tokens, cost, .. } => {
+                    Kind::ModelCall {
+                        model,
+                        tokens,
+                        cost,
+                        ..
+                    } => {
                         s.model_calls += 1;
                         s.tokens += tokens;
                         s.cost += cost;
                         s.last_model = Some(model);
                     }
                     Kind::Note { .. } => {}
-                    Kind::SlipClosed { outcome, reason, .. } => {
+                    Kind::SlipClosed {
+                        outcome, reason, ..
+                    } => {
                         s.status = match outcome {
                             SlipOutcome::Accepted => Status::Accepted,
                             SlipOutcome::Rejected => Status::Rejected,
@@ -489,16 +551,9 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                 .filter(|p| p.outcome == Some(PhaseOutcome::Error))
                 .map(|p| p.phase.clone());
             // Holding: cleared for the next leg, nothing flown since — the
-            // flight waits for `continue`. Fixed-width UTC timestamps make
-            // string order time order.
+            // flight waits for `continue`.
             s.holding = if s.cocked.is_none() && s.failed.is_none() {
-                s.clearances.iter().rev().find_map(|c| match &c.response {
-                    Some(r) if r.verdict == ClearanceVerdict::Granted => {
-                        let flown = s.phases.iter().any(|p| p.started >= r.ts);
-                        (!flown).then(|| c.boundary.clone())
-                    }
-                    _ => None,
-                })
+                throttle_awaited
             } else {
                 None
             };
@@ -511,6 +566,8 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
     slip
 }
 
+/// Answer the newest open request at this boundary. Returns whether one
+/// existed — an answer to nothing changes nothing.
 fn answer_clearance(
     slip: &mut Slip,
     boundary: &str,
@@ -518,14 +575,22 @@ fn answer_clearance(
     by: String,
     ts: String,
     reason: String,
-) {
+) -> bool {
     if let Some(row) = slip
         .clearances
         .iter_mut()
         .rev()
         .find(|c| c.boundary == boundary && c.response.is_none())
     {
-        row.response = Some(ClearanceResponse { verdict, by, ts, reason });
+        row.response = Some(ClearanceResponse {
+            verdict,
+            by,
+            ts,
+            reason,
+        });
+        true
+    } else {
+        false
     }
 }
 
@@ -589,15 +654,25 @@ impl LedgerWriter {
     /// Create `<dir>/<slip_id>.jsonl`. Fails loud if it already exists —
     /// a slip's ledger is born exactly once, appended forever, never reborn.
     pub fn create(dir: &Path, slip_id: SlipId) -> Result<Self, LedgerError> {
-        fs::create_dir_all(dir)
-            .map_err(|source| LedgerError::Io { path: dir.to_path_buf(), source })?;
+        fs::create_dir_all(dir).map_err(|source| LedgerError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
         let path = dir.join(format!("{slip_id}.jsonl"));
         let file = fs::OpenOptions::new()
             .create_new(true)
             .append(true)
             .open(&path)
-            .map_err(|source| LedgerError::Io { path: path.clone(), source })?;
-        Ok(LedgerWriter { file, path, slip_id, seq: 0 })
+            .map_err(|source| LedgerError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        Ok(LedgerWriter {
+            file,
+            path,
+            slip_id,
+            seq: 0,
+        })
     }
 
     /// Append one event, stamped now, flushed. Returns the sequence number.
@@ -617,7 +692,10 @@ impl LedgerWriter {
             "kind": kind_str,
             "payload": payload,
         });
-        let io_err = |source| LedgerError::Io { path: self.path.clone(), source };
+        let io_err = |source| LedgerError::Io {
+            path: self.path.clone(),
+            source,
+        };
         writeln!(self.file, "{line}").map_err(io_err)?;
         self.file.flush().map_err(io_err)?;
         Ok(self.seq)
@@ -636,8 +714,16 @@ impl LedgerWriter {
         let file = fs::OpenOptions::new()
             .append(true)
             .open(&path)
-            .map_err(|source| LedgerError::Io { path: path.clone(), source })?;
-        Ok(LedgerWriter { file, path, slip_id, seq })
+            .map_err(|source| LedgerError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        Ok(LedgerWriter {
+            file,
+            path,
+            slip_id,
+            seq,
+        })
     }
 }
 
@@ -654,8 +740,10 @@ pub struct LedgerFile {
 }
 
 pub fn load_ledger(path: &Path) -> Result<LedgerFile, LedgerError> {
-    let text = fs::read_to_string(path)
-        .map_err(|source| LedgerError::Io { path: path.to_path_buf(), source })?;
+    let text = fs::read_to_string(path).map_err(|source| LedgerError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let mut file = LedgerFile::default();
     for (index, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
@@ -693,11 +781,16 @@ impl LoadReport {
 
 /// Load every `*.jsonl` ledger in a directory, folded, newest activity first.
 pub fn load_dir(dir: &Path) -> Result<LoadReport, LedgerError> {
-    let entries = fs::read_dir(dir)
-        .map_err(|source| LedgerError::Io { path: dir.to_path_buf(), source })?;
+    let entries = fs::read_dir(dir).map_err(|source| LedgerError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
     let mut report = LoadReport::default();
     for entry in entries {
-        let entry = entry.map_err(|source| LedgerError::Io { path: dir.to_path_buf(), source })?;
+        let entry = entry.map_err(|source| LedgerError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
@@ -715,7 +808,9 @@ pub fn load_dir(dir: &Path) -> Result<LoadReport, LedgerError> {
             Err(error) => report.skipped.push((path, error)),
         }
     }
-    report.slips.sort_by(|a, b| b.slip.last_ts.cmp(&a.slip.last_ts));
+    report
+        .slips
+        .sort_by(|a, b| b.slip.last_ts.cmp(&a.slip.last_ts));
     Ok(report)
 }
 
@@ -732,20 +827,63 @@ mod tests {
     }
 
     fn parse(lines: &[String]) -> Vec<Event> {
-        lines.iter().map(|l| Event::from_line(l).expect("parses")).collect()
+        lines
+            .iter()
+            .map(|l| Event::from_line(l).expect("parses"))
+            .collect()
     }
 
     #[test]
     fn accepted_flight_folds_clean() {
         let events = parse(&[
-            line(1, "t1", "slip_opened.v1", r#"{"request":"add /health","workflow":"simple","engineer":"kendall"}"#),
-            line(2, "t2", "phase_started.v1", r#"{"phase":"plan","owner":"planner","lane":"agent"}"#),
-            line(3, "t3", "model_requested.v1", r#"{"phase":"plan","model":"m","system":"be a planner","user":"plan it"}"#),
-            line(4, "t4", "model_call.v1", r#"{"phase":"plan","model":"m","tokens":1000,"cost":0.02}"#),
-            line(5, "t5", "section_written.v1", r#"{"section":"plan.v1","by":"planner"}"#),
-            line(6, "t6", "phase_ended.v1", r#"{"phase":"plan","outcome":"success"}"#),
-            line(7, "t7", "clearance_requested.v1", r#"{"boundary":"plan->build","by":"planner"}"#),
-            line(8, "t8", "clearance_granted.v1", r#"{"boundary":"plan->build","by":"kendall"}"#),
+            line(
+                1,
+                "t1",
+                "slip_opened.v1",
+                r#"{"request":"add /health","workflow":"simple","engineer":"kendall"}"#,
+            ),
+            line(
+                2,
+                "t2",
+                "phase_started.v1",
+                r#"{"phase":"plan","owner":"planner","lane":"agent"}"#,
+            ),
+            line(
+                3,
+                "t3",
+                "model_requested.v1",
+                r#"{"phase":"plan","model":"m","system":"be a planner","user":"plan it"}"#,
+            ),
+            line(
+                4,
+                "t4",
+                "model_call.v1",
+                r#"{"phase":"plan","model":"m","tokens":1000,"cost":0.02}"#,
+            ),
+            line(
+                5,
+                "t5",
+                "section_written.v1",
+                r#"{"section":"plan.v1","by":"planner"}"#,
+            ),
+            line(
+                6,
+                "t6",
+                "phase_ended.v1",
+                r#"{"phase":"plan","outcome":"success"}"#,
+            ),
+            line(
+                7,
+                "t7",
+                "clearance_requested.v1",
+                r#"{"boundary":"plan->build","by":"planner"}"#,
+            ),
+            line(
+                8,
+                "t8",
+                "clearance_granted.v1",
+                r#"{"boundary":"plan->build","by":"kendall"}"#,
+            ),
             line(9, "t9", "slip_closed.v1", r#"{"outcome":"accepted"}"#),
         ]);
         let slip = fold(&events).expect("slip opened");
@@ -769,8 +907,18 @@ mod tests {
     #[test]
     fn unanswered_clearance_cocks_the_strip() {
         let events = parse(&[
-            line(1, "t1", "slip_opened.v1", r#"{"request":"r","workflow":"w","engineer":"e"}"#),
-            line(2, "t2", "clearance_requested.v1", r#"{"boundary":"plan->build","by":"planner"}"#),
+            line(
+                1,
+                "t1",
+                "slip_opened.v1",
+                r#"{"request":"r","workflow":"w","engineer":"e"}"#,
+            ),
+            line(
+                2,
+                "t2",
+                "clearance_requested.v1",
+                r#"{"boundary":"plan->build","by":"planner"}"#,
+            ),
         ]);
         let slip = fold(&events).unwrap();
         assert_eq!(slip.status, Status::InFlight);
@@ -780,9 +928,24 @@ mod tests {
     #[test]
     fn closed_slips_are_never_cocked() {
         let events = parse(&[
-            line(1, "t1", "slip_opened.v1", r#"{"request":"r","workflow":"w","engineer":"e"}"#),
-            line(2, "t2", "clearance_requested.v1", r#"{"boundary":"ship","by":"reviewer"}"#),
-            line(3, "t3", "slip_closed.v1", r#"{"outcome":"rejected","reason":"review failed"}"#),
+            line(
+                1,
+                "t1",
+                "slip_opened.v1",
+                r#"{"request":"r","workflow":"w","engineer":"e"}"#,
+            ),
+            line(
+                2,
+                "t2",
+                "clearance_requested.v1",
+                r#"{"boundary":"ship","by":"reviewer"}"#,
+            ),
+            line(
+                3,
+                "t3",
+                "slip_closed.v1",
+                r#"{"outcome":"rejected","reason":"review failed"}"#,
+            ),
         ]);
         let slip = fold(&events).unwrap();
         assert_eq!(slip.status, Status::Rejected);
@@ -793,10 +956,17 @@ mod tests {
     #[test]
     fn unknown_kinds_are_explicit_and_survive_the_fold() {
         let events = parse(&[
-            line(1, "t1", "slip_opened.v1", r#"{"request":"r","workflow":"w","engineer":"e"}"#),
+            line(
+                1,
+                "t1",
+                "slip_opened.v1",
+                r#"{"request":"r","workflow":"w","engineer":"e"}"#,
+            ),
             line(2, "t2", "teleportation_requested.v9", r#"{"to":"moon"}"#),
         ]);
-        assert!(matches!(&events[1].kind, EventKind::Unknown { kind, .. } if kind == "teleportation_requested.v9"));
+        assert!(
+            matches!(&events[1].kind, EventKind::Unknown { kind, .. } if kind == "teleportation_requested.v9")
+        );
         let slip = fold(&events).unwrap();
         assert_eq!(slip.status, Status::InFlight);
         assert_eq!(slip.event_count, 2); // counted in the ledger, opaque to the fold
@@ -807,7 +977,10 @@ mod tests {
         // A known kind whose closed-set field has an unknown value must not
         // half-parse into something wrong — it degrades to Unknown, whole.
         let event = Event::from_line(&line(
-            1, "t1", "phase_ended.v1", r#"{"phase":"plan","outcome":"transcended"}"#,
+            1,
+            "t1",
+            "phase_ended.v1",
+            r#"{"phase":"plan","outcome":"transcended"}"#,
         ))
         .unwrap();
         assert!(matches!(event.kind, EventKind::Unknown { .. }));
@@ -822,7 +995,12 @@ mod tests {
             &path,
             format!(
                 "{}\nthis is not json\n{}\n",
-                line(1, "t1", "slip_opened.v1", r#"{"request":"r","workflow":"w","engineer":"e"}"#),
+                line(
+                    1,
+                    "t1",
+                    "slip_opened.v1",
+                    r#"{"request":"r","workflow":"w","engineer":"e"}"#
+                ),
                 line(2, "t2", "note.v1", r#"{"text":"fine"}"#),
             ),
         )
@@ -880,9 +1058,24 @@ mod tests {
     #[test]
     fn an_unwitnessed_error_derives_failed() {
         let events = parse(&[
-            line(1, "t1", "slip_opened.v1", r#"{"request":"r","workflow":"w","engineer":"e"}"#),
-            line(2, "t2", "phase_started.v1", r#"{"phase":"respond","owner":"o","lane":"agent"}"#),
-            line(3, "t3", "phase_ended.v1", r#"{"phase":"respond","outcome":"error"}"#),
+            line(
+                1,
+                "t1",
+                "slip_opened.v1",
+                r#"{"request":"r","workflow":"w","engineer":"e"}"#,
+            ),
+            line(
+                2,
+                "t2",
+                "phase_started.v1",
+                r#"{"phase":"respond","owner":"o","lane":"agent"}"#,
+            ),
+            line(
+                3,
+                "t3",
+                "phase_ended.v1",
+                r#"{"phase":"respond","outcome":"error"}"#,
+            ),
         ]);
         let slip = fold(&events).unwrap();
         assert_eq!(slip.status, Status::InFlight); // no one closed it — by design
@@ -892,16 +1085,35 @@ mod tests {
     #[test]
     fn disposition_clears_failed_and_a_retry_phase_clears_it_too() {
         let base = [
-            line(1, "t1", "slip_opened.v1", r#"{"request":"r","workflow":"w","engineer":"e"}"#),
-            line(2, "t2", "phase_started.v1", r#"{"phase":"respond","owner":"o","lane":"agent"}"#),
-            line(3, "t3", "phase_ended.v1", r#"{"phase":"respond","outcome":"error"}"#),
+            line(
+                1,
+                "t1",
+                "slip_opened.v1",
+                r#"{"request":"r","workflow":"w","engineer":"e"}"#,
+            ),
+            line(
+                2,
+                "t2",
+                "phase_started.v1",
+                r#"{"phase":"respond","owner":"o","lane":"agent"}"#,
+            ),
+            line(
+                3,
+                "t3",
+                "phase_ended.v1",
+                r#"{"phase":"respond","outcome":"error"}"#,
+            ),
         ];
         let disposed = parse(
             &base
                 .iter()
                 .cloned()
-                .chain([line(4, "t4", "slip_closed.v1",
-                    r#"{"outcome":"rejected","reason":"disposed","by":"kendall"}"#)])
+                .chain([line(
+                    4,
+                    "t4",
+                    "slip_closed.v1",
+                    r#"{"outcome":"rejected","reason":"disposed","by":"kendall"}"#,
+                )])
                 .collect::<Vec<_>>(),
         );
         let slip = fold(&disposed).unwrap();
@@ -912,8 +1124,12 @@ mod tests {
             &base
                 .iter()
                 .cloned()
-                .chain([line(4, "t4", "phase_started.v1",
-                    r#"{"phase":"respond","owner":"o","lane":"agent"}"#)])
+                .chain([line(
+                    4,
+                    "t4",
+                    "phase_started.v1",
+                    r#"{"phase":"respond","owner":"o","lane":"agent"}"#,
+                )])
                 .collect::<Vec<_>>(),
         );
         let slip = fold(&retried).unwrap();
@@ -923,11 +1139,36 @@ mod tests {
     #[test]
     fn a_granted_clearance_with_nothing_flown_is_holding() {
         let base = [
-            line(1, "2026-01-01T00:00:01Z", "slip_opened.v1", r#"{"request":"r","workflow":"plan","engineer":"e"}"#),
-            line(2, "2026-01-01T00:00:02Z", "phase_started.v1", r#"{"phase":"plan","owner":"o","lane":"agent"}"#),
-            line(3, "2026-01-01T00:00:03Z", "phase_ended.v1", r#"{"phase":"plan","outcome":"success"}"#),
-            line(4, "2026-01-01T00:00:04Z", "clearance_requested.v1", r#"{"boundary":"plan->respond","by":"planner"}"#),
-            line(5, "2026-01-01T00:00:05Z", "clearance_granted.v1", r#"{"boundary":"plan->respond","by":"kendall"}"#),
+            line(
+                1,
+                "2026-01-01T00:00:01Z",
+                "slip_opened.v1",
+                r#"{"request":"r","workflow":"plan","engineer":"e"}"#,
+            ),
+            line(
+                2,
+                "2026-01-01T00:00:02Z",
+                "phase_started.v1",
+                r#"{"phase":"plan","owner":"o","lane":"agent"}"#,
+            ),
+            line(
+                3,
+                "2026-01-01T00:00:03Z",
+                "phase_ended.v1",
+                r#"{"phase":"plan","outcome":"success"}"#,
+            ),
+            line(
+                4,
+                "2026-01-01T00:00:04Z",
+                "clearance_requested.v1",
+                r#"{"boundary":"plan->respond","by":"planner"}"#,
+            ),
+            line(
+                5,
+                "2026-01-01T00:00:05Z",
+                "clearance_granted.v1",
+                r#"{"boundary":"plan->respond","by":"kendall"}"#,
+            ),
         ];
         let slip = fold(&parse(&base)).unwrap();
         assert_eq!(slip.cocked, None); // answered, so not cocked...
@@ -938,8 +1179,12 @@ mod tests {
             &base
                 .iter()
                 .cloned()
-                .chain([line(6, "2026-01-01T00:00:06Z", "phase_started.v1",
-                    r#"{"phase":"respond","owner":"o","lane":"agent"}"#)])
+                .chain([line(
+                    6,
+                    "2026-01-01T00:00:06Z",
+                    "phase_started.v1",
+                    r#"{"phase":"respond","owner":"o","lane":"agent"}"#,
+                )])
                 .collect::<Vec<_>>(),
         );
         assert_eq!(fold(&continued).unwrap().holding, None);

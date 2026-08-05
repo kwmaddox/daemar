@@ -39,7 +39,9 @@ impl fmt::Display for RegistryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RegistryError::Io { path, detail } => write!(f, "registry io at {path}: {detail}"),
-            RegistryError::Parse { path, detail } => write!(f, "registry parse at {path}: {detail}"),
+            RegistryError::Parse { path, detail } => {
+                write!(f, "registry parse at {path}: {detail}")
+            }
         }
     }
 }

@@ -15,3 +15,7 @@ uuid = { version = "1", features = ["v7"] }
 # Justified dep: the airframe registry wants comments and dated entries —
 # staleness must be visible in the file — and JSON forbids comments.
 toml = "0.8"
+
+[dev-dependencies]
+# The integration tests read the ledgers the binary writes.
+ledger = { path = "../../crates/ledger" }
