@@ -133,8 +133,17 @@ fn decrypt_secrets() -> Result<HashMap<String, String>, ConfigError> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        // Tolerate shell-flavored dotenv: an `export ` prefix and matched
+        // surrounding quotes both belong to the shell, not the value.
+        let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
         if let Some((key, value)) = line.split_once('=') {
-            map.insert(key.trim().to_string(), value.trim().to_string());
+            let value = value.trim();
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+                .unwrap_or(value);
+            map.insert(key.trim().to_string(), value.to_string());
         }
     }
     Ok(map)

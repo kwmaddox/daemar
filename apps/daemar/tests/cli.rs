@@ -412,13 +412,15 @@ fn the_tower_fetches_its_own_key_from_the_vault() {
     std::fs::create_dir_all(home.join("secrets")).expect("mkdir");
     std::fs::write(home.join("secrets/daemar.enc.env"), "ciphertext\n").expect("seed");
 
-    // A stand-in sops on PATH: "decrypts" to a dotenv holding the key. The
-    // real binary is exercised the same way — stdout parsed in-process.
+    // A stand-in sops on PATH: "decrypts" to a shell-flavored dotenv — an
+    // `export` prefix and quoted value, the worst dialect the vault must
+    // tolerate. The real binary is exercised the same way — stdout parsed
+    // in-process.
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).expect("mkdir bin");
     std::fs::write(
         bin.join("sops"),
-        "#!/bin/sh\necho '# decrypted'\necho 'OPENAI_API_KEY=key-from-vault'\n",
+        "#!/bin/sh\necho '# decrypted'\necho \"export OPENAI_API_KEY='key-from-vault'\"\n",
     )
     .expect("write fake sops");
     std::fs::set_permissions(bin.join("sops"), std::fs::Permissions::from_mode(0o755))
