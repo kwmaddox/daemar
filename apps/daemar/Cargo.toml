@@ -16,6 +16,14 @@ uuid = { version = "1", features = ["v7"] }
 # staleness must be visible in the file — and JSON forbids comments.
 toml = "0.8"
 
+# Justified dep: gitignore-aware traversal is essential context economy
+# (target/, node_modules never reach the model); hand-rolling gitignore
+# semantics is strictly worse.
+ignore = "0.4"
+# Justified dep: content-hash pointers are the epistemic record of every
+# read; a real digest (sha256) makes them stable and collision-safe.
+sha2 = "0.10"
+
 [dev-dependencies]
 # The integration tests read the ledgers the binary writes.
 ledger = { path = "../../crates/ledger" }

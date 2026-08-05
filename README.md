@@ -29,8 +29,10 @@ fixtures/         hand-authored ledgers: accepted, cocked, in-flight, rejected
 ## The runner (phase 2)
 
 ```bash
-daemar "<request>"          # cargo run -p daemar -- "<request>"
-git diff | daemar -         # request from stdin
+daemar "<request>"                       # cargo run -p daemar -- "<request>"
+git diff | daemar -                      # request from stdin
+daemar scout --repo <path> "<question>"  # read-only recon over any repo
+daemar plan "<request>"                  # plan, then cock at plan->respond
 ```
 
 One slip, one phase, one model call, no tools, no checks — the board is the

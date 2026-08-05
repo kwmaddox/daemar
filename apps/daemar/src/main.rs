@@ -23,6 +23,7 @@ use ledger::{Kind, Lane, LedgerWriter, PhaseOutcome, Slip, SlipId, SlipOutcome, 
 
 mod provider;
 mod registry;
+mod tools;
 
 use provider::Provider;
 use registry::Registry;
@@ -33,6 +34,13 @@ const PLAN_SYSTEM: &str = "You are daemar's planner. Produce a concise plan for 
 engineer's request: what the answer must cover, in what order, and what would make it \
 complete. Do not answer the request itself. Plain text.";
 const BOUNDARY: &str = "plan->respond";
+const SCOUT_SYSTEM: &str = "You are daemar's scout: read-only reconnaissance over one \
+repository (the territory). Use the tools to find where things live and how they connect. \
+Never guess file contents — read them. When you have enough evidence, reply in plain text \
+with your findings: what lives where (cite paths), how the pieces connect, and anything \
+surprising. Be concise and concrete.";
+/// Turn cap for tool loops: enough for real recon, finite by construction.
+const MAX_TURNS: usize = 12;
 
 // ── Config (env is the serde edge of a CLI; parsed once, here) ───────────────
 
@@ -40,6 +48,7 @@ struct Config {
     provider: Provider,
     plan_model: String,
     respond_model: String,
+    scout_model: String,
     ledgers: String,
     airframes: String,
     engineer: String,
@@ -79,6 +88,9 @@ impl Config {
             .ok_or(ConfigError::Missing(
                 "DAEMAR_RESPOND_MODEL (or DAEMAR_MODEL)",
             ))?;
+        let scout_model = env("DAEMAR_SCOUT_MODEL")
+            .or_else(|| default_model.clone())
+            .ok_or(ConfigError::Missing("DAEMAR_SCOUT_MODEL (or DAEMAR_MODEL)"))?;
         Ok(Config {
             provider: Provider {
                 base_url: env("DAEMAR_BASE_URL")
@@ -87,6 +99,7 @@ impl Config {
             },
             plan_model,
             respond_model,
+            scout_model,
             ledgers: env("DAEMAR_LEDGERS").unwrap_or_else(|| "ledgers".to_string()),
             airframes: env("DAEMAR_AIRFRAMES").unwrap_or_else(|| "airframes.toml".to_string()),
             engineer: engineer(),
@@ -100,6 +113,15 @@ fn engineer() -> String {
 
 fn ledgers_dir() -> String {
     env("DAEMAR_LEDGERS").unwrap_or_else(|| "ledgers".to_string())
+}
+
+/// The default territory: wherever the engineer is standing.
+fn cwd_territory() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| p.display().to_string())
+        .unwrap_or_default()
 }
 
 // ── Pricing (resolved per airframe; not-priced is never silent) ──────────────
@@ -158,6 +180,7 @@ fn main() -> ExitCode {
             Some(request) => plan_flight(&request),
             None => usage(),
         },
+        Some("scout") => scout_dispatch(&args[1..]),
         _ => match read_request(&args) {
             Some(request) => prompt_flight(&request),
             None => usage(),
@@ -168,7 +191,7 @@ fn main() -> ExitCode {
 fn usage() -> ExitCode {
     eprintln!(
         "usage: daemar \"<request>\"            (or ... | daemar -)\n       \
-         daemar plan \"<request>\"\n       \
+         daemar plan \"<request>\"\n       daemar scout [--repo <path>] \"<question>\"\n       \
          daemar grant|refuse|continue|dispose <slip-id> [\"<reason>\"]"
     );
     ExitCode::from(2)
@@ -316,6 +339,7 @@ fn prompt_flight(request: &str) -> ExitCode {
         w.append(&Kind::SlipOpened {
             request: request.to_string(),
             workflow: "prompt".to_string(),
+            repo: cwd_territory(),
             engineer: config.engineer.clone(),
         })?;
         let spec = PhaseSpec {
@@ -357,6 +381,7 @@ fn plan_flight(request: &str) -> ExitCode {
         w.append(&Kind::SlipOpened {
             request: request.to_string(),
             workflow: "plan".to_string(),
+            repo: cwd_territory(),
             engineer: config.engineer.clone(),
         })?;
         let spec = PhaseSpec {
@@ -468,6 +493,188 @@ fn continue_flight(args: &[String]) -> ExitCode {
                 Ok(false)
             }
         }
+    })
+}
+
+// ── The scout: the factory learns to read ────────────────────────────────────
+
+/// `daemar scout [--repo <path>] "<question>"` — parse the territory flag,
+/// then fly.
+fn scout_dispatch(args: &[String]) -> ExitCode {
+    let (repo, rest): (String, &[String]) =
+        if args.first().map(String::as_str) == Some("--repo") && args.len() >= 2 {
+            (args[1].clone(), &args[2..])
+        } else {
+            (".".to_string(), args)
+        };
+    match read_request(rest) {
+        Some(request) => scout_flight(&request, &repo),
+        None => usage(),
+    }
+}
+
+/// The first tool-using flight: a turn loop over read-only tools, confined
+/// to the territory, every call on the ledger. The tower stays home; only
+/// the tools visit the repo.
+fn scout_flight(request: &str, repo: &str) -> ExitCode {
+    let mut ctx = match tools::ToolContext::new(std::path::Path::new(repo)) {
+        Ok(ctx) => ctx,
+        Err(error) => {
+            eprintln!("daemar: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let territory = match std::path::Path::new(repo).canonicalize() {
+        Ok(p) => p.display().to_string(),
+        Err(_) => repo.to_string(),
+    };
+
+    with_config(|config| {
+        let mut w = LedgerWriter::create(
+            config.ledgers.as_ref(),
+            SlipId(uuid::Uuid::now_v7().to_string()),
+        )?;
+        w.append(&Kind::SlipOpened {
+            request: request.to_string(),
+            workflow: "scout".to_string(),
+            engineer: config.engineer.clone(),
+            repo: territory.clone(),
+        })?;
+        w.append(&Kind::PhaseStarted {
+            phase: "scout".to_string(),
+            owner: "scout".to_string(),
+            lane: Lane::Agent,
+        })?;
+
+        let model = config.scout_model.clone();
+        let pricing = Pricing::resolve(&config.airframes, &model);
+        if let Some(complaint) = pricing.complaint() {
+            eprintln!("daemar: {complaint}");
+        }
+        let specs = tools::specs();
+        let mut messages = vec![
+            serde_json::json!({ "role": "system", "content": SCOUT_SYSTEM }),
+            serde_json::json!({ "role": "user", "content": request }),
+        ];
+        let mut priced_complaint_logged = false;
+
+        for turn in 1..=MAX_TURNS {
+            // Intent per turn: pairs with each model_call, keeps the silence
+            // clock honest during long generations. Full prompts ride only on
+            // turn 1 — later context is derivable from the trail.
+            w.append(&Kind::ModelRequested {
+                phase: "scout".to_string(),
+                model: model.clone(),
+                system: if turn == 1 {
+                    SCOUT_SYSTEM.to_string()
+                } else {
+                    String::new()
+                },
+                user: if turn == 1 {
+                    request.to_string()
+                } else {
+                    String::new()
+                },
+            })?;
+            let out = match config.provider.chat(&model, &messages, Some(&specs)) {
+                Ok(out) => out,
+                Err(error) => {
+                    let reason = error.to_string();
+                    w.append(&Kind::Note {
+                        text: format!("model call failed: {reason}"),
+                    })?;
+                    w.append(&Kind::PhaseEnded {
+                        phase: "scout".to_string(),
+                        outcome: PhaseOutcome::Error,
+                    })?;
+                    eprintln!("daemar: model call failed: {reason}");
+                    failed_open_message(w.slip_id());
+                    return Ok(false);
+                }
+            };
+            let cost = pricing.cost(out.prompt_tokens, out.cached_tokens, out.completion_tokens);
+            w.append(&Kind::ModelCall {
+                phase: "scout".to_string(),
+                model: model.clone(),
+                tokens: out.total_tokens,
+                prompt_tokens: out.prompt_tokens,
+                cached_tokens: out.cached_tokens,
+                completion_tokens: out.completion_tokens,
+                cost,
+            })?;
+            if !priced_complaint_logged {
+                if let Some(complaint) = pricing.complaint() {
+                    w.append(&Kind::Note { text: complaint })?;
+                    priced_complaint_logged = true;
+                }
+            }
+
+            if !out.tool_calls.is_empty() {
+                messages.push(out.assistant.clone());
+                for call in &out.tool_calls {
+                    let args: serde_json::Value =
+                        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+                    let outcome = if args.is_null() {
+                        tools::ToolOutcome {
+                            content: format!("{}: arguments were not valid JSON", call.name),
+                            is_error: true,
+                            hash: String::new(),
+                        }
+                    } else {
+                        tools::execute(&call.name, &args, &mut ctx)
+                    };
+                    w.append(&Kind::ToolCall {
+                        phase: "scout".to_string(),
+                        tool: call.name.clone(),
+                        args: args.clone(),
+                        ok: !outcome.is_error,
+                        summary: summarize(&outcome.content),
+                        hash: outcome.hash.clone(),
+                    })?;
+                    messages.push(serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": outcome.content,
+                    }));
+                }
+                continue;
+            }
+
+            if let Some(text) = out.text {
+                w.append(&Kind::SectionWritten {
+                    section: "scout.v1".to_string(),
+                    by: "scout".to_string(),
+                    summary: summarize(&text),
+                    body: text.clone(),
+                })?;
+                w.append(&Kind::PhaseEnded {
+                    phase: "scout".to_string(),
+                    outcome: PhaseOutcome::Success,
+                })?;
+                close_accepted(&mut w)?;
+                println!("{}", text.trim_end());
+                eprintln!(
+                    "\nslip {id} · accepted · {} tokens · {} turns · board: /slip/{id}",
+                    out.total_tokens,
+                    turn,
+                    id = w.slip_id()
+                );
+                return Ok(true);
+            }
+        }
+
+        // The cap is the cap: report it, leave the slip open, let the
+        // controller decide.
+        w.append(&Kind::Note {
+            text: format!("turn cap ({MAX_TURNS}) reached without a report"),
+        })?;
+        w.append(&Kind::PhaseEnded {
+            phase: "scout".to_string(),
+            outcome: PhaseOutcome::Error,
+        })?;
+        eprintln!("daemar: scout hit the turn cap ({MAX_TURNS}) without reporting");
+        failed_open_message(w.slip_id());
+        Ok(false)
     })
 }
 

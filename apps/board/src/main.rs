@@ -563,9 +563,9 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
     html.push_str(&format!(
         "<div class=\"face\"><p class=\"req\">{}</p>\
          <table><tr><th>status</th><td>{:?}{}</td></tr>\
-         <tr><th>workflow</th><td>{}</td></tr><tr><th>engineer</th><td>{}</td></tr>\
+         <tr><th>workflow</th><td>{}</td></tr><tr><th>engineer</th><td>{}</td></tr>{}\
          <tr><th>opened</th><td>{}</td></tr><tr><th>last event</th><td>{}</td></tr>\
-         <tr><th>spend</th><td>{} model calls · {} tokens · ${:.2} · {} queries</td></tr>{}</table></div>",
+         <tr><th>spend</th><td>{} model calls · {} tokens · ${:.2} · {} queries · {} tool calls</td></tr>{}</table></div>",
         esc(&slip.request),
         slip.status,
         match (&slip.failed, &slip.cocked, &slip.holding) {
@@ -588,12 +588,18 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
         },
         esc(&slip.workflow),
         esc(&slip.engineer),
+        if slip.repo.is_empty() {
+            String::new()
+        } else {
+            format!("<tr><th>territory</th><td>{}</td></tr>", esc(&slip.repo))
+        },
         esc(&slip.opened_ts),
         esc(&slip.last_ts),
         slip.model_calls,
         slip.tokens,
         slip.cost,
         slip.queries,
+        slip.tool_trail.len(),
         slip.close_reason
             .as_deref()
             .map(|r| format!("<tr><th>close reason</th><td>{}</td></tr>", esc(r)))
@@ -642,6 +648,28 @@ fn render_detail(slip: &Slip, events: &[ledger::Event], bad_lines: &[u64]) -> St
                 }
             }
         }
+    }
+
+    if !slip.tool_trail.is_empty() {
+        html.push_str(&format!(
+            "<h2>tool trail <span class=\"count\">{}</span></h2><table>",
+            slip.tool_trail.len()
+        ));
+        html.push_str("<tr><th></th><th>tool</th><th>result</th><th>ts</th></tr>");
+        for t in &slip.tool_trail {
+            html.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                if t.ok {
+                    "<i class=\"trailok\">✓</i>"
+                } else {
+                    "<i class=\"trailbad\">✗</i>"
+                },
+                esc(&t.tool),
+                esc(&t.summary),
+                esc(&t.ts)
+            ));
+        }
+        html.push_str("</table>");
     }
 
     html.push_str("<h2>sections</h2>");
@@ -788,6 +816,8 @@ h2{font-size:.72rem;letter-spacing:.14em;color:#8a94a0;margin:1.2rem 0 .3rem;tex
 .warn{color:#f59e0b;font-size:.75rem}
 details.body summary{cursor:pointer;color:#38bdf8;font-size:.75rem;margin-top:.2rem}
 .promptmeta{color:#8a94a0;font-size:.75rem;margin:.5rem 0 .1rem}
+.trailok{font-style:normal;color:#4ade80}
+.trailbad{font-style:normal;color:#f87171}
 details.body pre{white-space:pre-wrap;background:#10151b;border:1px solid #1e242c;border-radius:3px;padding:.6rem;margin:.4rem 0 0;max-height:24rem;overflow-y:auto}
 .strip{display:grid;grid-template-columns:3rem minmax(11rem,1fr) 3.4rem minmax(11rem,17rem) 7.6rem 7rem 3.2rem 3.2rem 3.6rem;
   gap:0 .7rem;align-items:baseline;white-space:nowrap;

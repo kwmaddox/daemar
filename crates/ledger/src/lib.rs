@@ -105,6 +105,11 @@ pub enum Kind {
         request: String,
         workflow: String,
         engineer: String,
+        /// The territory: the repository this flight operates on. The tower
+        /// stays home; the slip remembers where it was going, so a resumed
+        /// flight lands in the right repo without being told.
+        #[serde(default)]
+        repo: String,
     },
     #[serde(rename = "phase_started.v1")]
     PhaseStarted {
@@ -170,6 +175,23 @@ pub enum Kind {
         /// USD as computed AT FLIGHT TIME from the registry — a frozen
         /// receipt, never recomputed from a later table.
         cost: f64,
+    },
+    /// One tool invocation, outcome included. Tools are tier-3 queries
+    /// against the world: every read is logged (an unlogged read is a hole
+    /// in the epistemic record), with a content-hash pointer instead of the
+    /// bytes — what the agent saw, recoverable, without bloating the ledger.
+    #[serde(rename = "tool_call.v1")]
+    ToolCall {
+        phase: String,
+        tool: String,
+        #[serde(default)]
+        args: Value,
+        ok: bool,
+        #[serde(default)]
+        summary: String,
+        /// Content hash for reads; empty for tools with nothing to pin.
+        #[serde(default)]
+        hash: String,
     },
     #[serde(rename = "note.v1")]
     Note { text: String },
@@ -299,6 +321,16 @@ pub struct PhaseRow {
     pub outcome: Option<PhaseOutcome>,
 }
 
+/// One entry in the tool trail — what the agent did to the world, in order.
+#[derive(Debug, Clone)]
+pub struct ToolRow {
+    pub phase: String,
+    pub tool: String,
+    pub ok: bool,
+    pub summary: String,
+    pub ts: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SectionRow {
     pub section: String,
@@ -341,6 +373,8 @@ pub struct Slip {
     pub request: String,
     pub workflow: String,
     pub engineer: String,
+    /// The territory this flight operates on; empty on pre-territory ledgers.
+    pub repo: String,
     pub status: Status,
     /// The boundary awaiting the controller, when the strip is cocked.
     pub cocked: Option<String>,
@@ -355,6 +389,7 @@ pub struct Slip {
     pub phases: Vec<PhaseRow>,
     pub sections: Vec<SectionRow>,
     pub model_requests: Vec<ModelRequestRow>,
+    pub tool_trail: Vec<ToolRow>,
     pub clearances: Vec<ClearanceRow>,
     pub tokens: u64,
     pub cost: f64,
@@ -392,12 +427,14 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                 request,
                 workflow,
                 engineer,
+                repo,
             } => {
                 slip = Some(Slip {
                     id: event.slip_id.clone(),
                     request,
                     workflow,
                     engineer,
+                    repo,
                     status: Status::InFlight,
                     cocked: None,
                     failed: None,
@@ -407,6 +444,7 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                     phases: Vec::new(),
                     sections: Vec::new(),
                     model_requests: Vec::new(),
+                    tool_trail: Vec::new(),
                     clearances: Vec::new(),
                     tokens: 0,
                     cost: 0.0,
@@ -515,6 +553,21 @@ pub fn fold(events: &[Event]) -> Option<Slip> {
                         s.tokens += tokens;
                         s.cost += cost;
                         s.last_model = Some(model);
+                    }
+                    Kind::ToolCall {
+                        phase,
+                        tool,
+                        ok,
+                        summary,
+                        ..
+                    } => {
+                        s.tool_trail.push(ToolRow {
+                            phase,
+                            tool,
+                            ok,
+                            summary,
+                            ts,
+                        });
                     }
                     Kind::Note { .. } => {}
                     Kind::SlipClosed {
@@ -1028,6 +1081,7 @@ mod tests {
             request: "r".into(),
             workflow: "prompt".into(),
             engineer: "kendall".into(),
+            repo: String::new(),
         })
         .unwrap();
         w.append(&Kind::SectionWritten {
@@ -1201,6 +1255,7 @@ mod tests {
             request: "r".into(),
             workflow: "w".into(),
             engineer: "e".into(),
+            repo: String::new(),
         })
         .unwrap();
         drop(w);

@@ -7,6 +7,7 @@
 use std::fmt;
 
 use serde::Deserialize;
+use serde_json::Value;
 
 /// Overall request deadline. Generous — reasoning models take their time —
 /// but finite: no flight parks forever on a dead socket.
@@ -28,6 +29,27 @@ pub struct ModelReply {
     pub total_tokens: u64,
 }
 
+/// One tool invocation the model asked for. `arguments` stays the raw JSON
+/// string the provider sent — the executor parses it, and a malformed one
+/// becomes an error outcome the model gets to read.
+pub struct ToolCallRequest {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+/// One turn's result: the assistant message verbatim (to echo back into the
+/// conversation), whatever text and tool calls it carried, and the usage.
+pub struct ChatOut {
+    pub assistant: Value,
+    pub text: Option<String>,
+    pub tool_calls: Vec<ToolCallRequest>,
+    pub prompt_tokens: u64,
+    pub cached_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+}
+
 /// Every way the seam fails, as data. The moghedien taxonomy, inherited.
 #[derive(Debug)]
 pub enum ProviderError {
@@ -37,7 +59,7 @@ pub enum ProviderError {
         body: String,
     },
     Decode(String),
-    /// 200 OK but no assistant text — a response shape we refuse to guess at.
+    /// 200 OK but neither text nor tool calls — a shape we refuse to guess at.
     MissingContent,
 }
 
@@ -66,13 +88,7 @@ struct ChatResponse {
 
 #[derive(Deserialize)]
 struct Choice {
-    message: Message,
-}
-
-#[derive(Deserialize)]
-struct Message {
-    #[serde(default)]
-    content: Option<String>,
+    message: Value,
 }
 
 #[derive(Deserialize, Default, Clone, Copy)]
@@ -94,21 +110,23 @@ struct PromptTokensDetails {
 }
 
 impl Provider {
-    /// One turn: system + user in, assistant text and usage out.
-    pub fn complete(
+    /// One turn over an explicit message array, tools optional. The core.
+    pub fn chat(
         &self,
         model: &str,
-        system: &str,
-        user: &str,
-    ) -> Result<ModelReply, ProviderError> {
+        messages: &[Value],
+        tools: Option<&Value>,
+    ) -> Result<ChatOut, ProviderError> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "model": model,
-            "messages": [
-                { "role": "system", "content": system },
-                { "role": "user", "content": user },
-            ],
-        });
+        let mut body = serde_json::json!({ "model": model, "messages": messages });
+        if let Some(tools) = tools {
+            body["tools"] = tools.clone();
+            // OpenAI's chat-completions endpoint rejects function tools on
+            // reasoning models unless effort is 'none' (their 400 says so:
+            // "use /v1/responses or set reasoning_effort to 'none'"). The
+            // Responses API is the eventual fix; this is the honest v0.
+            body["reasoning_effort"] = serde_json::json!("none");
+        }
 
         // A generation can legitimately take minutes; a hung connection must
         // not take forever. The deadline turns a dead network into a
@@ -132,25 +150,81 @@ impl Provider {
         let parsed: ChatResponse = response
             .into_json()
             .map_err(|error| ProviderError::Decode(error.to_string()))?;
-        let text = parsed
+        let assistant = parsed
             .choices
             .into_iter()
             .next()
-            .and_then(|choice| choice.message.content)
-            .filter(|content| !content.is_empty())
+            .map(|c| c.message)
             .ok_or(ProviderError::MissingContent)?;
+
+        let text = assistant
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+        let tool_calls: Vec<ToolCallRequest> = assistant
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|call| {
+                        let function = call.get("function")?;
+                        Some(ToolCallRequest {
+                            id: call.get("id")?.as_str()?.to_string(),
+                            name: function.get("name")?.as_str()?.to_string(),
+                            arguments: function
+                                .get("arguments")
+                                .and_then(Value::as_str)
+                                .unwrap_or("{}")
+                                .to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if text.is_none() && tool_calls.is_empty() {
+            return Err(ProviderError::MissingContent);
+        }
+
         let usage = parsed.usage.unwrap_or_default();
         let total_tokens = if usage.total_tokens > 0 {
             usage.total_tokens
         } else {
             usage.prompt_tokens + usage.completion_tokens
         };
-        Ok(ModelReply {
+        Ok(ChatOut {
+            assistant,
             text,
+            tool_calls,
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.prompt_tokens_details.cached_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens,
+        })
+    }
+
+    /// One toolless turn: system + user in, text out. The original seam,
+    /// now a wrapper over `chat`.
+    pub fn complete(
+        &self,
+        model: &str,
+        system: &str,
+        user: &str,
+    ) -> Result<ModelReply, ProviderError> {
+        let messages = [
+            serde_json::json!({ "role": "system", "content": system }),
+            serde_json::json!({ "role": "user", "content": user }),
+        ];
+        let out = self.chat(model, &messages, None)?;
+        let text = out.text.ok_or(ProviderError::MissingContent)?;
+        Ok(ModelReply {
+            text,
+            prompt_tokens: out.prompt_tokens,
+            cached_tokens: out.cached_tokens,
+            completion_tokens: out.completion_tokens,
+            total_tokens: out.total_tokens,
         })
     }
 }
