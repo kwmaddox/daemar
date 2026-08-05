@@ -1,197 +1,12 @@
 //! End-to-end CLI tests against a stub provider.
 //!
-//! The test seam is the one the architecture already ships: DAEMAR_BASE_URL.
-//! A std-only TCP thread speaks just enough HTTP to serve scripted
-//! chat-completions, so the whole ceremony — plan, cock, guards, grant,
-//! continue on a different airframe, witnessed failure, dispose, refuse —
-//! runs offline, deterministically, for zero tokens. Lineage: moghedien's
-//! todoing_stub, the house pattern for testing a loop at its HTTP boundary.
+//! The rig (stub server, factory helpers) lives in tests/common — shared
+//! with the MCP tower tests, which drive the same binary over stdio.
 
-use std::collections::VecDeque;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::path::PathBuf;
-use std::process::{Command, Output};
-use std::sync::{Arc, Mutex};
+mod common;
+use common::*;
 
-use ledger::{EventKind, Kind, Slip, Status};
-
-// ── The stub provider ────────────────────────────────────────────────────────
-
-struct Stub {
-    base_url: String,
-    script: Arc<Mutex<VecDeque<(u16, String)>>>,
-}
-
-impl Stub {
-    fn push_ok(&self, text: &str) {
-        let body = format!(
-            r#"{{"choices":[{{"message":{{"content":{text}}}}}],"usage":{{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{{"cached_tokens":10}}}}}}"#,
-            text = json_string(text)
-        );
-        self.script.lock().unwrap().push_back((200, body));
-    }
-
-    fn push_error(&self, code: u16, body: &str) {
-        self.script
-            .lock()
-            .unwrap()
-            .push_back((code, body.to_string()));
-    }
-
-    /// A turn where the model asks for one tool call.
-    fn push_tool_call(&self, id: &str, name: &str, arguments: &str) {
-        let body = format!(
-            r#"{{"choices":[{{"message":{{"role":"assistant","content":null,"tool_calls":[{{"id":{id},"type":"function","function":{{"name":{name},"arguments":{args}}}}}]}}}}],"usage":{{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{{"cached_tokens":0}}}}}}"#,
-            id = json_string(id),
-            name = json_string(name),
-            args = json_string(arguments)
-        );
-        self.script.lock().unwrap().push_back((200, body));
-    }
-}
-
-fn json_string(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn stub_server() -> Stub {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub");
-    let base_url = format!("http://{}", listener.local_addr().expect("addr"));
-    let script: Arc<Mutex<VecDeque<(u16, String)>>> = Arc::default();
-    let responses = script.clone();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 4096];
-            let mut body_start = None;
-            let mut content_length = 0usize;
-            loop {
-                match stream.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        buf.extend_from_slice(&chunk[..n]);
-                        if body_start.is_none() {
-                            if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
-                                let headers = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
-                                content_length = headers
-                                    .lines()
-                                    .find_map(|l| l.strip_prefix("content-length:"))
-                                    .and_then(|v| v.trim().parse().ok())
-                                    .unwrap_or(0);
-                                body_start = Some(pos + 4);
-                            }
-                        }
-                        if let Some(start) = body_start {
-                            if buf.len() >= start + content_length {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            let (code, body) = responses
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or((500, r#"{"error":"stub exhausted"}"#.to_string()));
-            let response = format!(
-                "HTTP/1.1 {code} S\r\nContent-Type: application/json\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
-        }
-    });
-    Stub { base_url, script }
-}
-
-// ── The factory under test ───────────────────────────────────────────────────
-
-struct Factory {
-    ledgers: PathBuf,
-    airframes: PathBuf,
-    base_url: String,
-}
-
-fn factory(name: &str, stub: &Stub) -> Factory {
-    let root = std::env::temp_dir().join(format!("daemar-cli-{}-{name}", std::process::id()));
-    std::fs::remove_dir_all(&root).ok();
-    std::fs::create_dir_all(&root).expect("mkdir");
-    let airframes = root.join("airframes.toml");
-    std::fs::write(
-        &airframes,
-        "[models.plan-model]\ninput = 2.0\ncached_input = 0.2\noutput = 4.0\n\n\
-         [models.respond-model]\ninput = 1.0\noutput = 2.0\n",
-    )
-    .expect("write airframes");
-    Factory {
-        ledgers: root.join("ledgers"),
-        airframes,
-        base_url: stub.base_url.clone(),
-    }
-}
-
-fn daemar(f: &Factory, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_daemar"))
-        .args(args)
-        .env("DAEMAR_LEDGERS", &f.ledgers)
-        .env("DAEMAR_BASE_URL", &f.base_url)
-        .env("OPENAI_API_KEY", "test-key")
-        .env("DAEMAR_PLAN_MODEL", "plan-model")
-        .env("DAEMAR_RESPOND_MODEL", "respond-model")
-        .env("DAEMAR_SCOUT_MODEL", "plan-model")
-        .env("DAEMAR_AIRFRAMES", &f.airframes)
-        .env("USER", "testctl")
-        .output()
-        .expect("run daemar")
-}
-
-fn exit_code(output: &Output) -> i32 {
-    output.status.code().expect("exit code")
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).to_string()
-}
-
-/// The one slip this factory has flown, folded fresh from disk.
-fn the_slip(f: &Factory) -> (String, Slip, Vec<ledger::Event>) {
-    let mut ledgers: Vec<_> = std::fs::read_dir(&f.ledgers)
-        .expect("ledgers dir")
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    assert_eq!(ledgers.len(), 1, "expected exactly one ledger");
-    let path = ledgers.remove(0);
-    let id = path
-        .file_stem()
-        .expect("stem")
-        .to_string_lossy()
-        .to_string();
-    let file = ledger::load_ledger(&path).expect("load");
-    assert!(
-        file.bad_lines.is_empty(),
-        "writer produced unreadable lines"
-    );
-    let slip = ledger::fold(&file.events).expect("folds");
-    (id, slip, file.events)
-}
+use ledger::{EventKind, Kind, Status};
 
 // ── The ceremony, end to end ─────────────────────────────────────────────────
 
@@ -310,15 +125,6 @@ fn failure_is_witnessed_then_disposed() {
     let out = daemar(&f, &["dispose", &id, "again"]);
     assert_eq!(exit_code(&out), 2);
     assert!(stderr(&out).contains("already closed"), "{}", stderr(&out));
-}
-
-/// A seeded territory for the scout to investigate.
-fn territory(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("daemar-territory-{}-{name}", std::process::id()));
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::create_dir_all(dir.join("src")).expect("mkdir");
-    std::fs::write(dir.join("src/lib.rs"), "pub fn answer() -> u8 { 42 }\n").expect("seed");
-    dir.canonicalize().expect("canonical territory")
 }
 
 #[test]
@@ -556,4 +362,88 @@ fn refuse_is_a_verdict_and_closes_directly() {
     let out = daemar(&f, &["continue", &id]);
     assert_eq!(exit_code(&out), 2);
     assert!(stderr(&out).contains("already closed"), "{}", stderr(&out));
+}
+
+#[test]
+fn daemar_home_roots_the_ledgers_and_airframes() {
+    let stub = stub_server();
+    let f = factory("home", &stub);
+    let home = std::env::temp_dir().join(format!("daemar-home-{}", std::process::id()));
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::create_dir_all(&home).expect("mkdir home");
+    std::fs::copy(&f.airframes, home.join("airframes.toml")).expect("seed airframes");
+
+    // No DAEMAR_LEDGERS / DAEMAR_AIRFRAMES in the env: the relative defaults
+    // must resolve against DAEMAR_HOME, not wherever the process happens
+    // to be standing.
+    stub.push_ok("answered from a homed process");
+    let out = daemar_cmd(&f, &["fly from home"])
+        .env_remove("DAEMAR_LEDGERS")
+        .env_remove("DAEMAR_AIRFRAMES")
+        .env("DAEMAR_HOME", &home)
+        .output()
+        .expect("run daemar");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        home.join("ledgers").exists(),
+        "the slip lands under DAEMAR_HOME/ledgers"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("cost unrecorded"),
+        "airframes.toml was found via DAEMAR_HOME"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn the_tower_fetches_its_own_key_from_the_vault() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let stub = stub_server();
+    let f = factory("vault", &stub);
+    let home = std::env::temp_dir().join(format!("daemar-vault-{}", std::process::id()));
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::create_dir_all(home.join("secrets")).expect("mkdir");
+    std::fs::write(home.join("secrets/daemar.enc.env"), "ciphertext\n").expect("seed");
+
+    // A stand-in sops on PATH: "decrypts" to a shell-flavored dotenv — an
+    // `export` prefix and quoted value, the worst dialect the vault must
+    // tolerate. The real binary is exercised the same way — stdout parsed
+    // in-process.
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir bin");
+    std::fs::write(
+        bin.join("sops"),
+        "#!/bin/sh\necho '# decrypted'\necho \"export OPENAI_API_KEY='key-from-vault'\"\n",
+    )
+    .expect("write fake sops");
+    std::fs::set_permissions(bin.join("sops"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    // No key in the exec environment — the process must fetch its own.
+    stub.push_ok("flown on a vault key");
+    let out = daemar_cmd(&f, &["prove the vault"])
+        .env_remove("OPENAI_API_KEY")
+        .env("DAEMAR_HOME", &home)
+        .env("PATH", path)
+        .output()
+        .expect("run daemar");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the vault supplied the key: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::remove_dir_all(&home).ok();
 }

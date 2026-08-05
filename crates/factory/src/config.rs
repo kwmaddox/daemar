@@ -1,7 +1,10 @@
-//! Config: env is the serde edge of a CLI, parsed once, here.
+//! Config: env is the serde edge, parsed once, here. `DAEMAR_HOME` roots the
+//! tower's state so any interface — CLI, MCP client, someday a daemon — finds
+//! the same factory regardless of where the process was spawned.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::process::ExitCode;
+use std::path::PathBuf;
 
 use crate::provider::Provider;
 use crate::registry::{self, Registry};
@@ -15,22 +18,34 @@ pub fn engineer() -> String {
     env("USER").unwrap_or_else(|| "engineer".to_string())
 }
 
-pub fn ledgers_dir() -> String {
-    env("DAEMAR_LEDGERS").unwrap_or_else(|| "ledgers".to_string())
+/// The tower's root: where ledgers, airframes, and secrets live when the
+/// process wasn't launched from the repo itself.
+pub fn home() -> Option<PathBuf> {
+    env("DAEMAR_HOME").map(PathBuf::from)
 }
 
-/// The default territory: wherever the engineer is standing.
-pub fn cwd_territory() -> String {
-    std::env::current_dir()
-        .ok()
-        .and_then(|p| p.canonicalize().ok())
-        .map(|p| p.display().to_string())
-        .unwrap_or_default()
+/// A relative default resolved against DAEMAR_HOME when set; the bare
+/// default (cwd-relative, the original CLI behavior) otherwise.
+fn homed_default(relative: &str) -> String {
+    match home() {
+        Some(root) => root.join(relative).display().to_string(),
+        None => relative.to_string(),
+    }
+}
+
+pub fn ledgers_dir() -> String {
+    env("DAEMAR_LEDGERS").unwrap_or_else(|| homed_default("ledgers"))
+}
+
+fn airframes_path() -> String {
+    env("DAEMAR_AIRFRAMES").unwrap_or_else(|| homed_default("airframes.toml"))
 }
 
 #[derive(Debug)]
 pub enum ConfigError {
     Missing(String),
+    /// The secrets file existed but could not be decrypted or parsed.
+    Secrets(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -38,14 +53,101 @@ impl fmt::Display for ConfigError {
         match self {
             ConfigError::Missing(name) => write!(
                 f,
-                "{name} is not set — cd into the repo so direnv decrypts secrets, \
-                 or export it"
+                "{name} is not set — export it, or set DAEMAR_HOME so the \
+                 tower can decrypt its own secrets"
             ),
+            ConfigError::Secrets(detail) => write!(f, "{detail}"),
         }
     }
 }
 
 impl std::error::Error for ConfigError {}
+
+/// The tower fetches its own key: process env first; on a miss, decrypt
+/// `$DAEMAR_HOME/secrets/daemar.enc.env` with sops — once, lazily, into this
+/// process's memory. The key never rides in any exec environment, so there
+/// is nothing for `ps eww` or `/proc/<pid>/environ` to find.
+struct Vault {
+    /// None until the first env miss forces a load. The loaded map is empty
+    /// when there is no home or no secrets file — that is not an error;
+    /// missing values fail loud at their own lookups.
+    secrets: Option<HashMap<String, String>>,
+}
+
+impl Vault {
+    fn new() -> Self {
+        Vault { secrets: None }
+    }
+
+    fn get(&mut self, name: &str) -> Result<Option<String>, ConfigError> {
+        if let Some(value) = env(name) {
+            return Ok(Some(value));
+        }
+        if self.secrets.is_none() {
+            self.secrets = Some(decrypt_secrets()?);
+        }
+        Ok(self
+            .secrets
+            .as_ref()
+            .expect("loaded above")
+            .get(name)
+            .cloned())
+    }
+}
+
+fn decrypt_secrets() -> Result<HashMap<String, String>, ConfigError> {
+    let Some(root) = home() else {
+        return Ok(HashMap::new());
+    };
+    let file = root.join("secrets/daemar.enc.env");
+    if !file.exists() {
+        return Ok(HashMap::new());
+    }
+    let mut sops = std::process::Command::new("sops");
+    sops.arg("-d").arg(&file);
+    // The house key location is XDG (~/.config/sops/age); macOS sops defaults
+    // to ~/Library/Application Support instead, so point it home unless the
+    // environment already chose.
+    if env("SOPS_AGE_KEY_FILE").is_none() {
+        if let Some(key) = env("HOME")
+            .map(|h| PathBuf::from(h).join(".config/sops/age/keys.txt"))
+            .filter(|k| k.exists())
+        {
+            sops.env("SOPS_AGE_KEY_FILE", key);
+        }
+    }
+    let out = sops
+        .output()
+        .map_err(|e| ConfigError::Secrets(format!("could not run sops: {e}")))?;
+    if !out.status.success() {
+        return Err(ConfigError::Secrets(format!(
+            "sops -d {} failed: {}",
+            file.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut map = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Tolerate shell-flavored dotenv: an `export ` prefix and matched
+        // surrounding quotes both belong to the shell, not the value.
+        let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+        if let Some((key, value)) = line.split_once('=') {
+            let value = value.trim();
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+                .unwrap_or(value);
+            map.insert(key.trim().to_string(), value.to_string());
+        }
+    }
+    Ok(map)
+}
 
 pub struct Config {
     pub provider: Provider,
@@ -59,11 +161,13 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let default_model = env("DAEMAR_MODEL");
+        let mut vault = Vault::new();
+        let default_model = vault.get("DAEMAR_MODEL")?;
         let mut models: [String; Role::ALL.len()] = Default::default();
         for (slot, role) in Role::ALL.iter().enumerate() {
             let agent = roster::agent(*role);
-            models[slot] = env(agent.model_env)
+            models[slot] = vault
+                .get(agent.model_env)?
                 .or_else(|| default_model.clone())
                 .ok_or_else(|| {
                     ConfigError::Missing(format!("{} (or DAEMAR_MODEL)", agent.model_env))
@@ -71,13 +175,15 @@ impl Config {
         }
         Ok(Config {
             provider: Provider {
-                base_url: env("DAEMAR_BASE_URL")
+                base_url: vault
+                    .get("DAEMAR_BASE_URL")?
                     .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-                api_key: env("OPENAI_API_KEY")
+                api_key: vault
+                    .get("OPENAI_API_KEY")?
                     .ok_or_else(|| ConfigError::Missing("OPENAI_API_KEY".to_string()))?,
             },
             ledgers: ledgers_dir(),
-            airframes: env("DAEMAR_AIRFRAMES").unwrap_or_else(|| "airframes.toml".to_string()),
+            airframes: airframes_path(),
             engineer: engineer(),
             models,
         })
@@ -91,29 +197,6 @@ impl Config {
             .position(|r| *r == role)
             .expect("Role::ALL covers every role");
         &self.models[slot]
-    }
-}
-
-pub fn with_config<F>(flight: F) -> ExitCode
-where
-    F: FnOnce(&Config) -> Result<bool, ledger::LedgerError>,
-{
-    let config = match Config::from_env() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("daemar: {error}");
-            return ExitCode::from(2);
-        }
-    };
-    match flight(&config) {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
-        Err(error) => {
-            // A ledger that cannot be written is a flight that cannot be
-            // recorded: nothing to salvage, fail loud.
-            eprintln!("daemar: ledger failure: {error}");
-            ExitCode::FAILURE
-        }
     }
 }
 

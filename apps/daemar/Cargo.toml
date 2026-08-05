@@ -6,7 +6,6 @@ description = "The factory's CLI: a thin skin over the factory crate."
 
 [dependencies]
 factory = { path = "../../crates/factory" }
-
-[dev-dependencies]
-# The integration tests read the ledgers the binary writes.
+# The MCP tower folds slips for its `slip` tool and speaks JSON-RPC.
 ledger = { path = "../../crates/ledger" }
+serde_json = "1"
