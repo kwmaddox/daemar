@@ -649,6 +649,25 @@ mod tests {
     }
 
     #[test]
+    fn dot_and_dotdot_final_components_cannot_name_a_new_file() {
+        // `Path::file_name()` is None for any path terminating in `..`,
+        // and a bare `.` normalizes so its parent resolves OUTSIDE the
+        // root — confine_new refuses every one of these before a write.
+        let dir = territory("dotdot");
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        for path in ["..", ".", "src/..", "../evil.rs"] {
+            let out = execute(
+                "write",
+                &json!({"path": path, "content": "escaped"}),
+                &mut ctx,
+                ToolAccess::ReadWrite,
+            );
+            assert!(out.is_error, "'{path}' must be refused: {}", out.content);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn read_returns_numbered_lines_and_records_a_hash() {
         let dir = territory("read");
         let mut ctx = ToolContext::new(&dir).unwrap();

@@ -71,7 +71,17 @@ impl std::error::Error for WorktreeError {}
 /// Run git in a directory, capturing stdout; a nonzero exit is an error
 /// carrying stderr. The one place the factory shells to git.
 pub fn run_git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
+    // The factory's git behaves identically on every machine: global and
+    // system config are silenced (no surprise diff drivers, filters, or
+    // hooksPath under a code-owned receipt), and ambient GIT_* overrides
+    // cannot redirect `-C dir` somewhere else. Commit identity, when a
+    // caller needs one, is passed explicitly via `-c`.
     let out = Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .arg("-C")
         .arg(dir)
         .args(args)
