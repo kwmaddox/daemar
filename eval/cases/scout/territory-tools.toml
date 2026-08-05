@@ -1,0 +1,36 @@
+# Behavior, not just location: the confinement check and the read-hash are
+# the two safety properties of the scout's own tools. The scout evaluating
+# this case is confined by the very code it must find.
+
+schema = "daemar.eval-case.v1"
+id = "scout.territory-tools"
+class = ["scout", "navigation", "safety"]
+role = "scout"
+workflow = "scout"
+
+request = """
+How do the scout's territory tools keep reads inside the territory — including
+when symlinks are involved — and what do they record about each successful
+file read? Cite, in backticks as `path:line` or `path:start-end`: (a) the
+exact line where the canonicalized path is checked against the territory
+root, and (b) the exact line where the content hash of a successful read is
+computed. Briefly state why symlinks cannot escape.
+"""
+
+territory_repo = "."
+territory_commit = "6ee526ef2400f6748917e8c652c91fddb5493ac9"
+
+[[required]]
+path = "crates/factory/src/tools.rs"
+line = 90
+verbatim = "canonical.starts_with(&self.root)"
+
+[[required]]
+path = "crates/factory/src/tools.rs"
+line = 203
+verbatim = "content_hash(&bytes)"
+
+[human_review]
+questions = [
+    "Did the report explain that canonicalization resolves symlinks BEFORE the prefix check (the reason a link cannot escape)?",
+]

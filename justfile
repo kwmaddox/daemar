@@ -19,6 +19,15 @@ fly request:
 test:
     cargo test
 
+# The eval rig: PAID live-model flights against pinned territories. Choose
+# the airframe exactly like production: DAEMAR_SCOUT_MODEL=... just eval
+eval *args:
+    cargo run -q -p daemar-eval -- run {{args}}
+
+# Objective deltas between two dossiers; never a subjective winner.
+eval-compare left right:
+    cargo run -q -p daemar-eval -- compare {{left}} {{right}}
+
 # What CI will eventually enforce: tests, lints, formatting.
 check:
     cargo test -q
