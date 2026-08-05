@@ -5,6 +5,9 @@
 # runtime ledgers — the board reads these; not history
 /ledgers/
 
+# stage worktrees — materialized per flight, auditable state, not history
+/worktrees/
+
 # eval-generated state: the pinned worktree cache and run dossiers.
 # Cases (eval/cases/) are reviewed fixtures and stay tracked.
 /eval/territories/

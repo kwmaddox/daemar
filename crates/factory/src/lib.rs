@@ -8,13 +8,19 @@
 //! - [`pens`] — the controller's writes: grant, refuse, dispose
 //! - [`provider`] — the OpenAI Responses API seam, stateless by doctrine
 //! - [`tools`] — read-only territory tools, confined by construction
+//! - [`worktree`] — pinned detached worktrees: stages never fly the live tree
+//! - [`sandbox`] — the cage: per-stage Docker containment for tool execution
+//! - [`executor`] — the seam picking where a stage's tools actually run
 //! - [`registry`] — airframes.toml: real prices, never silent
 
 pub mod config;
 pub mod engine;
+pub mod executor;
 pub mod pens;
 pub mod provider;
 pub mod registry;
 pub mod roster;
+pub mod sandbox;
 pub mod tools;
 pub mod workflows;
+pub mod worktree;

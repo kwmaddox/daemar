@@ -20,9 +20,17 @@ use ledger::Slip;
 
 // ── The stub provider ────────────────────────────────────────────────────────
 
+/// One scripted reply; the hook (when present) runs just before the reply
+/// is served — the deterministic seam for mid-flight fault injection.
+pub struct Scripted {
+    pub code: u16,
+    pub body: String,
+    pub hook: Option<Box<dyn FnOnce() + Send>>,
+}
+
 pub struct Stub {
     pub base_url: String,
-    pub script: Arc<Mutex<VecDeque<(u16, String)>>>,
+    pub script: Arc<Mutex<VecDeque<Scripted>>>,
     /// Every request as (request line, raw body), in arrival order.
     pub requests: Arc<Mutex<Vec<(String, String)>>>,
 }
@@ -35,14 +43,18 @@ impl Stub {
             r#"{{"output":[{{"type":"message","content":[{{"type":"output_text","text":{text}}}]}}],"usage":{{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{{"cached_tokens":10}},"output_tokens_details":{{"reasoning_tokens":4}}}}}}"#,
             text = json_string(text)
         );
-        self.script.lock().unwrap().push_back((200, body));
+        self.push(200, body, None);
     }
 
     pub fn push_error(&self, code: u16, body: &str) {
+        self.push(code, body.to_string(), None);
+    }
+
+    pub fn push(&self, code: u16, body: String, hook: Option<Box<dyn FnOnce() + Send>>) {
         self.script
             .lock()
             .unwrap()
-            .push_back((code, body.to_string()));
+            .push_back(Scripted { code, body, hook });
     }
 
     /// A turn where the model asks for one tool call. The opaque reasoning
@@ -56,7 +68,22 @@ impl Stub {
             name = json_string(name),
             args = json_string(arguments)
         );
-        self.script.lock().unwrap().push_back((200, body));
+        self.push(200, body, None);
+    }
+
+    /// A tool-call turn whose SERVING fires a hook first: the fault lands
+    /// at a provable moment — after the prior turn's execs, before this one.
+    pub fn push_tool_call_hooked(
+        &self,
+        id: &str,
+        name: &str,
+        arguments: &str,
+        hook: Box<dyn FnOnce() + Send>,
+    ) {
+        self.push_tool_call(id, name, arguments);
+        let mut script = self.script.lock().unwrap();
+        let last = script.back_mut().expect("just pushed");
+        last.hook = Some(hook);
     }
 }
 
@@ -81,7 +108,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 pub fn stub_server() -> Stub {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub");
     let base_url = format!("http://{}", listener.local_addr().expect("addr"));
-    let script: Arc<Mutex<VecDeque<(u16, String)>>> = Arc::default();
+    let script: Arc<Mutex<VecDeque<Scripted>>> = Arc::default();
     let requests: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
     let responses = script.clone();
     let seen = requests.clone();
@@ -128,11 +155,16 @@ pub fn stub_server() -> Stub {
                 })
                 .unwrap_or_default();
             seen.lock().unwrap().push((line, sent_body));
-            let (code, body) = responses
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or((500, r#"{"error":"stub exhausted"}"#.to_string()));
+            let scripted = responses.lock().unwrap().pop_front();
+            let (code, body) = match scripted {
+                Some(scripted) => {
+                    if let Some(hook) = scripted.hook {
+                        hook();
+                    }
+                    (scripted.code, scripted.body)
+                }
+                None => (500, r#"{"error":"stub exhausted"}"#.to_string()),
+            };
             let response = format!(
                 "HTTP/1.1 {code} S\r\nContent-Type: application/json\r\n\
                  Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -153,6 +185,7 @@ pub fn stub_server() -> Stub {
 pub struct Factory {
     pub ledgers: PathBuf,
     pub airframes: PathBuf,
+    pub worktrees: PathBuf,
     pub base_url: String,
 }
 
@@ -170,6 +203,7 @@ pub fn factory(name: &str, stub: &Stub) -> Factory {
     Factory {
         ledgers: root.join("ledgers"),
         airframes,
+        worktrees: root.join("worktrees"),
         base_url: stub.base_url.clone(),
     }
 }
@@ -186,6 +220,7 @@ pub fn daemar_cmd(f: &Factory, args: &[&str]) -> Command {
         .env("DAEMAR_RESPOND_MODEL", "respond-model")
         .env("DAEMAR_SCOUT_MODEL", "plan-model")
         .env("DAEMAR_EFFORT", "medium")
+        .env("DAEMAR_WORKTREES", &f.worktrees)
         .env("DAEMAR_AIRFRAMES", &f.airframes)
         .env("USER", "testctl")
         .env_remove("DAEMAR_HOME");
@@ -227,11 +262,44 @@ pub fn the_slip(f: &Factory) -> (String, Slip, Vec<ledger::Event>) {
     (id, slip, file.events)
 }
 
-/// A seeded territory for tooled agents to investigate.
+/// A seeded, COMMITTED territory for tooled agents to investigate: every
+/// tooled stage now pins the territory's HEAD into a detached worktree, so
+/// a territory must be a git repo with at least one commit.
 pub fn territory(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("daemar-territory-{}-{name}", std::process::id()));
+    territory_at(
+        std::env::temp_dir().join(format!("daemar-territory-{}-{name}", std::process::id())),
+    )
+}
+
+/// The same seeded territory at a caller-chosen root — the cage tests need
+/// territories under CARGO_TARGET_TMPDIR so Docker Desktop can mount them.
+pub fn territory_at(dir: PathBuf) -> PathBuf {
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(dir.join("src")).expect("mkdir");
     std::fs::write(dir.join("src/lib.rs"), "pub fn answer() -> u8 { 42 }\n").expect("seed");
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args([
+                "-c",
+                "user.email=territory@test",
+                "-c",
+                "user.name=territory",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "seed"]);
     dir.canonicalize().expect("canonical territory")
 }

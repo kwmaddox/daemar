@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const READ_LINE_CAP: usize = 2000;
@@ -27,7 +28,9 @@ const LIST_CAP: usize = 500;
 const SEARCH_MATCH_CAP: usize = 50;
 const SEARCH_FILE_BYTES: u64 = 1_000_000;
 
-#[derive(Debug, Clone)]
+/// Serde derives: the outcome crosses the cage boundary as JSON, losslessly
+/// — the executor seam must be invisible to the ledger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutcome {
     pub content: String,
     pub is_error: bool,
