@@ -219,6 +219,7 @@ pub fn daemar_cmd(f: &Factory, args: &[&str]) -> Command {
         .env("DAEMAR_PLAN_MODEL", "plan-model")
         .env("DAEMAR_RESPOND_MODEL", "respond-model")
         .env("DAEMAR_SCOUT_MODEL", "plan-model")
+        .env("DAEMAR_BUILD_MODEL", "plan-model")
         .env("DAEMAR_EFFORT", "medium")
         .env("DAEMAR_WORKTREES", &f.worktrees)
         .env("DAEMAR_AIRFRAMES", &f.airframes)

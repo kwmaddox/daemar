@@ -411,6 +411,57 @@ fn a_role_effort_override_beats_the_global() {
 }
 
 #[test]
+fn a_granted_build_apply_refuses_continue_naming_phase_three() {
+    // Hand-authored ledger: a build flight cocked at build->apply, granted.
+    // Phase 2 ends here — continue must refuse by name, not misfly.
+    let stub = stub_server();
+    let f = factory("apply-granted", &stub);
+    let mut w = ledger::LedgerWriter::create(
+        &f.ledgers,
+        ledger::SlipId("00000000-0000-7000-8000-000000a221e".into()),
+    )
+    .expect("ledger");
+    w.append(&ledger::Kind::SlipOpened {
+        request: "change the thing".into(),
+        workflow: "build".into(),
+        engineer: "testctl".into(),
+        repo: "/tmp/somewhere".into(),
+    })
+    .unwrap();
+    w.append(&ledger::Kind::PhaseStarted {
+        phase: "build".into(),
+        owner: "builder".into(),
+        lane: ledger::Lane::Agent,
+        engineer: "testctl".into(),
+    })
+    .unwrap();
+    w.append(&ledger::Kind::PhaseEnded {
+        phase: "build".into(),
+        outcome: ledger::PhaseOutcome::Success,
+    })
+    .unwrap();
+    w.append(&ledger::Kind::ClearanceRequested {
+        boundary: "build->apply".into(),
+        by: "gate:diff".into(),
+    })
+    .unwrap();
+    w.append(&ledger::Kind::ClearanceGranted {
+        boundary: "build->apply".into(),
+        by: "testctl".into(),
+    })
+    .unwrap();
+    drop(w);
+
+    let out = daemar(&f, &["continue", "00000000-0000-7000-8000-000000a221e"]);
+    assert_eq!(exit_code(&out), 2);
+    assert!(
+        stderr(&out).contains("phase 3"),
+        "the refusal names the missing era: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn a_bare_repo_flag_is_a_usage_error_not_a_flight() {
     let stub = stub_server();
     let f = factory("bare-flag", &stub);

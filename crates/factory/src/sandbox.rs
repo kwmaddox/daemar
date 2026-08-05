@@ -220,13 +220,37 @@ impl<'r> Cage<'r> {
         access: ToolAccess,
         name_hint: &str,
     ) -> Result<Cage<'r>, CageError> {
-        let mount = match access {
+        // The mount and the identity both follow the seat's access: a
+        // read-only seat gets a read-only world under the fixed nonroot
+        // uid; a write seat gets a writable mount under the WORKTREE
+        // OWNER's identity — the only non-root identity guaranteed able to
+        // write a freshly materialized worktree across engines. A
+        // root-owned worktree is refused: no root cage, ever.
+        let (mount, user) = match access {
             ToolAccess::None => {
                 return Err(CageError::Lifecycle {
                     detail: "a toolless seat has no business in a cage".to_string(),
                 })
             }
-            ToolAccess::ReadOnly => format!("{}:/workspace:ro", worktree.display()),
+            ToolAccess::ReadOnly => (
+                format!("{}:/workspace:ro", worktree.display()),
+                spec.user.clone(),
+            ),
+            ToolAccess::ReadWrite => {
+                use std::os::unix::fs::MetadataExt;
+                let meta = std::fs::metadata(worktree).map_err(|e| CageError::Lifecycle {
+                    detail: format!("cannot stat worktree for a writable cage: {e}"),
+                })?;
+                if meta.uid() == 0 {
+                    return Err(CageError::Lifecycle {
+                        detail: "worktree is root-owned — refusing a root cage".to_string(),
+                    });
+                }
+                (
+                    format!("{}:/workspace", worktree.display()),
+                    format!("{}:{}", meta.uid(), meta.gid()),
+                )
+            }
         };
         let name = format!("daemar-cage-{name_hint}-{}", std::process::id());
         let mut args = strings(&[
@@ -237,7 +261,7 @@ impl<'r> Cage<'r> {
             "--network",
             "none",
             "--user",
-            &spec.user,
+            &user,
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -408,6 +432,40 @@ mod tests {
             !args.contains("-e ") && !args.contains("--env"),
             "no environment crosses into the cage: {args}"
         );
+    }
+
+    #[test]
+    fn a_write_seat_gets_a_writable_mount_under_the_worktree_owner() {
+        let runner = FakeRunner::new(vec![FakeRunner::ok("abc123\n")]);
+        let dir = std::env::temp_dir().join(format!("daemar-rw-cage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cage = Cage::start(
+            &runner,
+            &SandboxSpec::default(),
+            &dir,
+            ToolAccess::ReadWrite,
+            "slip-build",
+        )
+        .expect("starts");
+        assert_eq!(cage.container, "abc123");
+        let args = runner.calls.borrow()[0].join(" ");
+        assert!(
+            args.contains(&format!("{}:/workspace ", dir.display()))
+                || args.contains(&format!("{}:/workspace -w", dir.display())),
+            "the write seat's world is writable: {args}"
+        );
+        assert!(!args.contains(":/workspace:ro"), "{args}");
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(&dir).unwrap();
+        assert!(
+            args.contains(&format!("--user {}:{}", meta.uid(), meta.gid())),
+            "the cage wears the worktree owner's identity: {args}"
+        );
+        assert!(
+            !args.contains("65532"),
+            "not the fixed read-only identity: {args}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

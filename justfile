@@ -28,6 +28,12 @@ eval *args:
 eval-compare left right:
     cargo run -q -p daemar-eval -- compare {{left}} {{right}}
 
+# The caged proofs: build the image, run the docker-gated suite. CI runs
+# this explicitly; ordinary `just test` stays docker-free.
+cage:
+    docker build -f Dockerfile.cage -t daemar-cage:latest .
+    cargo test -p daemar --test cage -- --ignored
+
 # What CI will eventually enforce: tests, lints, formatting.
 check:
     cargo test -q

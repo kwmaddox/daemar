@@ -57,6 +57,13 @@ fixtures/       hand-authored ledgers — the schema's test corpus. Tracked.
   over a territory (default: cwd). Tools: read / list_files / search —
   confined to the territory, every call on the ledger with a content-hash
   pointer. No shell, no writes, no network.
+- `daemar build [--repo <path>] "<request>"` — the builder mutates a
+  PINNED WORKTREE (never the live checkout) inside the cage — write seats
+  cage unconditionally; build the image first (`just cage` builds and
+  proves it). A code-owned diff (gate:diff) cocks the slip at build->apply;
+  APPLY is phase 3. Tools: read/list/search plus hash-guarded `edit`
+  (exact-match, read-first, single occurrence) and create-new-only `write`.
+  There is no delete.
 - `daemar plan "<request>"` — plan phase, then the slip cocks at
   plan->respond and the process EXITS (exit-and-resume: boundary waits and
   crashes share one recovery). `daemar grant|refuse <slip-id>` — the

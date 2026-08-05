@@ -6,6 +6,7 @@
 //!     ... | daemar -                           request from stdin
 //!     daemar plan [--repo <path>] "<request>"  grounded plan, then cock at plan->respond
 //!     daemar scout [--repo <path>] "<question>" read-only recon over the territory
+//!     daemar build [--repo <path>] "<request>" builder mutates a caged worktree; diff cocks at build->apply
 //!     daemar grant <slip-id>                   controller clears the boundary
 //!     daemar refuse <slip-id> [why]            controller refuses; slip closes rejected
 //!     daemar continue <slip-id>                fly the next phase from the printout
@@ -44,6 +45,9 @@ fn main() -> ExitCode {
         Some("scout") => territory_dispatch(&args[1..], |request, repo| {
             fly(|config| workflows::scout_flight(config, request, repo))
         }),
+        Some("build") => territory_dispatch(&args[1..], |request, repo| {
+            fly(|config| workflows::build_flight(config, request, repo))
+        }),
         _ => match read_request(&args) {
             Some(request) => fly(|config| workflows::prompt_flight(config, &request)),
             None => usage(),
@@ -56,6 +60,7 @@ fn usage() -> ExitCode {
         "usage: daemar \"<request>\"            (or ... | daemar -)\n       \
          daemar plan [--repo <path>] \"<request>\"\n       \
          daemar scout [--repo <path>] \"<question>\"\n       \
+         daemar build [--repo <path>] \"<request>\"\n       \
          daemar grant|refuse|continue|dispose <slip-id> [\"<reason>\"]\n       \
          daemar mcp"
     );

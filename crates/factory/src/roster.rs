@@ -15,18 +15,25 @@ pub enum Role {
     Scout,
     Planner,
     Responder,
+    Builder,
 }
 
 impl Role {
-    pub const ALL: [Role; 3] = [Role::Scout, Role::Planner, Role::Responder];
+    pub const ALL: [Role; 4] = [Role::Scout, Role::Planner, Role::Responder, Role::Builder];
 }
 
 /// What an agent may reach. Closed set; the write era adds variants here,
 /// and the exhaustive matches will name every place that must decide.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Serde: the access rides inside cage tool requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolAccess {
     None,
     ReadOnly,
+    /// Read plus the write primitives (edit, write). A seat with this
+    /// access flies caged UNCONDITIONALLY — write tools were born inside
+    /// the cage and have never existed outside it.
+    ReadWrite,
 }
 
 /// Who an agent IS: identity, persona, model binding, tool access.
@@ -77,6 +84,20 @@ pub fn agent(role: Role) -> AgentDef {
             model_env: "DAEMAR_RESPOND_MODEL",
             effort_env: "DAEMAR_RESPOND_EFFORT",
             tools: ToolAccess::None,
+        },
+        Role::Builder => AgentDef {
+            name: "builder",
+            system: "You are daemar's builder: careful modification of one \
+                     repository worktree. Read before you touch — edit refuses \
+                     files you have not read at their current content. Make the \
+                     smallest change that satisfies the request, match the \
+                     surrounding code's style exactly, and verify your work by \
+                     re-reading what you changed. When you are done, reply in \
+                     plain text describing exactly what you changed and why — \
+                     the diff itself is computed and reviewed separately.",
+            model_env: "DAEMAR_BUILD_MODEL",
+            effort_env: "DAEMAR_BUILD_EFFORT",
+            tools: ToolAccess::ReadWrite,
         },
     }
 }
