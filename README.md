@@ -35,6 +35,7 @@ daemar "<request>"                       # cargo run -p daemar -- "<request>"
 git diff | daemar -                      # request from stdin
 daemar scout --repo <path> "<question>"  # read-only recon over any repo
 daemar plan --repo <path> "<request>"    # grounded plan, cock at plan->respond
+daemar build [--repo <path>] "<request>" # mutates a pinned worktree inside a sandbox; the diff awaits the controller's stamp at build->apply
 ```
 
 Workflow stages name **roles** (scout, planner, responder); the **roster**
