@@ -353,7 +353,7 @@ struct DiffReceipt {
     worktree: PathBuf,
 }
 
-fn decode_diff_receipt(summary: &str) -> Option<DiffReceipt> {
+fn decode_diff_receipt(summary: &str, worktrees_root: &Path) -> Option<DiffReceipt> {
     let v: serde_json::Value = serde_json::from_str(summary).ok()?;
     // A versioned receipt that never checks its version would happily
     // mis-read a future v2 (or a corrupted slip) as v1 coordinates.
@@ -362,7 +362,7 @@ fn decode_diff_receipt(summary: &str) -> Option<DiffReceipt> {
     }
     let base = v.get("base")?.as_str()?.to_string();
     let worktree = PathBuf::from(v.get("worktree")?.as_str()?);
-    if !is_full_sha(&base) || !worktree.is_absolute() {
+    if !is_full_sha(&base) || !under_root(&worktree, worktrees_root) {
         return None;
     }
     Some(DiffReceipt { base, worktree })
@@ -371,6 +371,27 @@ fn decode_diff_receipt(summary: &str) -> Option<DiffReceipt> {
 /// Exactly forty hex characters — the only shape a stamped commit takes.
 fn is_full_sha(s: &str) -> bool {
     s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The gate runs git inside a receipt's worktree and eventually removes it
+/// with force — so a receipt naming a path outside the configured worktrees
+/// root is refused at the decode boundary, before any of that machinery
+/// aims at it. Roots and living worktrees are canonicalized before the
+/// check (a symlink cannot smuggle the path out); a worktree that is
+/// already gone is judged lexically — its path was born canonical.
+fn under_root(worktree: &Path, root: &Path) -> bool {
+    // Relative paths resolve against whatever cwd the gate happens to have —
+    // never a resolution the gate performs. Receipts are written absolute.
+    if !worktree.is_absolute() {
+        return false;
+    }
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    match worktree.canonicalize() {
+        Ok(canonical) => canonical.starts_with(&root),
+        Err(_) => worktree.starts_with(&root),
+    }
 }
 
 /// The park receipt: apply.v1's summary carries everything the land leg
@@ -393,7 +414,7 @@ struct ParkReceipt {
     branch: String,
 }
 
-fn decode_park_receipt(summary: &str) -> Option<ParkReceipt> {
+fn decode_park_receipt(summary: &str, worktrees_root: &Path) -> Option<ParkReceipt> {
     let v: serde_json::Value = serde_json::from_str(summary).ok()?;
     if v.get("v")?.as_u64()? != 1 {
         return None;
@@ -408,7 +429,7 @@ fn decode_park_receipt(summary: &str) -> Option<ParkReceipt> {
     };
     if !is_full_sha(&receipt.base)
         || !is_full_sha(&receipt.commit)
-        || !receipt.worktree.is_absolute()
+        || !under_root(&receipt.worktree, worktrees_root)
         || receipt.branch.is_empty()
     {
         return None;
@@ -515,7 +536,7 @@ fn apply_leg(
         .iter()
         .rev()
         .find(|s| s.section == "diff.v1")
-        .and_then(|s| decode_diff_receipt(&s.summary))
+        .and_then(|s| decode_diff_receipt(&s.summary, Path::new(&config.worktrees)))
     else {
         return Err(FlightError::Refused(format!(
             "{slip_id} has no decodable diff.v1 receipt — cannot apply"
@@ -736,7 +757,7 @@ fn land_leg(
         .iter()
         .rev()
         .find(|s| s.section == "apply.v1")
-        .and_then(|s| decode_park_receipt(&s.summary))
+        .and_then(|s| decode_park_receipt(&s.summary, Path::new(&config.worktrees)))
     else {
         return Err(FlightError::Refused(format!(
             "{slip_id} has no decodable apply.v1 receipt — cannot land"
@@ -834,28 +855,72 @@ mod tests {
 
     const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
+    /// A real on-disk worktrees root: under_root canonicalizes it, so the
+    /// tests need one that exists.
+    fn worktrees_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("daemar-wf-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        root.canonicalize().unwrap()
+    }
+
     #[test]
     fn a_receipt_with_the_wrong_version_is_refused() {
-        let good = diff_receipt(SHA, Path::new("/tmp/wt"));
-        assert!(decode_diff_receipt(&good).is_some());
+        let root = worktrees_root("version");
+        let wt = root.join("wt");
+        let good = diff_receipt(SHA, &wt);
+        assert!(decode_diff_receipt(&good, &root).is_some());
         let v2 = good.replace("\"v\":1", "\"v\":2");
-        assert!(decode_diff_receipt(&v2).is_none());
-        let good = park_receipt(SHA, Path::new("/tmp/wt"), SHA, "daemar/slip-x");
-        assert!(decode_park_receipt(&good).is_some());
+        assert!(decode_diff_receipt(&v2, &root).is_none());
+        let good = park_receipt(SHA, &wt, SHA, "daemar/slip-x");
+        assert!(decode_park_receipt(&good, &root).is_some());
         let v2 = good.replace("\"v\":1", "\"v\":2");
-        assert!(decode_park_receipt(&v2).is_none());
+        assert!(decode_park_receipt(&v2, &root).is_none());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn a_park_receipt_is_held_to_the_shape_it_was_written_in() {
-        let wt = Path::new("/tmp/wt");
+        let root = worktrees_root("shape");
+        let wt = root.join("wt");
         for bad in [
-            park_receipt("not-a-sha", wt, SHA, "daemar/slip-x"),
-            park_receipt(SHA, wt, "HEAD", "daemar/slip-x"),
+            park_receipt("not-a-sha", &wt, SHA, "daemar/slip-x"),
+            park_receipt(SHA, &wt, "HEAD", "daemar/slip-x"),
             park_receipt(SHA, Path::new("relative/wt"), SHA, "daemar/slip-x"),
-            park_receipt(SHA, wt, SHA, ""),
+            park_receipt(SHA, &wt, SHA, ""),
         ] {
-            assert!(decode_park_receipt(&bad).is_none(), "must refuse: {bad}");
+            assert!(
+                decode_park_receipt(&bad, &root).is_none(),
+                "must refuse: {bad}"
+            );
         }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_receipt_naming_a_worktree_outside_the_root_is_refused() {
+        // The gate runs git in the receipt's worktree and removes it with
+        // force — a tampered slip must not be able to aim that anywhere
+        // but under the configured root.
+        let root = worktrees_root("outside");
+        let stranger = std::env::temp_dir();
+        assert!(decode_diff_receipt(&diff_receipt(SHA, &stranger), &root).is_none());
+        assert!(
+            decode_park_receipt(&park_receipt(SHA, &stranger, SHA, "daemar/slip-x"), &root)
+                .is_none()
+        );
+        // A symlink under the root pointing out is resolved, then refused.
+        let outside = std::env::temp_dir().join(format!("daemar-wf-out-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        let sneaky = root.join("sneaky");
+        std::os::unix::fs::symlink(&outside, &sneaky).unwrap();
+        assert!(decode_diff_receipt(&diff_receipt(SHA, &sneaky), &root).is_none());
+        // A vanished worktree under the root still decodes: the land leg
+        // tolerates an already-removed worktree.
+        let gone = root.join("gone");
+        assert!(
+            decode_park_receipt(&park_receipt(SHA, &gone, SHA, "daemar/slip-x"), &root).is_some()
+        );
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 }
