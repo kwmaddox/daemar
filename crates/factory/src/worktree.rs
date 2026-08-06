@@ -194,6 +194,11 @@ pub fn is_dirty(repo: &Path) -> Result<bool, WorktreeError> {
 /// authorship.
 pub fn commit_all(worktree: &Path, message: &str) -> Result<String, WorktreeError> {
     run_git(worktree, &["add", "-A", "-f"])?;
+    // The config scrub cannot silence the territory's OWN .git/hooks or
+    // repo-local commit.gpgsign — so the gate declines them explicitly. A
+    // code-lane commit runs no arbitrary hook code and blocks on no
+    // signing key; the territory's hooks belong to the engineer's commits,
+    // not the factory's.
     run_git(
         worktree,
         &[
@@ -203,6 +208,8 @@ pub fn commit_all(worktree: &Path, message: &str) -> Result<String, WorktreeErro
             "user.email=daemar@localhost",
             "commit",
             "-q",
+            "--no-verify",
+            "--no-gpg-sign",
             "-m",
             message,
         ],
@@ -381,6 +388,30 @@ mod tests {
             .expect("materializes");
         let empty = diff_against_base(&clean_wt, &commit).expect("diffs");
         assert!(empty.trim().is_empty(), "an untouched worktree diffs empty");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_gate_commit_declines_the_territorys_own_hooks() {
+        let (root, commit) = scratch("hooks");
+        let repo = root.join("repo");
+        // A hostile pre-commit hook in the territory: exits 1 and leaves a
+        // footprint. The gate's commit must neither run it nor fail on it.
+        let hooks = repo.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\ntouch hook-ran\nexit 1\n").unwrap();
+        let mut perms = std::fs::metadata(&hook).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&hook, perms).unwrap();
+        let wt = add_detached(&repo, &commit, &root.join("wt/slip-5/build")).expect("materializes");
+        std::fs::write(wt.join("src/lib.rs"), "pub fn answer() -> u8 { 44 }\n").unwrap();
+        let landed = commit_all(&wt, "gate commit").expect("commits past the hook");
+        assert_eq!(landed.len(), 40);
+        assert!(
+            !wt.join("hook-ran").exists() && !repo.join("hook-ran").exists(),
+            "the hook must not have executed"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
