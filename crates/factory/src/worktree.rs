@@ -78,20 +78,26 @@ enum GitRun {
     Refused(String),
 }
 
-fn run_git_raw(dir: &Path, args: &[&str]) -> Result<GitRun, WorktreeError> {
-    // The factory's git behaves identically on every machine: global and
-    // system config are silenced (no surprise diff drivers, filters, or
-    // hooksPath under a code-owned receipt), and ambient GIT_* overrides
-    // cannot redirect `-C dir` somewhere else. Commit identity, when a
-    // caller needs one, is passed explicitly via `-c`.
-    let out = Command::new("git")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+/// Every git the factory runs starts here: global and system config are
+/// silenced (no surprise diff drivers, filters, or hooksPath under a
+/// code-owned receipt), and ambient GIT_* overrides cannot redirect
+/// `-C dir` somewhere else. The factory's git behaves identically on
+/// every machine. Commit identity, when a caller needs one, is passed
+/// explicitly via `-c`.
+fn git_command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .arg("-C")
-        .arg(dir)
+        .arg(dir);
+    cmd
+}
+
+fn run_git_raw(dir: &Path, args: &[&str]) -> Result<GitRun, WorktreeError> {
+    let out = git_command(dir)
         .args(args)
         .output()
         .map_err(|e| WorktreeError::Git {
@@ -215,9 +221,10 @@ pub fn merge_ff_only(repo: &Path, commit: &str) -> Result<(), WorktreeError> {
 /// Is `commit` reachable from the repository's HEAD? The land leg's first
 /// question: the factory cares that the change is in, not who landed it.
 pub fn is_ancestor(repo: &Path, commit: &str) -> Result<bool, WorktreeError> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    // Bypasses run_git_raw for the exit-code taxonomy (0 = yes, 1 = no),
+    // but never the scrubbed command builder: the land leg's reachability
+    // verdict must be as deterministic as every other gate.
+    let out = git_command(repo)
         .args(["merge-base", "--is-ancestor", commit, "HEAD"])
         .output()
         .map_err(|e| WorktreeError::Git {

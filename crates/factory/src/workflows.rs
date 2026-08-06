@@ -355,12 +355,22 @@ struct DiffReceipt {
 
 fn decode_diff_receipt(summary: &str) -> Option<DiffReceipt> {
     let v: serde_json::Value = serde_json::from_str(summary).ok()?;
+    // A versioned receipt that never checks its version would happily
+    // mis-read a future v2 (or a corrupted slip) as v1 coordinates.
+    if v.get("v")?.as_u64()? != 1 {
+        return None;
+    }
     let base = v.get("base")?.as_str()?.to_string();
     let worktree = PathBuf::from(v.get("worktree")?.as_str()?);
-    if base.len() != 40 || !worktree.is_absolute() {
+    if !is_full_sha(&base) || !worktree.is_absolute() {
         return None;
     }
     Some(DiffReceipt { base, worktree })
+}
+
+/// Exactly forty hex characters — the only shape a stamped commit takes.
+fn is_full_sha(s: &str) -> bool {
+    s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// The park receipt: apply.v1's summary carries everything the land leg
@@ -385,12 +395,25 @@ struct ParkReceipt {
 
 fn decode_park_receipt(summary: &str) -> Option<ParkReceipt> {
     let v: serde_json::Value = serde_json::from_str(summary).ok()?;
-    Some(ParkReceipt {
+    if v.get("v")?.as_u64()? != 1 {
+        return None;
+    }
+    // The land leg removes worktrees and judges reachability from these
+    // coordinates — a receipt is held to the same shape it was written in.
+    let receipt = ParkReceipt {
         base: v.get("base")?.as_str()?.to_string(),
         worktree: PathBuf::from(v.get("worktree")?.as_str()?),
         commit: v.get("commit")?.as_str()?.to_string(),
         branch: v.get("branch")?.as_str()?.to_string(),
-    })
+    };
+    if !is_full_sha(&receipt.base)
+        || !is_full_sha(&receipt.commit)
+        || !receipt.worktree.is_absolute()
+        || receipt.branch.is_empty()
+    {
+        return None;
+    }
+    Some(receipt)
 }
 
 /// A code leg's report: no model flew, no tokens burned.
@@ -801,4 +824,38 @@ fn land_leg(
         format!("landed {}", receipt.commit),
         None,
     ))
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn a_receipt_with_the_wrong_version_is_refused() {
+        let good = diff_receipt(SHA, Path::new("/tmp/wt"));
+        assert!(decode_diff_receipt(&good).is_some());
+        let v2 = good.replace("\"v\":1", "\"v\":2");
+        assert!(decode_diff_receipt(&v2).is_none());
+        let good = park_receipt(SHA, Path::new("/tmp/wt"), SHA, "daemar/slip-x");
+        assert!(decode_park_receipt(&good).is_some());
+        let v2 = good.replace("\"v\":1", "\"v\":2");
+        assert!(decode_park_receipt(&v2).is_none());
+    }
+
+    #[test]
+    fn a_park_receipt_is_held_to_the_shape_it_was_written_in() {
+        let wt = Path::new("/tmp/wt");
+        for bad in [
+            park_receipt("not-a-sha", wt, SHA, "daemar/slip-x"),
+            park_receipt(SHA, wt, "HEAD", "daemar/slip-x"),
+            park_receipt(SHA, Path::new("relative/wt"), SHA, "daemar/slip-x"),
+            park_receipt(SHA, wt, SHA, ""),
+        ] {
+            assert!(decode_park_receipt(&bad).is_none(), "must refuse: {bad}");
+        }
+    }
 }
