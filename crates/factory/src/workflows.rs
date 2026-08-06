@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::engine::{run_stage, PinnedTerritory, StageOut, StageSpec};
 use crate::pens::load_open_slip;
 use crate::roster::{Role, ToolAccess};
-use crate::sandbox::{self, CageMode, SystemRunner};
+use crate::wall::WallMode;
 use crate::worktree;
 
 pub const PLAN_TO_RESPOND: &str = "plan->respond";
@@ -101,8 +101,10 @@ fn pinned_territory(
     // Write access preflights the cage UNCONDITIONALLY: write tools were
     // born caged and a builder never flies without one. Read-only seats
     // keep the DAEMAR_CAGE dial.
-    if access == ToolAccess::ReadWrite || config.cage == CageMode::On {
-        sandbox::preflight(&SystemRunner, &config.sandbox)
+    if access == ToolAccess::ReadWrite || config.cage == WallMode::On {
+        config
+            .wall
+            .preflight(&config.sandbox)
             .map_err(|e| FlightError::Refused(e.to_string()))?;
     }
     Ok(PinnedTerritory { source, base })

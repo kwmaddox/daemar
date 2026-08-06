@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use crate::provider::Provider;
 use crate::registry::{self, Registry};
 use crate::roster::{self, Role};
-use crate::sandbox::{CageMode, SandboxSpec};
+use crate::sandbox::DockerOpener;
+use crate::wall::{StagePolicy, WallMode, WallOpener};
 
 pub fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
@@ -213,10 +214,13 @@ pub struct Config {
     pub worktrees: String,
     /// Whether tool execution is caged (DAEMAR_CAGE=1). Phase-1 opt-in;
     /// write-capable seats will cage unconditionally.
-    pub cage: CageMode,
-    /// The sandbox shape. Hardcoded default today; sandbox.toml later —
-    /// the roster pattern.
-    pub sandbox: SandboxSpec,
+    pub cage: WallMode,
+    /// The sandbox shape. Hardcoded default today; per-territory data
+    /// later — the roster pattern.
+    pub sandbox: StagePolicy,
+    /// Who opens walls. Docker today; the seam exists so a different
+    /// implementation is a construction change, not a redesign.
+    pub wall: std::sync::Arc<dyn WallOpener>,
     pub engineer: String,
     /// Model per role, resolved fail-fast at startup from the roster's env
     /// bindings (each falls back to DAEMAR_MODEL). Indexed by Role::ALL order.
@@ -267,15 +271,16 @@ impl Config {
             airframes: airframes_path(),
             worktrees: worktrees_dir(),
             cage: match env("DAEMAR_CAGE").as_deref() {
-                None | Some("0") => CageMode::Off,
-                Some("1") => CageMode::On,
+                None | Some("0") => WallMode::Off,
+                Some("1") => WallMode::On,
                 Some(other) => {
                     return Err(ConfigError::BadCage {
                         value: other.to_string(),
                     })
                 }
             },
-            sandbox: SandboxSpec::default(),
+            sandbox: StagePolicy::default(),
+            wall: std::sync::Arc::new(DockerOpener::system()),
             engineer: engineer(),
             models,
             efforts,
