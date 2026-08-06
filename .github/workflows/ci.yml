@@ -62,6 +62,30 @@ jobs:
             say "- VERDICT: /dev/kvm ABSENT — microVMs cannot run on hosted runners"
           fi
           say "- cpu flags: $(grep -o -m1 -E 'vmx|svm' /proc/cpuinfo || echo none)"
+      # The verdict above says the hardware is there and only the
+      # permission is missing. So ask the only question that settles it:
+      # after granting access, does a microVM actually boot and answer?
+      - name: can a microVM actually run here
+        run: |
+          say() { echo "$1" | tee -a $GITHUB_STEP_SUMMARY; }
+          sudo chmod 666 /dev/kvm || true
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            say "- /dev/kvm made accessible with a single chmod"
+          else
+            say "- /dev/kvm STILL inaccessible after chmod"; exit 0
+          fi
+          curl -sSL https://get.microsandbox.dev | sh >/dev/null 2>&1 || {
+            say "- microsandbox install FAILED on this runner"; exit 0; }
+          export PATH="$HOME/.microsandbox/bin:$PATH"
+          msb doctor 2>&1 | tail -3 | tee -a $GITHUB_STEP_SUMMARY || true
+          if timeout 300 msb create --name ci-probe alpine >/dev/null 2>&1; then
+            out=$(msb exec ci-probe -- echo booted 2>&1 | tail -1)
+            say "- BOOT VERDICT: a microVM ran on a hosted runner and said: $out"
+            msb rm -f ci-probe >/dev/null 2>&1 || true
+          else
+            say "- BOOT VERDICT: sandbox creation FAILED — hosted runners cannot host the wall"
+          fi
+
       - name: can the wall adapter even be built here
         run: |
           # Building the VMM is a separate question from running it, and CI
