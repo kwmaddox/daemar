@@ -34,6 +34,16 @@ cage:
     docker build -f Dockerfile.cage -t daemar-cage:latest .
     cargo test -p daemar --test cage -- --ignored
 
+# The microVM proofs. The image is built by docker and HANDED to
+# microsandbox — one artifact, two walls, so the guest is provably the
+# same either way. Requires hardware virtualization (KVM on Linux).
+wall:
+    docker build -f Dockerfile.cage -t daemar-cage:latest .
+    docker save daemar-cage:latest -o target/daemar-cage.tar
+    msb load -i target/daemar-cage.tar -t daemar-cage:latest
+    msb pull ubuntu
+    cargo test -p daemar --test microvm -- --ignored
+
 # What CI will eventually enforce: tests, lints, formatting.
 check:
     cargo test -q
