@@ -194,9 +194,15 @@ pub enum Kind {
         ok: bool,
         #[serde(default)]
         summary: String,
-        /// Content hash for reads; empty for tools with nothing to pin.
+        /// Content hash for reads — or a mutation's post-image; empty for
+        /// tools with nothing to pin.
         #[serde(default)]
         hash: String,
+        /// A mutation's pre-image hash, when there was one: what-changed-
+        /// from-what is reconstructable from the receipt. Absent on reads
+        /// and on pre-write-era ledgers.
+        #[serde(default)]
+        before_hash: Option<String>,
     },
     #[serde(rename = "note.v1")]
     Note { text: String },
@@ -1155,6 +1161,40 @@ mod tests {
             "the stage records its flyer"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tool_call_receipts_carry_mutation_provenance_and_tolerate_its_absence() {
+        // Pre-write-era wire: no before_hash — parses, folds, stays known.
+        let old_wire = Event::from_line(&line(
+            1,
+            "t1",
+            "tool_call.v1",
+            r#"{"phase":"scout","tool":"read","args":{},"ok":true,"summary":"s","hash":"abc"}"#,
+        ))
+        .unwrap();
+        assert!(matches!(
+            old_wire.kind,
+            EventKind::Known(Kind::ToolCall { .. })
+        ));
+
+        // A mutation receipt: pre-image and post-image both survive the wire.
+        let receipt = Event::from_line(&line(
+            2,
+            "t2",
+            "tool_call.v1",
+            r#"{"phase":"build","tool":"edit","args":{},"ok":true,"summary":"s","hash":"post","before_hash":"pre"}"#,
+        ))
+        .unwrap();
+        match receipt.kind {
+            EventKind::Known(Kind::ToolCall {
+                hash, before_hash, ..
+            }) => {
+                assert_eq!(hash, "post");
+                assert_eq!(before_hash.as_deref(), Some("pre"));
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
     }
 
     #[test]

@@ -411,6 +411,203 @@ fn a_role_effort_override_beats_the_global() {
 }
 
 #[test]
+fn a_clean_territory_apply_lands_as_a_factory_commit() {
+    let stub = stub_server();
+    let f = factory("apply-clean", &stub);
+    let b = stamped_build(&f, "apply-clean", 1);
+
+    let out = daemar(&f, &["grant", &b.slip_id]);
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+    let out = daemar(&f, &["continue", &b.slip_id]);
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+
+    // The change is IN the territory, as a real commit.
+    let source = std::fs::read_to_string(b.territory.join("src/lib.rs")).unwrap();
+    assert!(source.contains("43"), "the ff landed the change");
+    let log = territory_git(&b.territory, &["log", "-1", "--format=%an|%s|%b"]);
+    assert!(log.starts_with("daemar|"), "the factory authors: {log}");
+    assert!(log.contains(&b.slip_id), "the commit names its slip: {log}");
+    assert!(
+        log.contains("granted-by: testctl"),
+        "the granter is named: {log}"
+    );
+
+    // The worktree is gone; the slip closed accepted by the gate.
+    assert!(
+        !b.worktree.exists(),
+        "the artifact is cleaned up after landing"
+    );
+    let (_, slip, events) = the_slip(&f);
+    assert_eq!(slip.status, Status::Accepted);
+    let by_gate = events.iter().any(|e| {
+        if let EventKind::Known(Kind::SlipClosed { by, reason, .. }) = &e.kind {
+            by == "gate:apply" && reason.contains("landed")
+        } else {
+            false
+        }
+    });
+    assert!(by_gate, "gate:apply signs the landing");
+    let apply_phase = slip
+        .phases
+        .iter()
+        .find(|p| p.phase == "apply")
+        .expect("apply phase");
+    assert_eq!(
+        apply_phase.lane,
+        ledger::Lane::Code,
+        "no model flies the gate"
+    );
+}
+
+#[test]
+fn a_dirty_territory_parks_the_commit_and_recocks() {
+    let stub = stub_server();
+    let f = factory("apply-dirty", &stub);
+    let b = stamped_build(&f, "apply-dirty", 2);
+    std::fs::write(b.territory.join("bench.txt"), "half-finished work\n").unwrap();
+
+    daemar(&f, &["grant", &b.slip_id]);
+    let out = daemar(&f, &["continue", &b.slip_id]);
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+
+    // Nothing touched the territory; the commit waits on a branch.
+    let source = std::fs::read_to_string(b.territory.join("src/lib.rs")).unwrap();
+    assert!(source.contains("42"), "a dirty territory is never touched");
+    let branch = territory_git(&b.territory, &["rev-parse", "daemar/slip-00000000"]);
+    assert!(!branch.trim().is_empty(), "the commit is parked on a ref");
+
+    // The slip re-cocked: visible, because nothing waits invisibly.
+    let (_, slip, _) = the_slip(&f);
+    assert_eq!(slip.status, Status::InFlight);
+    assert_eq!(slip.cocked.as_deref(), Some("apply->land"));
+    assert!(b.worktree.exists(), "the artifact is retained until landed");
+}
+
+#[test]
+fn a_manual_merge_is_recognized_and_closed_by_the_land_leg() {
+    let stub = stub_server();
+    let f = factory("apply-manual", &stub);
+    let b = stamped_build(&f, "apply-manual", 3);
+    std::fs::write(b.territory.join("bench.txt"), "dirt\n").unwrap();
+    daemar(&f, &["grant", &b.slip_id]);
+    daemar(&f, &["continue", &b.slip_id]); // parks + re-cocks
+
+    // The engineer cleans their bench and merges the branch THEMSELVES.
+    std::fs::remove_file(b.territory.join("bench.txt")).unwrap();
+    territory_git(
+        &b.territory,
+        &["merge", "--ff-only", "daemar/slip-00000000"],
+    );
+
+    daemar(&f, &["grant", &b.slip_id]);
+    let out = daemar(&f, &["continue", &b.slip_id]);
+    assert_eq!(exit_code(&out), 0, "{}", stderr(&out));
+
+    let (_, slip, events) = the_slip(&f);
+    assert_eq!(
+        slip.status,
+        Status::Accepted,
+        "landed is landed, whoever landed it"
+    );
+    let by_land = events.iter().any(|e| {
+        if let EventKind::Known(Kind::SlipClosed { by, .. }) = &e.kind {
+            by == "gate:land"
+        } else {
+            false
+        }
+    });
+    assert!(by_land, "gate:land signs the recognition");
+    assert!(!b.worktree.exists(), "cleanup follows recognition");
+}
+
+#[test]
+fn a_moved_head_refuses_the_land_leg_without_events() {
+    let stub = stub_server();
+    let f = factory("apply-moved", &stub);
+    let b = stamped_build(&f, "apply-moved", 4);
+    std::fs::write(b.territory.join("bench.txt"), "dirt\n").unwrap();
+    daemar(&f, &["grant", &b.slip_id]);
+    daemar(&f, &["continue", &b.slip_id]); // parks + re-cocks
+
+    // The bench clears, but the engineer commits their own work: HEAD moves.
+    std::fs::remove_file(b.territory.join("bench.txt")).unwrap();
+    std::fs::write(b.territory.join("mine.txt"), "my own commit\n").unwrap();
+    territory_git(&b.territory, &["add", "."]);
+    territory_git(&b.territory, &["commit", "-q", "-m", "engineer work"]);
+
+    daemar(&f, &["grant", &b.slip_id]);
+    let (_, _, before) = the_slip(&f);
+    let out = daemar(&f, &["continue", &b.slip_id]);
+    assert_eq!(exit_code(&out), 2, "a stale land is a refusal");
+    assert!(
+        stderr(&out).contains("daemar/slip-00000000"),
+        "the refusal names the branch for manual merge: {}",
+        stderr(&out)
+    );
+    let (_, slip, after) = the_slip(&f);
+    assert_eq!(before.len(), after.len(), "a refusal writes no events");
+    assert_eq!(
+        slip.status,
+        Status::InFlight,
+        "granted-and-holding, retryable"
+    );
+}
+
+#[test]
+fn a_tampered_worktree_is_a_witnessed_apply_failure() {
+    let stub = stub_server();
+    let f = factory("apply-tampered", &stub);
+    let b = stamped_build(&f, "apply-tampered", 5);
+    // Post-stamp tampering: the artifact no longer matches the cleared diff.
+    std::fs::write(
+        b.worktree.join("src/lib.rs"),
+        "pub fn answer() -> u8 { 66 }\n",
+    )
+    .unwrap();
+
+    daemar(&f, &["grant", &b.slip_id]);
+    let out = daemar(&f, &["continue", &b.slip_id]);
+    assert_eq!(exit_code(&out), 1, "tampering is witnessed, not refused");
+    let source = std::fs::read_to_string(b.territory.join("src/lib.rs")).unwrap();
+    assert!(source.contains("42"), "nothing transferred");
+    let (_, slip, events) = the_slip(&f);
+    assert_eq!(slip.status, Status::InFlight);
+    assert_eq!(slip.failed.as_deref(), Some("apply"));
+    let named = events.iter().any(|e| {
+        if let EventKind::Known(Kind::Note { text }) = &e.kind {
+            text.contains("stamped diff mismatch")
+        } else {
+            false
+        }
+    });
+    assert!(named, "the tampering is named on the ledger");
+}
+
+#[test]
+fn a_parked_branch_collision_is_witnessed() {
+    let stub = stub_server();
+    let f = factory("apply-collision", &stub);
+    let b = stamped_build(&f, "apply-collision", 6);
+    // A branch already squats on the parking spot, pointing elsewhere.
+    territory_git(&b.territory, &["branch", "daemar/slip-00000000", &b.base]);
+    std::fs::write(b.territory.join("bench.txt"), "dirt\n").unwrap();
+
+    daemar(&f, &["grant", &b.slip_id]);
+    let out = daemar(&f, &["continue", &b.slip_id]);
+    assert_eq!(exit_code(&out), 1, "a collision is witnessed");
+    let (_, slip, events) = the_slip(&f);
+    assert_eq!(slip.failed.as_deref(), Some("apply"));
+    let named = events.iter().any(|e| {
+        if let EventKind::Known(Kind::Note { text }) = &e.kind {
+            text.contains("collision")
+        } else {
+            false
+        }
+    });
+    assert!(named, "the collision is named on the ledger");
+}
+
+#[test]
 fn a_bare_repo_flag_is_a_usage_error_not_a_flight() {
     let stub = stub_server();
     let f = factory("bare-flag", &stub);

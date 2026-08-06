@@ -35,6 +35,7 @@ daemar "<request>"                       # cargo run -p daemar -- "<request>"
 git diff | daemar -                      # request from stdin
 daemar scout --repo <path> "<question>"  # read-only recon over any repo
 daemar plan --repo <path> "<request>"    # grounded plan, cock at plan->respond
+daemar build [--repo <path>] "<request>" # mutates a pinned worktree inside a sandbox; the diff awaits the controller's stamp at build->apply
 ```
 
 Workflow stages name **roles** (scout, planner, responder); the **roster**
@@ -42,10 +43,11 @@ Workflow stages name **roles** (scout, planner, responder); the **roster**
 airframe, tool access. The planner is grounded: it reads the territory with the scout's
 read-only tools before planning, and every read lands on the ledger. Config
 via env: `OPENAI_API_KEY`, `DAEMAR_MODEL` (per-role overrides
-`DAEMAR_SCOUT_MODEL` / `DAEMAR_PLAN_MODEL` / `DAEMAR_RESPOND_MODEL`),
+`DAEMAR_SCOUT_MODEL` / `DAEMAR_PLAN_MODEL` / `DAEMAR_RESPOND_MODEL` /
+`DAEMAR_BUILD_MODEL`),
 `DAEMAR_EFFORT` — reasoning effort `low`/`medium`/`high`, default `medium`
 (per-role overrides `DAEMAR_SCOUT_EFFORT` / `DAEMAR_PLAN_EFFORT` /
-`DAEMAR_RESPOND_EFFORT`), `DAEMAR_BASE_URL` (a `/v1`-style base; the
+`DAEMAR_RESPOND_EFFORT` / `DAEMAR_BUILD_EFFORT`), `DAEMAR_BASE_URL` (a `/v1`-style base; the
 provider speaks the Responses API and appends `/responses`),
 `DAEMAR_LEDGERS` (default
 `ledgers/`). `DAEMAR_HOME` roots the relative defaults (ledgers, airframes,

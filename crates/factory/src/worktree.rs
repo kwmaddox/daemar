@@ -68,45 +68,76 @@ impl fmt::Display for WorktreeError {
 
 impl std::error::Error for WorktreeError {}
 
-/// Run git in a directory, capturing stdout; a nonzero exit is an error
-/// carrying stderr. The one place the factory shells to git.
-pub fn run_git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
-    let out = Command::new("git")
+/// How one git invocation went: spawn failures and nonzero exits are
+/// different facts — a missing git binary must never masquerade as a bad
+/// commit. (The taxonomy fix from PR #23's review, which its commit message
+/// claimed but a failed edit script silently dropped — landed for real here.)
+enum GitRun {
+    Ok(String),
+    /// git ran and said no; stderr says why.
+    Refused(String),
+}
+
+/// Every git the factory runs starts here: global and system config are
+/// silenced (no surprise diff drivers, filters, or hooksPath under a
+/// code-owned receipt), and ambient GIT_* overrides cannot redirect
+/// `-C dir` somewhere else. The factory's git behaves identically on
+/// every machine. Commit identity, when a caller needs one, is passed
+/// explicitly via `-c`.
+fn git_command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .arg("-C")
-        .arg(dir)
+        .arg(dir);
+    cmd
+}
+
+fn run_git_raw(dir: &Path, args: &[&str]) -> Result<GitRun, WorktreeError> {
+    let out = git_command(dir)
         .args(args)
         .output()
         .map_err(|e| WorktreeError::Git {
             detail: format!("could not run git: {e}"),
         })?;
     if !out.status.success() {
-        return Err(WorktreeError::Git {
-            detail: format!(
-                "git {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        });
+        return Ok(GitRun::Refused(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(GitRun::Ok(String::from_utf8_lossy(&out.stdout).to_string()))
+}
+
+/// Run git in a directory, capturing stdout; a nonzero exit is an error
+/// carrying stderr. The one place the factory shells to git.
+pub fn run_git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
+    match run_git_raw(dir, args)? {
+        GitRun::Ok(stdout) => Ok(stdout),
+        GitRun::Refused(detail) => Err(WorktreeError::Git { detail }),
+    }
 }
 
 /// Resolve a spec to a full commit SHA in `repo`. `head(repo)` is the
 /// pre-mint validation: a territory whose HEAD cannot resolve refuses the
 /// flight before a slip exists.
 pub fn resolve_commit(repo: &Path, spec: &str) -> Result<String, WorktreeError> {
-    let out = run_git(
+    // Only an actual rev-parse rejection is NotACommit; a git that could
+    // not even run stays a Git error — the diagnosis names the disease.
+    match run_git_raw(
         repo,
         &["rev-parse", "--verify", &format!("{spec}^{{commit}}")],
-    )
-    .map_err(|error| match error {
-        WorktreeError::Git { detail } => WorktreeError::NotACommit {
+    )? {
+        GitRun::Ok(out) => Ok(out.trim().to_string()),
+        GitRun::Refused(detail) => Err(WorktreeError::NotACommit {
             spec: spec.to_string(),
             detail,
-        },
-        other => other,
-    })?;
-    Ok(out.trim().to_string())
+        }),
+    }
 }
 
 pub fn head(repo: &Path) -> Result<String, WorktreeError> {
@@ -138,6 +169,116 @@ pub fn add_detached(repo: &Path, commit: &str, dest: &Path) -> Result<PathBuf, W
         path: dest.to_path_buf(),
         detail: e.to_string(),
     })
+}
+
+/// The code-owned diff: everything the builder changed in the worktree,
+/// relative to its pinned base — including brand-new files, which are
+/// marked intent-to-add first (forced, so even an ignored path cannot hide
+/// a mutation from the controller's review). The worktree is left intact:
+/// it IS the artifact awaiting apply.
+pub fn diff_against_base(worktree: &Path, base: &str) -> Result<String, WorktreeError> {
+    run_git(worktree, &["add", "-A", "-N", "-f"])?;
+    run_git(worktree, &["diff", "--binary", "--no-ext-diff", base])
+}
+
+/// Is the repository dirty? git status --porcelain, ignored files excluded
+/// by git's own default — the dirty-transfer policy's precise predicate.
+pub fn is_dirty(repo: &Path) -> Result<bool, WorktreeError> {
+    Ok(!run_git(repo, &["status", "--porcelain"])?.trim().is_empty())
+}
+
+/// Commit everything in the (detached) worktree as the factory. The
+/// worktree sits at the stamped base, so the commit's parent IS the base
+/// by construction. Author identity ruling: the factory authors; the
+/// granting engineer is named in the message — clearing a boundary is not
+/// authorship.
+pub fn commit_all(worktree: &Path, message: &str) -> Result<String, WorktreeError> {
+    run_git(worktree, &["add", "-A", "-f"])?;
+    // The config scrub cannot silence the territory's OWN .git/hooks or
+    // repo-local commit.gpgsign — so the gate declines them explicitly. A
+    // code-lane commit runs no arbitrary hook code and blocks on no
+    // signing key; the territory's hooks belong to the engineer's commits,
+    // not the factory's.
+    run_git(
+        worktree,
+        &[
+            "-c",
+            "user.name=daemar",
+            "-c",
+            "user.email=daemar@localhost",
+            "commit",
+            "-q",
+            "--no-verify",
+            "--no-gpg-sign",
+            "-m",
+            message,
+        ],
+    )?;
+    Ok(run_git(worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string())
+}
+
+/// Fast-forward the repository onto `commit`. Git enforces the staleness
+/// check atomically: this succeeds only if HEAD is the commit's ancestor.
+pub fn merge_ff_only(repo: &Path, commit: &str) -> Result<(), WorktreeError> {
+    run_git(repo, &["merge", "--ff-only", commit]).map(|_| ())
+}
+
+/// Is `commit` reachable from the repository's HEAD? The land leg's first
+/// question: the factory cares that the change is in, not who landed it.
+pub fn is_ancestor(repo: &Path, commit: &str) -> Result<bool, WorktreeError> {
+    // Bypasses run_git_raw for the exit-code taxonomy (0 = yes, 1 = no),
+    // but never the scrubbed command builder: the land leg's reachability
+    // verdict must be as deterministic as every other gate.
+    let out = git_command(repo)
+        .args(["merge-base", "--is-ancestor", commit, "HEAD"])
+        .output()
+        .map_err(|e| WorktreeError::Git {
+            detail: format!("could not run git: {e}"),
+        })?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(WorktreeError::Git {
+            detail: format!(
+                "git merge-base --is-ancestor failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        }),
+    }
+}
+
+/// Where a branch points, if it exists. Pure ref inspection.
+pub fn branch_target(repo: &Path, name: &str) -> Result<Option<String>, WorktreeError> {
+    match run_git_raw(
+        repo,
+        &["rev-parse", "--verify", &format!("refs/heads/{name}")],
+    )? {
+        GitRun::Ok(out) => Ok(Some(out.trim().to_string())),
+        GitRun::Refused(_) => Ok(None),
+    }
+}
+
+/// Park a commit on a branch: a pure ref creation, ZERO working-tree
+/// interaction — the safe half of apply under any dirt.
+pub fn branch_create(repo: &Path, name: &str, commit: &str) -> Result<(), WorktreeError> {
+    run_git(repo, &["branch", name, commit]).map(|_| ())
+}
+
+/// Remove a retained worktree once its commit is safe in history. Failure
+/// is the caller's to witness — cleanup is proven, never assumed.
+pub fn remove(repo: &Path, worktree: &Path) -> Result<(), WorktreeError> {
+    run_git(
+        repo,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            &worktree.display().to_string(),
+        ],
+    )
+    .map(|_| ())
 }
 
 /// A worktree vouches for itself: exactly the pinned commit, nothing dirty.
@@ -225,6 +366,53 @@ mod tests {
             "a non-repo territory is not pinnable"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_diff_sees_edits_and_brand_new_files_alike() {
+        let (root, commit) = scratch("diff");
+        let dest = root.join("wt/slip-3/build");
+        let wt = add_detached(&root.join("repo"), &commit, &dest).expect("materializes");
+        std::fs::write(wt.join("src/lib.rs"), "pub fn answer() -> u8 { 43 }\n").unwrap();
+        std::fs::write(wt.join("src/new_file.rs"), "pub fn fresh() {}\n").unwrap();
+        let patch = diff_against_base(&wt, &commit).expect("diffs");
+        assert!(
+            patch.contains("-pub fn answer() {}") || patch.contains("43"),
+            "{patch}"
+        );
+        assert!(
+            patch.contains("new_file.rs"),
+            "new files must not hide: {patch}"
+        );
+        let clean_wt = add_detached(&root.join("repo"), &commit, &root.join("wt/slip-4/build"))
+            .expect("materializes");
+        let empty = diff_against_base(&clean_wt, &commit).expect("diffs");
+        assert!(empty.trim().is_empty(), "an untouched worktree diffs empty");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_gate_commit_declines_the_territorys_own_hooks() {
+        let (root, commit) = scratch("hooks");
+        let repo = root.join("repo");
+        // A hostile pre-commit hook in the territory: exits 1 and leaves a
+        // footprint. The gate's commit must neither run it nor fail on it.
+        let hooks = repo.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\ntouch hook-ran\nexit 1\n").unwrap();
+        let mut perms = std::fs::metadata(&hook).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&hook, perms).unwrap();
+        let wt = add_detached(&repo, &commit, &root.join("wt/slip-5/build")).expect("materializes");
+        std::fs::write(wt.join("src/lib.rs"), "pub fn answer() -> u8 { 44 }\n").unwrap();
+        let landed = commit_all(&wt, "gate commit").expect("commits past the hook");
+        assert_eq!(landed.len(), 40);
+        assert!(
+            !wt.join("hook-ran").exists() && !repo.join("hook-ran").exists(),
+            "the hook must not have executed"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

@@ -102,6 +102,10 @@ fn the_tower_serves_a_prompt_flight_signed_by_its_client() {
         names,
         vec!["scout", "plan", "prompt", "continue", "slip", "board"]
     );
+    assert!(
+        !names.contains(&"build"),
+        "MCP gains build in phase 4, not before"
+    );
     for pen in ["grant", "refuse", "dispose"] {
         assert!(
             !names.contains(&pen),

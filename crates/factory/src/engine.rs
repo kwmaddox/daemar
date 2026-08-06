@@ -54,6 +54,9 @@ pub struct StageOut {
     pub tokens: u64,
     pub cost: f64,
     pub turns: usize,
+    /// The stage's retained worktree, when it flew one — the artifact a
+    /// build workflow diffs and the apply era will consume.
+    pub worktree: Option<PathBuf>,
 }
 
 /// How the turn loop ended, before teardown has its say.
@@ -94,6 +97,7 @@ pub fn run_stage(
     // preparation failure after the phase started is witnessed, not thrown.
     let runner = SystemRunner;
     let mut executor: Option<StageExecutor> = None;
+    let mut stage_worktree: Option<PathBuf> = None;
     if agent.tools != ToolAccess::None {
         let Some(territory) = stage.territory.as_ref() else {
             return witness(
@@ -120,9 +124,20 @@ pub fn run_stage(
                 wt.display()
             ),
         })?;
-        executor = Some(match config.cage {
+        stage_worktree = Some(wt.clone());
+        // Write access cages unconditionally — the backstop behind the
+        // workflow preflight; DAEMAR_CAGE remains the read-only seats' dial.
+        let effective_cage = if agent.tools == ToolAccess::ReadWrite {
+            CageMode::On
+        } else {
+            config.cage
+        };
+        executor = Some(match effective_cage {
             CageMode::Off => match ToolContext::new(&wt) {
-                Ok(ctx) => StageExecutor::InProcess(ctx),
+                Ok(ctx) => StageExecutor::InProcess {
+                    ctx,
+                    access: agent.tools,
+                },
                 Err(error) => return witness(w, &stage, error),
             },
             CageMode::On => {
@@ -135,14 +150,18 @@ pub fn run_stage(
                                 stage.phase, cage.container, config.sandbox.image
                             ),
                         })?;
-                        StageExecutor::Caged(cage)
+                        StageExecutor::Caged {
+                            cage,
+                            access: agent.tools,
+                            read_hashes: std::collections::HashMap::new(),
+                        }
                     }
                     Err(error) => return witness(w, &stage, format!("cage failed: {error}")),
                 }
             }
         });
     }
-    let specs = executor.as_ref().map(|_| tools::specs());
+    let specs = executor.as_ref().map(|_| tools::specs(agent.tools));
 
     let mut flight_tokens = 0u64;
     let mut flight_cost = 0.0f64;
@@ -163,7 +182,7 @@ pub fn run_stage(
     // Teardown runs on EVERY path out of the loop. A phase is not finalized
     // until the cage is proven gone.
     let teardown_clean = match executor {
-        Some(StageExecutor::Caged(cage)) => {
+        Some(StageExecutor::Caged { cage, .. }) => {
             let container = cage.container.clone();
             match cage.teardown() {
                 Ok(proof) => {
@@ -213,6 +232,7 @@ pub fn run_stage(
                 tokens: flight_tokens,
                 cost: flight_cost,
                 turns,
+                worktree: stage_worktree,
             }))
         }
         (LoopEnd::Report { .. }, false) | (LoopEnd::Failure, _) => {
@@ -342,6 +362,7 @@ fn fly_loop(
                         ok: false,
                         summary: "refused: this agent has no tools".to_string(),
                         hash: String::new(),
+                        before_hash: None,
                     })?;
                 }
                 let reason = format!(
@@ -366,6 +387,7 @@ fn fly_loop(
                         content: format!("{}: arguments were not valid JSON", call.name),
                         is_error: true,
                         hash: String::new(),
+                        before_hash: None,
                     }
                 } else {
                     executor.execute(&call.name, &args)
@@ -377,6 +399,7 @@ fn fly_loop(
                     ok: !outcome.is_error,
                     summary: summarize(&outcome.content),
                     hash: outcome.hash.clone(),
+                    before_hash: outcome.before_hash.clone(),
                 })?;
                 input.push(serde_json::json!({
                     "type": "function_call_output",

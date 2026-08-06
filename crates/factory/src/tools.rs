@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::roster::ToolAccess;
+
 const READ_LINE_CAP: usize = 2000;
 const READ_LINE_BYTES: usize = 2000;
 const LIST_CAP: usize = 500;
@@ -34,8 +36,13 @@ const SEARCH_FILE_BYTES: u64 = 1_000_000;
 pub struct ToolOutcome {
     pub content: String,
     pub is_error: bool,
-    /// Content hash of what was read, when the tool read something whole.
+    /// Content hash of what was read — or, for a mutation, the post-image.
     pub hash: String,
+    /// The pre-image hash of a mutation, when there was one: edit records
+    /// what it replaced; a new-file write has no pre-image. Defaulted so
+    /// the outcome crosses old cage boundaries unchanged.
+    #[serde(default)]
+    pub before_hash: Option<String>,
 }
 
 impl ToolOutcome {
@@ -44,6 +51,7 @@ impl ToolOutcome {
             content: content.into(),
             is_error: false,
             hash: String::new(),
+            before_hash: None,
         }
     }
     fn error(content: impl Into<String>) -> Self {
@@ -51,6 +59,7 @@ impl ToolOutcome {
             content: content.into(),
             is_error: true,
             hash: String::new(),
+            before_hash: None,
         }
     }
 }
@@ -97,6 +106,29 @@ impl ToolContext {
         }
     }
 
+    /// Confine a path that need not exist yet: the PARENT must exist and
+    /// canonicalize inside the territory; the final component must be a
+    /// plain name. Symlinked parents resolve before the check, same as
+    /// confine — a link pointing out is refused.
+    fn confine_new(&self, path: &str) -> Result<PathBuf, String> {
+        let p = Path::new(path);
+        if p.is_absolute() {
+            return Err(format!("'{path}' must be relative"));
+        }
+        let joined = self.root.join(p);
+        let Some(name) = joined.file_name().map(std::ffi::OsStr::to_os_string) else {
+            return Err(format!("'{path}' has no file name"));
+        };
+        let parent = joined.parent().unwrap_or(&self.root);
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve parent of '{path}': {e}"))?;
+        if !canonical_parent.starts_with(&self.root) {
+            return Err(format!("'{path}' is outside the territory"));
+        }
+        Ok(canonical_parent.join(name))
+    }
+
     fn relative(&self, path: &Path) -> String {
         path.strip_prefix(&self.root)
             .unwrap_or(path)
@@ -107,8 +139,20 @@ impl ToolContext {
 
 /// The specs advertised to the model, in the Responses API tools shape:
 /// function fields at TOP level, not nested under a "function" object as
-/// chat-completions had them.
-pub fn specs() -> Value {
+/// chat-completions had them. The surface follows the seat's capability:
+/// advertisement AND dispatch are both gated, so an unadvertised call from
+/// a lesser seat is refused, not executed.
+pub fn specs(access: ToolAccess) -> Value {
+    let mut tools = read_specs();
+    if access == ToolAccess::ReadWrite {
+        if let (Value::Array(all), Value::Array(write)) = (&mut tools, write_specs()) {
+            all.extend(write);
+        }
+    }
+    tools
+}
+
+fn read_specs() -> Value {
     json!([
         {
             "type": "function",
@@ -155,13 +199,56 @@ pub fn specs() -> Value {
     ])
 }
 
-/// Dispatch. Unknown tools and malformed args are error outcomes; the loop
-/// continues either way, and every outcome lands on the ledger.
-pub fn execute(name: &str, args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
+fn write_specs() -> Value {
+    json!([
+        {
+            "type": "function",
+            "name": "edit",
+            "description": "Replace ONE exact occurrence of `old` with `new` in a file you have already read. Refused if the file was not read, changed since your last read, or `old` matches zero or multiple times.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path, relative to the territory root."},
+                    "old": {"type": "string", "description": "Exact text to replace; must occur exactly once."},
+                    "new": {"type": "string", "description": "Replacement text."}
+                },
+                "required": ["path", "old", "new"]
+            },
+            "strict": false
+        },
+        {
+            "type": "function",
+            "name": "write",
+            "description": "Create a NEW file with the given content. Refused if the path already exists — mutation belongs to edit.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "New file path, relative to the territory root."},
+                    "content": {"type": "string", "description": "Full file content."}
+                },
+                "required": ["path", "content"]
+            },
+            "strict": false
+        }
+    ])
+}
+
+/// Dispatch, capability-gated. Unknown tools, forbidden tools, and
+/// malformed args are error outcomes; the loop continues either way, and
+/// every outcome lands on the ledger. There is NO delete: the capability
+/// does not exist, structurally.
+pub fn execute(name: &str, args: &Value, ctx: &mut ToolContext, access: ToolAccess) -> ToolOutcome {
+    let readable = matches!(access, ToolAccess::ReadOnly | ToolAccess::ReadWrite);
+    let writable = access == ToolAccess::ReadWrite;
     match name {
-        "read" => read(args, ctx),
-        "list_files" => list_files(args, ctx),
-        "search" => search(args, ctx),
+        "read" if readable => read(args, ctx),
+        "list_files" if readable => list_files(args, ctx),
+        "search" if readable => search(args, ctx),
+        "edit" if writable => edit(args, ctx),
+        "write" if writable => write_new(args, ctx),
+        "read" | "list_files" | "search" | "edit" | "write" => {
+            ToolOutcome::error(format!("forbidden: this seat may not call '{name}'"))
+        }
         other => ToolOutcome::error(format!("unknown tool '{other}'")),
     }
 }
@@ -232,6 +319,7 @@ fn read(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
         content: out,
         is_error: false,
         hash,
+        before_hash: None,
     }
 }
 
@@ -366,6 +454,108 @@ fn search(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
     ToolOutcome::ok(out)
 }
 
+// ── edit / write: the hands, hash-guarded ────────────────────────────────────
+
+/// Replace exactly one occurrence of `old` with `new`, guarded by the
+/// read-hash record: a file not read, or changed since its last read, is a
+/// refusal telling the model to read again. The guard entry is NOT advanced
+/// by the edit — a second edit demands a fresh read of the mutated file.
+fn edit(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
+    let (Some(path), Some(old), Some(new)) = (
+        arg_str(args, "path"),
+        arg_str(args, "old"),
+        arg_str(args, "new"),
+    ) else {
+        return ToolOutcome::error("edit: 'path', 'old', and 'new' are all required");
+    };
+    if old.is_empty() {
+        return ToolOutcome::error("edit: 'old' must not be empty");
+    }
+    let abs = match ctx.confine(path) {
+        Ok(abs) => abs,
+        Err(e) => return ToolOutcome::error(format!("edit: {e}")),
+    };
+    if abs.is_dir() {
+        return ToolOutcome::error(format!("edit: '{path}' is a directory"));
+    }
+    let bytes = match std::fs::read(&abs) {
+        Ok(b) => b,
+        Err(e) => return ToolOutcome::error(format!("edit: cannot read '{path}': {e}")),
+    };
+    if bytes.contains(&0) {
+        return ToolOutcome::error(format!("edit: '{path}' appears to be binary"));
+    }
+    let current = content_hash(&bytes);
+    match ctx.read_hashes.get(&abs) {
+        None => {
+            return ToolOutcome::error(format!("edit: '{path}' has not been read — read it first"))
+        }
+        Some(seen) if *seen != current => {
+            return ToolOutcome::error(format!(
+                "edit: '{path}' changed since it was read — read it again"
+            ))
+        }
+        Some(_) => {}
+    }
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    let occurrences = text.matches(old).count();
+    if occurrences == 0 {
+        return ToolOutcome::error(format!("edit: 'old' does not occur in '{path}'"));
+    }
+    if occurrences > 1 {
+        return ToolOutcome::error(format!(
+            "edit: 'old' occurs {occurrences} times in '{path}' — make it unique"
+        ));
+    }
+    let updated = text.replacen(old, new, 1);
+    if let Err(e) = std::fs::write(&abs, &updated) {
+        return ToolOutcome::error(format!("edit: cannot write '{path}': {e}"));
+    }
+    let post = content_hash(updated.as_bytes());
+    ToolOutcome {
+        content: format!("edited '{path}': replaced 1 occurrence"),
+        is_error: false,
+        hash: post,
+        before_hash: Some(current),
+    }
+}
+
+/// Create a NEW file. An existing path — including one racing into
+/// existence — is refused with create-new semantics: mutation belongs to
+/// edit, and nothing is ever silently overwritten.
+fn write_new(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
+    let (Some(path), Some(content)) = (arg_str(args, "path"), arg_str(args, "content")) else {
+        return ToolOutcome::error("write: 'path' and 'content' are required");
+    };
+    let abs = match ctx.confine_new(path) {
+        Ok(abs) => abs,
+        Err(e) => return ToolOutcome::error(format!("write: {e}")),
+    };
+    let mut file = match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&abs)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return ToolOutcome::error(format!(
+                "write: '{path}' already exists — use edit to change it"
+            ))
+        }
+        Err(e) => return ToolOutcome::error(format!("write: cannot create '{path}': {e}")),
+    };
+    use std::io::Write as _;
+    if let Err(e) = file.write_all(content.as_bytes()) {
+        return ToolOutcome::error(format!("write: cannot write '{path}': {e}"));
+    }
+    ToolOutcome {
+        content: format!("wrote '{path}' ({} bytes)", content.len()),
+        is_error: false,
+        hash: content_hash(content.as_bytes()),
+        before_hash: None,
+    }
+}
+
 /// Byte-bounded truncation that never splits a UTF-8 sequence.
 /// `String::truncate` panics off a char boundary — a scout reading a source
 /// file with a long non-ASCII line would crash on valid input. (Caught by
@@ -411,13 +601,23 @@ mod tests {
     fn paths_are_confined_to_the_territory() {
         let dir = territory("confine");
         let mut ctx = ToolContext::new(&dir).unwrap();
-        let out = execute("read", &json!({"path": "../../etc/hosts"}), &mut ctx);
+        let out = execute(
+            "read",
+            &json!({"path": "../../etc/hosts"}),
+            &mut ctx,
+            ToolAccess::ReadOnly,
+        );
         assert!(out.is_error);
         assert!(
             out.content.contains("outside the territory") || out.content.contains("cannot resolve")
         );
         // Absolute paths outside are refused too.
-        let out = execute("read", &json!({"path": "/etc/hosts"}), &mut ctx);
+        let out = execute(
+            "read",
+            &json!({"path": "/etc/hosts"}),
+            &mut ctx,
+            ToolAccess::ReadOnly,
+        );
         assert!(
             out.is_error,
             "absolute escape must be refused: {}",
@@ -433,7 +633,12 @@ mod tests {
         std::fs::write(&outside, "secret").unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("sneaky")).unwrap();
         let mut ctx = ToolContext::new(&dir).unwrap();
-        let out = execute("read", &json!({"path": "sneaky"}), &mut ctx);
+        let out = execute(
+            "read",
+            &json!({"path": "sneaky"}),
+            &mut ctx,
+            ToolAccess::ReadOnly,
+        );
         assert!(
             out.is_error,
             "symlink escape must be refused: {}",
@@ -444,10 +649,34 @@ mod tests {
     }
 
     #[test]
+    fn dot_and_dotdot_final_components_cannot_name_a_new_file() {
+        // `Path::file_name()` is None for any path terminating in `..`,
+        // and a bare `.` normalizes so its parent resolves OUTSIDE the
+        // root — confine_new refuses every one of these before a write.
+        let dir = territory("dotdot");
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        for path in ["..", ".", "src/..", "../evil.rs"] {
+            let out = execute(
+                "write",
+                &json!({"path": path, "content": "escaped"}),
+                &mut ctx,
+                ToolAccess::ReadWrite,
+            );
+            assert!(out.is_error, "'{path}' must be refused: {}", out.content);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn read_returns_numbered_lines_and_records_a_hash() {
         let dir = territory("read");
         let mut ctx = ToolContext::new(&dir).unwrap();
-        let out = execute("read", &json!({"path": "src/lib.rs"}), &mut ctx);
+        let out = execute(
+            "read",
+            &json!({"path": "src/lib.rs"}),
+            &mut ctx,
+            ToolAccess::ReadOnly,
+        );
         assert!(!out.is_error);
         assert!(out.content.contains("1\tpub fn answer()"));
         assert_eq!(out.hash.len(), 16);
@@ -459,7 +688,12 @@ mod tests {
     fn listing_honors_gitignore_and_search_finds_the_needle() {
         let dir = territory("walk");
         let mut ctx = ToolContext::new(&dir).unwrap();
-        let out = execute("list_files", &json!({"recursive": true}), &mut ctx);
+        let out = execute(
+            "list_files",
+            &json!({"recursive": true}),
+            &mut ctx,
+            ToolAccess::ReadOnly,
+        );
         assert!(!out.is_error);
         assert!(out.content.contains("src/lib.rs"));
         assert!(
@@ -467,7 +701,12 @@ mod tests {
             "gitignored files must not list"
         );
 
-        let out = execute("search", &json!({"pattern": "answer"}), &mut ctx);
+        let out = execute(
+            "search",
+            &json!({"pattern": "answer"}),
+            &mut ctx,
+            ToolAccess::ReadOnly,
+        );
         assert!(!out.is_error);
         assert!(out.content.contains("src/lib.rs:1:"));
         std::fs::remove_dir_all(&dir).ok();
@@ -480,11 +719,21 @@ mod tests {
         // mid-sequence — the exact input the old truncate panicked on.
         std::fs::write(dir.join("src/unicode.rs"), "€".repeat(700)).unwrap();
         let mut ctx = ToolContext::new(&dir).unwrap();
-        let out = execute("read", &json!({"path": "src/unicode.rs"}), &mut ctx);
+        let out = execute(
+            "read",
+            &json!({"path": "src/unicode.rs"}),
+            &mut ctx,
+            ToolAccess::ReadOnly,
+        );
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("(line truncated)"));
 
-        let out = execute("search", &json!({"pattern": "€"}), &mut ctx);
+        let out = execute(
+            "search",
+            &json!({"pattern": "€"}),
+            &mut ctx,
+            ToolAccess::ReadOnly,
+        );
         assert!(!out.is_error, "{}", out.content);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -493,8 +742,186 @@ mod tests {
     fn unknown_tools_are_error_outcomes_not_aborts() {
         let dir = territory("unknown");
         let mut ctx = ToolContext::new(&dir).unwrap();
-        let out = execute("teleport", &json!({}), &mut ctx);
+        let out = execute("teleport", &json!({}), &mut ctx, ToolAccess::ReadOnly);
         assert!(out.is_error);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    #[test]
+    fn the_write_surface_is_capability_gated_and_has_no_delete() {
+        let dir = territory("caps");
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        // A read-only seat may not mutate, even by naming the tool.
+        let out = execute(
+            "edit",
+            &json!({"path": "src/lib.rs", "old": "answer", "new": "reply"}),
+            &mut ctx,
+            ToolAccess::ReadOnly,
+        );
+        assert!(
+            out.is_error && out.content.contains("forbidden"),
+            "{}",
+            out.content
+        );
+        // The advertised ReadWrite surface is exactly the allowed set —
+        // delete does not exist, structurally (the moghedien pattern).
+        let names: Vec<String> = specs(ToolAccess::ReadWrite)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["read", "list_files", "search", "edit", "write"]);
+        assert!(!names
+            .iter()
+            .any(|n| n.contains("delete") || n.contains("remove")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_refuses_unread_and_stale_files_then_replaces_exactly_once() {
+        let dir = territory("edit");
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        let args = json!({"path": "src/lib.rs", "old": "answer", "new": "reply"});
+
+        // Unread: refused with instructions.
+        let out = execute("edit", &args, &mut ctx, ToolAccess::ReadWrite);
+        assert!(
+            out.is_error && out.content.contains("read it first"),
+            "{}",
+            out.content
+        );
+
+        // Read, then externally changed: stale, refused.
+        execute(
+            "read",
+            &json!({"path": "src/lib.rs"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        std::fs::write(dir.join("src/lib.rs"), "pub fn answer() -> u8 { 43 }\n").unwrap();
+        let out = execute("edit", &args, &mut ctx, ToolAccess::ReadWrite);
+        assert!(
+            out.is_error && out.content.contains("read it again"),
+            "{}",
+            out.content
+        );
+
+        // Fresh read, then a clean single replacement with both hashes.
+        execute(
+            "read",
+            &json!({"path": "src/lib.rs"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        let out = execute("edit", &args, &mut ctx, ToolAccess::ReadWrite);
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.hash.len(), 16, "post-image hash");
+        assert_eq!(
+            out.before_hash.as_ref().map(String::len),
+            Some(16),
+            "pre-image hash"
+        );
+        let now = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
+        assert!(now.contains("reply") && !now.contains("answer"));
+
+        // The guard did NOT advance: editing again without re-reading refuses.
+        let out = execute(
+            "edit",
+            &json!({"path": "src/lib.rs", "old": "reply", "new": "answer"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(
+            out.is_error && out.content.contains("read it again"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_refuses_ambiguity_and_absence() {
+        let dir = territory("edit-ambig");
+        std::fs::write(dir.join("src/lib.rs"), "aa aa\n").unwrap();
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        execute(
+            "read",
+            &json!({"path": "src/lib.rs"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        let out = execute(
+            "edit",
+            &json!({"path": "src/lib.rs", "old": "aa", "new": "b"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(
+            out.is_error && out.content.contains("2 times"),
+            "{}",
+            out.content
+        );
+        let out = execute(
+            "edit",
+            &json!({"path": "src/lib.rs", "old": "zz", "new": "b"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(
+            out.is_error && out.content.contains("does not occur"),
+            "{}",
+            out.content
+        );
+        let out = execute(
+            "edit",
+            &json!({"path": "src/lib.rs", "old": "", "new": "b"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(
+            out.is_error && out.content.contains("must not be empty"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_creates_new_files_only_and_stays_confined() {
+        let dir = territory("write");
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        let out = execute(
+            "write",
+            &json!({"path": "src/new_module.rs", "content": "pub fn fresh() {}\n"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.hash.len(), 16);
+        assert_eq!(out.before_hash, None, "a new file has no pre-image");
+        assert!(dir.join("src/new_module.rs").exists());
+
+        // Existing file: refused — mutation belongs to edit.
+        let out = execute(
+            "write",
+            &json!({"path": "src/lib.rs", "content": "clobber"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(
+            out.is_error && out.content.contains("already exists"),
+            "{}",
+            out.content
+        );
+
+        // Escapes: refused.
+        let out = execute(
+            "write",
+            &json!({"path": "../outside.rs", "content": "x"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(out.is_error, "{}", out.content);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
