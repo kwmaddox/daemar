@@ -29,3 +29,37 @@ jobs:
         run: docker build -f Dockerfile.cage -t daemar-cage:latest .
       - name: caged proof flights
         run: cargo test -p daemar --test cage -- --ignored
+
+  # Can a hosted runner hold a microVM at all? Asked, not assumed. This job
+  # is allowed to fail: its VERDICT is the deliverable, and it decides
+  # whether the microVM proofs can ever be a required check here or must
+  # move to a KVM-capable self-hosted runner. Docker remains the CI wall
+  # either way — the seam is what makes that a configuration choice rather
+  # than a compromise.
+  microvm-capability-probe:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: does this runner have hardware virtualization
+        run: |
+          echo "### microVM capability probe" >> $GITHUB_STEP_SUMMARY
+          if [ -e /dev/kvm ]; then
+            echo "- /dev/kvm EXISTS" >> $GITHUB_STEP_SUMMARY
+            ls -l /dev/kvm >> $GITHUB_STEP_SUMMARY
+            if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+              echo "- readable AND writable by $(id -un)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- present but NOT accessible to $(id -un) (groups: $(id -Gn))" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "- /dev/kvm ABSENT — microVMs cannot run here" >> $GITHUB_STEP_SUMMARY
+          fi
+          grep -o -m1 -E 'vmx|svm' /proc/cpuinfo >> $GITHUB_STEP_SUMMARY || \
+            echo "- no vmx/svm CPU flag" >> $GITHUB_STEP_SUMMARY
+      - name: can the wall adapter even be built here
+        run: |
+          # The fat embed links the VMM; building it is a separate question
+          # from running it, and CI must at least compile what it ships.
+          /usr/bin/time -f 'wall build: %E elapsed' cargo build -p daemar 2>&1 | tail -3 \
+            >> $GITHUB_STEP_SUMMARY
