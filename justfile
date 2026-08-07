@@ -28,15 +28,10 @@ eval *args:
 eval-compare left right:
     cargo run -q -p daemar-eval -- compare {{left}} {{right}}
 
-# The caged proofs: build the image, run the docker-gated suite. CI runs
-# this explicitly; ordinary `just test` stays docker-free.
-cage:
-    docker build -f Dockerfile.cage -t daemar-cage:latest .
-    cargo test -p daemar --test cage -- --ignored
-
-# The microVM proofs. The image is built by docker and HANDED to
-# microsandbox — one artifact, two walls, so the guest is provably the
-# same either way. Requires hardware virtualization (KVM on Linux).
+# The wall proofs. Docker's one remaining role: it BUILDS the executor
+# image and hands it to microsandbox, which is the wall that runs it.
+# Requires hardware virtualization (KVM on Linux). CI runs this
+# explicitly; ordinary `just test` stays runtime-free.
 wall:
     docker build -f Dockerfile.cage -t daemar-cage:latest .
     docker save daemar-cage:latest -o target/daemar-cage.tar

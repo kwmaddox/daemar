@@ -32,12 +32,6 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test
-      # The cage proof is a REQUIRED check, invoked explicitly — never a
-      # silent skip. cargo test above stays docker-free by design.
-      - name: cage image
-        run: docker build -f Dockerfile.cage -t daemar-cage:latest .
-      - name: caged proof flights
-        run: cargo test -p daemar --test cage -- --ignored
 
   # The microVM proofs, as a REQUIRED check. The probe that used to live
   # here asked whether a hosted runner could hold a microVM; it answered
@@ -68,8 +62,8 @@ jobs:
           echo "$HOME/.microsandbox/bin" >> $GITHUB_PATH
       - name: msb doctor
         run: msb doctor
-      # One artifact, two walls: docker builds the executor image and hands
-      # it to microsandbox, so the guest is provably the same either way.
+      # Docker's one remaining role: it BUILDS the executor image and hands
+      # it to microsandbox, which is the wall that runs it.
       - name: the executor image, handed from docker to the microVM
         run: |
           docker build -f Dockerfile.cage -t daemar-cage:latest .

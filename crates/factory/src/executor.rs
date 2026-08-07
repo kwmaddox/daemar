@@ -1,17 +1,17 @@
 //! The executor seam: where a stage's tool calls actually run.
 //!
-//! In-process is the fast path read-only seats have always flown. Caged
-//! sends each request across a container boundary as JSON and reads the
-//! outcome back. The seam is invisible above it: the engine appends the
-//! same tool_call.v1 either way, and neither the ledger nor the fold learns
-//! which executor ran a call.
+//! In-process is the fast path read-only seats have always flown. Sandboxed
+//! sends each request across the wall as JSON and reads the outcome back.
+//! The seam is invisible above it: the engine appends the same tool_call.v1
+//! either way, and neither the ledger nor the fold learns which executor
+//! ran a call.
 //!
 //! The write guard across the boundary (the phase-1 deferred question,
-//! answered): docker exec spawns a fresh in-cage process per request, so
+//! answered): the wall spawns a fresh in-guest process per request, so
 //! the HOST retains the read-hash record — built only from successful read
-//! outcomes — and refuses an edit of an unread file before paying for an
-//! exec. The expected hash rides to the cage in a field the model never
-//! controls, and the in-cage executor re-verifies the file's current bytes
+//! outcomes — and refuses an edit of an unread file before paying for a
+//! crossing. The expected hash rides to the guest in a field the model never
+//! controls, and the in-guest executor re-verifies the file's current bytes
 //! immediately before replacing: durable state outside the blast radius,
 //! the authoritative check inside it. A successful edit does NOT advance
 //! the record — the next edit of that file demands a fresh read.

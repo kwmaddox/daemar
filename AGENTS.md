@@ -15,9 +15,11 @@ fixtures/       hand-authored ledgers — the schema's test corpus. Tracked.
 
 ## Rust discipline (extends CONTEXT.md hard rule 7)
 
-1. **Core crates are runtime-free.** No tokio, no async in `crates/*`. Async
-   lives in apps, at the edges. This is what keeps a future TUI or a new
-   binary an afternoon instead of a port.
+1. **Core crates are runtime-free.** No tokio, no async in `ledger` or
+   `factory`. The runtime stops in `crates/walls` — the one library allowed
+   to link it, so every executable injects the same wall — and in apps, at
+   the edges. This is what keeps a future TUI or a new binary an afternoon
+   instead of a port.
 2. **No `_ =>` arms on this repo's own enums.** The exhaustive match IS the
    change-impact analysis; a wildcard arm silently opts out of it. Wildcards
    are for foreign or `#[non_exhaustive]` types only.
@@ -58,9 +60,9 @@ fixtures/       hand-authored ledgers — the schema's test corpus. Tracked.
   confined to the territory, every call on the ledger with a content-hash
   pointer. No shell, no writes, no network.
 - `daemar build [--repo <path>] "<request>"` — the builder mutates a
-  PINNED WORKTREE (never the live checkout) inside the cage — write seats
-  cage unconditionally; build the image first (`just cage` builds and
-  proves it). A code-owned diff (gate:diff) cocks the slip at build->apply;
+  PINNED WORKTREE (never the live checkout) behind the wall — write seats
+  wall unconditionally; prepare the image first (`just wall` builds it and
+  proves the wall). A code-owned diff (gate:diff) cocks the slip at build->apply;
   APPLY is phase 3. Tools: read/list/search plus hash-guarded `edit`
   (exact-match, read-first, single occurrence) and create-new-only `write`.
   There is no delete.

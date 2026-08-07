@@ -33,6 +33,10 @@ pub enum EvalError {
     Selector(String),
     Pin(pin::PinError),
     Config(factory::config::ConfigError),
+    /// The production wall could not be constructed; nothing was flown or paid.
+    Wall {
+        detail: String,
+    },
     Io {
         path: PathBuf,
         detail: String,
@@ -55,6 +59,7 @@ impl fmt::Display for EvalError {
             EvalError::Selector(detail) => write!(f, "{detail}"),
             EvalError::Pin(error) => write!(f, "{error}"),
             EvalError::Config(error) => write!(f, "{error}"),
+            EvalError::Wall { detail } => write!(f, "{detail}"),
             EvalError::Io { path, detail } => write!(f, "io at {}: {detail}", path.display()),
             EvalError::Dossier { detail } => write!(f, "dossier: {detail}"),
         }

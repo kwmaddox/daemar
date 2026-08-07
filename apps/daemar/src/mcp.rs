@@ -24,17 +24,20 @@ use factory::config::{self, Config};
 use factory::workflows::{self, FlightError, FlightReport};
 
 pub fn serve() -> ExitCode {
-    let mut config = match Config::from_env() {
+    let wall = match walls::opener() {
+        Ok(wall) => wall,
+        Err(error) => {
+            eprintln!("daemar mcp: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut config = match Config::from_env(wall) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("daemar mcp: {error}");
             return ExitCode::from(2);
         }
     };
-    if let Err(error) = crate::microsandbox_wall::select(&mut config) {
-        eprintln!("daemar mcp: {error}");
-        return ExitCode::from(2);
-    }
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

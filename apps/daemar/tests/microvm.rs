@@ -10,8 +10,9 @@
 //! own tools are path-confined in our own code, so a passing read proves
 //! our confinement, never the kernel's.
 //!
-//! #[ignore]d like the Docker proofs, and for the same reason: honest on a
-//! machine without the runtime, but never a silent skip — they are invoked
+//! #[ignore]d because they need what ordinary `cargo test` must not: the
+//! sandbox runtime, hardware virtualization, and a loaded image. Honest on
+//! a machine without those, but never a silent skip — they are invoked
 //! explicitly (`cargo test -p daemar --test microvm -- --ignored`) after
 //! the image is loaded (`just wall`).
 
@@ -73,7 +74,6 @@ fn a_scout_flies_the_microvm_wall_and_the_ledger_cannot_tell() {
         &["scout", "--repo", t.to_str().unwrap(), "map the territory"],
     )
     .env("DAEMAR_CAGE", "1")
-    .env("DAEMAR_WALL", "microsandbox")
     .output()
     .expect("run daemar");
     assert_eq!(
@@ -92,8 +92,8 @@ fn a_scout_flies_the_microvm_wall_and_the_ledger_cannot_tell() {
         slip.tool_trail
     );
 
-    // The epistemic pointer is identical to the container wall's: a read
-    // still carries its 16-hex content hash. This is the seam's promise.
+    // The epistemic pointer survives the wall: a read still carries its
+    // 16-hex content hash. This is the seam's promise, whatever holds it.
     let read_hash_ok = events.iter().any(|e| {
         if let EventKind::Known(Kind::ToolCall { tool, hash, ok, .. }) = &e.kind {
             tool == "read" && *ok && hash.len() == 16
@@ -156,7 +156,6 @@ fn the_write_guard_survives_the_change_of_transport() {
     );
     stub.push_ok("guard held; the edit landed after a read.");
     let out = daemar_cmd(&f, &["build", "--repo", t.to_str().unwrap(), "answer 42"])
-        .env("DAEMAR_WALL", "microsandbox")
         .output()
         .expect("run daemar");
     assert_eq!(

@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use crate::provider::Provider;
 use crate::registry::{self, Registry};
 use crate::roster::{self, Role};
-use crate::sandbox::DockerOpener;
 use crate::wall::{StagePolicy, WallMode, WallOpener};
 
 pub fn env(name: &str) -> Option<String> {
@@ -218,8 +217,9 @@ pub struct Config {
     /// The sandbox shape. Hardcoded default today; per-territory data
     /// later — the roster pattern.
     pub sandbox: StagePolicy,
-    /// Who opens walls. Docker today; the seam exists so a different
-    /// implementation is a construction change, not a redesign.
+    /// Who opens walls. Injected by the executable at construction: the
+    /// factory ships the seam, never an implementation, so a config cannot
+    /// exist without declaring who holds its stages.
     pub wall: std::sync::Arc<dyn WallOpener>,
     pub engineer: String,
     /// Model per role, resolved fail-fast at startup from the roster's env
@@ -231,7 +231,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self, ConfigError> {
+    pub fn from_env(wall: std::sync::Arc<dyn WallOpener>) -> Result<Self, ConfigError> {
         let mut vault = Vault::new();
         let default_model = vault.get("DAEMAR_MODEL")?;
         // The global effort is validated even when every role overrides it:
@@ -280,7 +280,7 @@ impl Config {
                 }
             },
             sandbox: StagePolicy::default(),
-            wall: std::sync::Arc::new(DockerOpener::system()),
+            wall,
             engineer: engineer(),
             models,
             efforts,

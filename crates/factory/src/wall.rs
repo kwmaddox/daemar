@@ -147,7 +147,7 @@ pub trait StageWall {
 /// What opens walls. The implementation is chosen once, above the engine;
 /// everything below it speaks only this trait.
 pub trait WallOpener: Send + Sync {
-    /// Names the implementation for receipts — "docker", "microsandbox".
+    /// Names the implementation for receipts — e.g. "microsandbox".
     /// Audit metadata, never a branch condition.
     fn wall_name(&self) -> &'static str;
 
