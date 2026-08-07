@@ -38,13 +38,13 @@ const EXECUTOR: &str = "/cage-executor";
 /// stale automation and must fail loudly — never a silent fallback, never a
 /// silent ignore.
 pub fn opener() -> Result<Arc<dyn WallOpener>, String> {
-    match std::env::var("DAEMAR_WALL").ok().as_deref() {
-        None | Some("") => {}
-        Some(value) => {
-            return Err(format!(
-                "DAEMAR_WALL='{value}' is retired — microsandbox is the only wall; unset it"
-            ))
-        }
+    // var_os, not var: a non-UTF8 value is still a set value, and "set"
+    // is the whole question. Empty means unset, the house convention.
+    if let Some(value) = std::env::var_os("DAEMAR_WALL").filter(|v| !v.is_empty()) {
+        return Err(format!(
+            "DAEMAR_WALL='{}' is retired — microsandbox is the only wall; unset it",
+            value.to_string_lossy()
+        ));
     }
     let opener = MicrosandboxOpener::new().map_err(|e| e.to_string())?;
     Ok(Arc::new(opener))
