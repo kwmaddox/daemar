@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Re-runnable by hand. Earned the hard way: during a GitHub Actions
+  # incident a run sat queued for hours with no way to retrigger it except
+  # pushing a junk commit, and a stuck run is indistinguishable from a
+  # broken one until you can ask again.
+  workflow_dispatch:
 jobs:
   check:
     runs-on: ubuntu-latest
