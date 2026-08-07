@@ -31,6 +31,10 @@ pub fn serve() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Err(error) = crate::microsandbox_wall::select(&mut config) {
+        eprintln!("daemar mcp: {error}");
+        return ExitCode::from(2);
+    }
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

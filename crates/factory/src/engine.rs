@@ -23,8 +23,8 @@ use ledger::{Kind, Lane, LedgerWriter, PhaseOutcome};
 use crate::config::{Config, Pricing};
 use crate::executor::StageExecutor;
 use crate::roster::{self, AgentDef, Role, ToolAccess};
-use crate::sandbox::{Cage, CageMode, SystemRunner};
 use crate::tools::{self, ToolContext};
+use crate::wall::{Teardown, WallMode};
 use crate::worktree;
 
 /// Turn cap for tool loops: enough for real recon, finite by construction.
@@ -93,9 +93,8 @@ pub fn run_stage(
         engineer: config.engineer.clone(),
     })?;
 
-    // Tooled seats fly over a pinned worktree, in-process or caged. Any
+    // Tooled seats fly over a pinned worktree, in-process or walled. Any
     // preparation failure after the phase started is witnessed, not thrown.
-    let runner = SystemRunner;
     let mut executor: Option<StageExecutor> = None;
     let mut stage_worktree: Option<PathBuf> = None;
     if agent.tools != ToolAccess::None {
@@ -128,35 +127,38 @@ pub fn run_stage(
         // Write access cages unconditionally — the backstop behind the
         // workflow preflight; DAEMAR_CAGE remains the read-only seats' dial.
         let effective_cage = if agent.tools == ToolAccess::ReadWrite {
-            CageMode::On
+            WallMode::On
         } else {
             config.cage
         };
         executor = Some(match effective_cage {
-            CageMode::Off => match ToolContext::new(&wt) {
+            WallMode::Off => match ToolContext::new(&wt) {
                 Ok(ctx) => StageExecutor::InProcess {
                     ctx,
                     access: agent.tools,
                 },
                 Err(error) => return witness(w, &stage, error),
             },
-            CageMode::On => {
+            WallMode::On => {
                 let hint = format!("{}-{}", short(&w.slip_id().to_string()), stage.phase);
-                match Cage::start(&runner, &config.sandbox, &wt, agent.tools, &hint) {
-                    Ok(cage) => {
+                match config.wall.open(&config.sandbox, &wt, agent.tools, &hint) {
+                    Ok(wall) => {
                         w.append(&Kind::Note {
                             text: format!(
-                                "sandbox started: phase={} container={} image={}",
-                                stage.phase, cage.container, config.sandbox.image
+                                "sandbox started: phase={} wall={} sandbox_id={} image={}",
+                                stage.phase,
+                                config.wall.wall_name(),
+                                wall.id(),
+                                config.sandbox.image
                             ),
                         })?;
-                        StageExecutor::Caged {
-                            cage,
+                        StageExecutor::Sandboxed {
+                            wall,
                             access: agent.tools,
                             read_hashes: std::collections::HashMap::new(),
                         }
                     }
-                    Err(error) => return witness(w, &stage, format!("cage failed: {error}")),
+                    Err(error) => return witness(w, &stage, format!("sandbox failed: {error}")),
                 }
             }
         });
@@ -182,19 +184,19 @@ pub fn run_stage(
     // Teardown runs on EVERY path out of the loop. A phase is not finalized
     // until the cage is proven gone.
     let teardown_clean = match executor {
-        Some(StageExecutor::Caged { cage, .. }) => {
-            let container = cage.container.clone();
-            match cage.teardown() {
+        Some(StageExecutor::Sandboxed { wall, .. }) => {
+            let sandbox_id = wall.id().to_string();
+            match wall.terminate() {
                 Ok(proof) => {
                     let how = match proof {
-                        crate::sandbox::Teardown::Removed => "",
+                        Teardown::Removed => "",
                         // Something other than us removed it — harmless for
                         // containment (it is gone), but witnessed.
-                        crate::sandbox::Teardown::AlreadyGone => " (was already gone)",
+                        Teardown::AlreadyGone => " (was already gone)",
                     };
                     w.append(&Kind::Note {
                         text: format!(
-                            "sandbox torn down{how}: phase={} container={container}",
+                            "sandbox torn down{how}: phase={} sandbox_id={sandbox_id}",
                             stage.phase
                         ),
                     })?;
@@ -203,7 +205,7 @@ pub fn run_stage(
                 Err(error) => {
                     w.append(&Kind::Note {
                         text: format!(
-                            "sandbox teardown FAILED: phase={} container={container}: {error}",
+                            "sandbox teardown FAILED: phase={} sandbox_id={sandbox_id}: {error}",
                             stage.phase
                         ),
                     })?;

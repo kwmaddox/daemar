@@ -28,6 +28,7 @@ use factory::pens;
 use factory::workflows::{self, FlightError, FlightReport};
 
 mod mcp;
+mod microsandbox_wall;
 
 fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -70,13 +71,17 @@ fn usage() -> ExitCode {
 /// Run one flight and present its report: response text on stdout, the
 /// slip's footer on stderr, failures named with their remedy.
 fn fly(flight: impl FnOnce(&Config) -> Result<FlightReport, FlightError>) -> ExitCode {
-    let config = match Config::from_env() {
+    let mut config = match Config::from_env() {
         Ok(config) => config,
         Err(error) => {
             eprintln!("daemar: {error}");
             return ExitCode::from(2);
         }
     };
+    if let Err(error) = microsandbox_wall::select(&mut config) {
+        eprintln!("daemar: {error}");
+        return ExitCode::from(2);
+    }
     match flight(&config) {
         Ok(report) => {
             println!("{}", report.text.trim_end());

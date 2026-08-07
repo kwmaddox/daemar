@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Re-runnable by hand. Earned the hard way: during a GitHub Actions
+  # incident a run sat queued for hours with no way to retrigger it except
+  # pushing a junk commit, and a stuck run is indistinguishable from a
+  # broken one until you can ask again.
+  workflow_dispatch:
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -17,6 +22,10 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # The wall adapter links the VMM, which needs libcap-ng on Linux.
+      # Found the honest way: the linker said `unable to find -lcap-ng`.
+      - name: linux system libraries the wall needs
+        run: sudo apt-get update && sudo apt-get install -y libcap-ng-dev
       - name: fmt
         run: cargo fmt --check
       - name: clippy
@@ -29,3 +38,43 @@ jobs:
         run: docker build -f Dockerfile.cage -t daemar-cage:latest .
       - name: caged proof flights
         run: cargo test -p daemar --test cage -- --ignored
+
+  # The microVM proofs, as a REQUIRED check. The probe that used to live
+  # here asked whether a hosted runner could hold a microVM; it answered
+  # yes — /dev/kvm is present with an svm-capable CPU and only the group
+  # permission is missing — so this runs the real ceremonies instead of
+  # asking about them. No self-hosted runner needed.
+  microvm-proofs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: linux system libraries the wall needs
+        run: sudo apt-get update && sudo apt-get install -y libcap-ng-dev
+      - name: grant this job hardware virtualization
+        run: |
+          # Hosted runners ship /dev/kvm as root:kvm and do not put the
+          # runner user in that group. The device is destroyed with the
+          # ephemeral VM at job end, so widening it here grants nothing
+          # that outlives this run.
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: install the sandbox runtime
+        run: |
+          curl -sSL https://get.microsandbox.dev | sh
+          echo "$HOME/.microsandbox/bin" >> $GITHUB_PATH
+      - name: msb doctor
+        run: msb doctor
+      # One artifact, two walls: docker builds the executor image and hands
+      # it to microsandbox, so the guest is provably the same either way.
+      - name: the executor image, handed from docker to the microVM
+        run: |
+          docker build -f Dockerfile.cage -t daemar-cage:latest .
+          docker save daemar-cage:latest -o /tmp/daemar-cage.tar
+          msb load -i /tmp/daemar-cage.tar -t daemar-cage:latest
+          msb pull ubuntu
+      - name: microVM proof flights
+        run: cargo test -p daemar --test microvm -- --ignored

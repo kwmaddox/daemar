@@ -1,122 +1,27 @@
-//! The cage: a per-stage Docker sandbox in which tool execution happens.
+//! The Docker wall: a per-stage container implementing [`crate::wall`].
 //!
-//! Architecture ruling: the engine's model loop and the API key stay
-//! host-side — only tool execution crosses into the container, and the key
-//! never enters it. The container's entire visible world is the stage's
-//! worktree, bind-mounted at /workspace; no network, non-root, every
-//! capability dropped. The image holds exactly one static binary — no
-//! shell, no libc, nothing incidental to run.
+//! This is one implementation of the wall contract, not the contract
+//! itself. It holds the container's entire visible world to the stage's
+//! worktree, bind-mounted at /workspace: no network, non-root, every
+//! capability dropped, and an image carrying exactly one static binary —
+//! no shell, no libc, nothing incidental to run.
 //!
-//! The spec is a struct with one hardcoded default, deliberately shaped to
-//! become data later (`sandbox.toml` beside `airframes.toml`) — the roster
-//! pattern: 1:1 in Rust until a second environment earns the file.
+//! Its known ceiling, and the reason the seam above it exists: containers
+//! share the host kernel. A stage running genuinely hostile code wants a
+//! kernel of its own, which is a different implementation's job.
 
-use std::fmt;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 use crate::roster::ToolAccess;
-
-/// One extra bind mount. Unused by the default spec; the field exists so
-/// per-territory customization becomes data, not a redesign.
-#[derive(Debug, Clone)]
-pub struct Mount {
-    pub host: String,
-    pub container: String,
-    pub read_only: bool,
-}
-
-/// Network policy, a closed set. Today the only member is None — a cage
-/// with network is a future, deliberate decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetworkPolicy {
-    None,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Resources {
-    pub cpus: Option<String>,
-    pub memory: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SandboxSpec {
-    pub image: String,
-    pub extra_mounts: Vec<Mount>,
-    pub network: NetworkPolicy,
-    /// uid:gid inside the container. Non-root always; 65532 is the
-    /// conventional "nonroot" identity.
-    pub user: String,
-    pub resources: Resources,
-}
-
-impl Default for SandboxSpec {
-    fn default() -> Self {
-        SandboxSpec {
-            image: "daemar-cage:latest".to_string(),
-            extra_mounts: Vec::new(),
-            network: NetworkPolicy::None,
-            user: "65532:65532".to_string(),
-            resources: Resources::default(),
-        }
-    }
-}
-
-/// Whether tool execution is caged. Phase 1: opt-in via DAEMAR_CAGE=1;
-/// write-capable tool access will select the cage unconditionally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CageMode {
-    Off,
-    On,
-}
-
-/// How teardown proved the container gone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Teardown {
-    /// We removed it — the ordinary ending.
-    Removed,
-    /// It was already gone: goal satisfied, anomaly worth a note.
-    AlreadyGone,
-}
-
-#[derive(Debug)]
-pub enum CageError {
-    /// Docker itself is unavailable — refused before any slip is minted.
-    DockerMissing {
-        detail: String,
-    },
-    /// The image is not present locally; the cage never pulls implicitly.
-    ImageMissing {
-        image: String,
-        detail: String,
-    },
-    Lifecycle {
-        detail: String,
-    },
-}
-
-impl fmt::Display for CageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CageError::DockerMissing { detail } => {
-                write!(f, "docker is unavailable: {detail}")
-            }
-            CageError::ImageMissing { image, detail } => write!(
-                f,
-                "cage image '{image}' is not available locally — build it \
-                 (docker build -f Dockerfile.cage -t {image} .): {detail}"
-            ),
-            CageError::Lifecycle { detail } => write!(f, "cage lifecycle: {detail}"),
-        }
-    }
-}
-
-impl std::error::Error for CageError {}
+use crate::wall::{StagePolicy, StageWall, Teardown, WallError, WallOpener};
 
 /// The command seam: docker is driven through this so every lifecycle
 /// branch is unit-testable without docker. The system runner scrubs its
 /// subprocess environment — the docker CLI itself never sees the vault.
-pub trait CommandRunner {
+pub trait CommandRunner: Send + Sync {
     fn run(&self, program: &str, args: &[String], stdin: Option<&str>) -> Result<CmdOut, String>;
 }
 
@@ -169,81 +74,93 @@ fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| s.to_string()).collect()
 }
 
-/// Preflight, run BEFORE a slip is minted: a missing docker or image is a
-/// refusal that costs nothing, not a witnessed failure.
-pub fn preflight(runner: &dyn CommandRunner, spec: &SandboxSpec) -> Result<(), CageError> {
-    let version = runner
-        .run(
-            "docker",
-            &strings(&["version", "--format", "{{.Server.Version}}"]),
-            None,
-        )
-        .map_err(|detail| CageError::DockerMissing { detail })?;
-    if !version.success {
-        return Err(CageError::DockerMissing {
-            detail: version.stderr.trim().to_string(),
-        });
-    }
-    let inspect = runner
-        .run(
-            "docker",
-            &strings(&["image", "inspect", &spec.image, "--format", "{{.Id}}"]),
-            None,
-        )
-        .map_err(|detail| CageError::DockerMissing { detail })?;
-    if !inspect.success {
-        return Err(CageError::ImageMissing {
-            image: spec.image.clone(),
-            detail: inspect.stderr.trim().to_string(),
-        });
-    }
-    Ok(())
+/// Opens Docker walls. Holds the command seam so tests can script docker.
+pub struct DockerOpener {
+    runner: Arc<dyn CommandRunner>,
 }
 
-/// A running cage: one container per stage, `docker exec` per tool call,
-/// forcibly removed at teardown.
-pub struct Cage<'r> {
-    runner: &'r dyn CommandRunner,
-    pub container: String,
-    /// Set when an exec fails: the cage can no longer vouch for itself and
-    /// the stage must end as a witnessed failure.
-    pub dead: bool,
+impl DockerOpener {
+    pub fn new(runner: Arc<dyn CommandRunner>) -> Self {
+        DockerOpener { runner }
+    }
+
+    /// The production opener: the real docker CLI, environment scrubbed.
+    pub fn system() -> Self {
+        DockerOpener::new(Arc::new(SystemRunner))
+    }
 }
 
-impl<'r> Cage<'r> {
-    /// Create and start the stage's container. The worktree mount follows
-    /// the seat's tool access: a read-only seat gets a read-only world.
-    pub fn start(
-        runner: &'r dyn CommandRunner,
-        spec: &SandboxSpec,
+impl WallOpener for DockerOpener {
+    fn wall_name(&self) -> &'static str {
+        "docker"
+    }
+
+    fn preflight(&self, policy: &StagePolicy) -> Result<(), WallError> {
+        let version = self
+            .runner
+            .run(
+                "docker",
+                &strings(&["version", "--format", "{{.Server.Version}}"]),
+                None,
+            )
+            .map_err(|detail| WallError::Unavailable { detail })?;
+        if !version.success {
+            return Err(WallError::Unavailable {
+                detail: version.stderr.trim().to_string(),
+            });
+        }
+        let inspect = self
+            .runner
+            .run(
+                "docker",
+                &strings(&["image", "inspect", &policy.image, "--format", "{{.Id}}"]),
+                None,
+            )
+            .map_err(|detail| WallError::Unavailable { detail })?;
+        if !inspect.success {
+            return Err(WallError::ImageMissing {
+                image: policy.image.clone(),
+                remedy: format!(
+                    "build it (docker build -f Dockerfile.cage -t {} .)",
+                    policy.image
+                ),
+                detail: inspect.stderr.trim().to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn open(
+        &self,
+        policy: &StagePolicy,
         worktree: &Path,
         access: ToolAccess,
         name_hint: &str,
-    ) -> Result<Cage<'r>, CageError> {
+    ) -> Result<Box<dyn StageWall>, WallError> {
         // The mount and the identity both follow the seat's access: a
         // read-only seat gets a read-only world under the fixed nonroot
         // uid; a write seat gets a writable mount under the WORKTREE
         // OWNER's identity — the only non-root identity guaranteed able to
         // write a freshly materialized worktree across engines. A
-        // root-owned worktree is refused: no root cage, ever.
+        // root-owned worktree is refused: no root wall, ever.
         let (mount, user) = match access {
             ToolAccess::None => {
-                return Err(CageError::Lifecycle {
-                    detail: "a toolless seat has no business in a cage".to_string(),
+                return Err(WallError::Lifecycle {
+                    detail: "a toolless seat has no business behind a wall".to_string(),
                 })
             }
             ToolAccess::ReadOnly => (
                 format!("{}:/workspace:ro", worktree.display()),
-                spec.user.clone(),
+                policy.user.clone(),
             ),
             ToolAccess::ReadWrite => {
                 use std::os::unix::fs::MetadataExt;
-                let meta = std::fs::metadata(worktree).map_err(|e| CageError::Lifecycle {
-                    detail: format!("cannot stat worktree for a writable cage: {e}"),
+                let meta = std::fs::metadata(worktree).map_err(|e| WallError::Lifecycle {
+                    detail: format!("cannot stat worktree for a writable wall: {e}"),
                 })?;
                 if meta.uid() == 0 {
-                    return Err(CageError::Lifecycle {
-                        detail: "worktree is root-owned — refusing a root cage".to_string(),
+                    return Err(WallError::Lifecycle {
+                        detail: "worktree is root-owned — refusing a root wall".to_string(),
                     });
                 }
                 (
@@ -271,41 +188,53 @@ impl<'r> Cage<'r> {
             "-w",
             "/workspace",
         ]);
-        if let Some(cpus) = &spec.resources.cpus {
+        if let Some(cpus) = &policy.resources.cpus {
             args.extend(strings(&["--cpus", cpus]));
         }
-        if let Some(memory) = &spec.resources.memory {
+        if let Some(memory) = &policy.resources.memory {
             args.extend(strings(&["--memory", memory]));
         }
-        for extra in &spec.extra_mounts {
+        for extra in &policy.extra_mounts {
             let ro = if extra.read_only { ":ro" } else { "" };
             args.extend(strings(&[
                 "-v",
-                &format!("{}:{}{ro}", extra.host, extra.container),
+                &format!("{}:{}{ro}", extra.host, extra.guest),
             ]));
         }
-        args.push(spec.image.clone());
+        args.push(policy.image.clone());
         args.extend(strings(&["/cage-executor", "hold"]));
 
-        let out = runner
+        let out = self
+            .runner
             .run("docker", &args, None)
-            .map_err(|detail| CageError::Lifecycle { detail })?;
+            .map_err(|detail| WallError::Lifecycle { detail })?;
         if !out.success {
-            return Err(CageError::Lifecycle {
+            return Err(WallError::Lifecycle {
                 detail: format!("docker run failed: {}", out.stderr.trim()),
             });
         }
-        Ok(Cage {
-            runner,
+        Ok(Box::new(DockerWall {
+            runner: Arc::clone(&self.runner),
             container: out.stdout.trim().to_string(),
             dead: false,
-        })
+        }))
+    }
+}
+
+/// A running Docker wall: one container per stage, `docker exec` per tool
+/// call, forcibly removed at teardown.
+pub struct DockerWall {
+    runner: Arc<dyn CommandRunner>,
+    container: String,
+    dead: bool,
+}
+
+impl StageWall for DockerWall {
+    fn id(&self) -> &str {
+        &self.container
     }
 
-    /// One tool request across the boundary: request JSON on stdin, outcome
-    /// JSON on stdout. Any transport failure marks the cage dead — the
-    /// caller witnesses the failure instead of conversing with an absent cage.
-    pub fn execute(&mut self, request_json: &str) -> Result<String, String> {
+    fn send(&mut self, request_json: &str) -> Result<String, String> {
         let out = self
             .runner
             .run(
@@ -323,45 +252,47 @@ impl<'r> Cage<'r> {
         Ok(out.stdout)
     }
 
-    /// Forcibly remove the container. A stage is not finalized until this
-    /// succeeds: an unproven teardown fails the phase, report or no report.
+    fn dead(&self) -> bool {
+        self.dead
+    }
+
     /// "No such container" IS proof — the goal is the container being gone —
     /// but it is an anomaly worth witnessing: something other than us
     /// removed it.
-    pub fn teardown(self) -> Result<Teardown, CageError> {
+    fn terminate(self: Box<Self>) -> Result<Teardown, WallError> {
         let out = self
             .runner
             .run("docker", &strings(&["rm", "-f", &self.container]), None)
-            .map_err(|detail| CageError::Lifecycle { detail })?;
+            .map_err(|detail| WallError::Lifecycle { detail })?;
         if out.success {
             return Ok(Teardown::Removed);
         }
         if out.stderr.contains("No such container") {
             return Ok(Teardown::AlreadyGone);
         }
-        Err(CageError::Lifecycle {
-            detail: format!("docker rm -f failed: {}", out.stderr.trim()),
-        })
+        let mut detail = String::new();
+        let _ = write!(detail, "docker rm -f failed: {}", out.stderr.trim());
+        Err(WallError::Lifecycle { detail })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     /// Scripted docker: each call pops the next result; calls are recorded.
     struct FakeRunner {
-        script: RefCell<Vec<Result<CmdOut, String>>>,
-        calls: RefCell<Vec<Vec<String>>>,
+        script: Mutex<Vec<Result<CmdOut, String>>>,
+        calls: Mutex<Vec<Vec<String>>>,
     }
 
     impl FakeRunner {
-        fn new(script: Vec<Result<CmdOut, String>>) -> Self {
-            FakeRunner {
-                script: RefCell::new(script),
-                calls: RefCell::new(Vec::new()),
-            }
+        fn new(script: Vec<Result<CmdOut, String>>) -> Arc<Self> {
+            Arc::new(FakeRunner {
+                script: Mutex::new(script),
+                calls: Mutex::new(Vec::new()),
+            })
         }
         fn ok(stdout: &str) -> Result<CmdOut, String> {
             Ok(CmdOut {
@@ -377,6 +308,9 @@ mod tests {
                 stderr: stderr.to_string(),
             })
         }
+        fn args(&self, nth: usize) -> String {
+            self.calls.lock().unwrap()[nth].join(" ")
+        }
     }
 
     impl CommandRunner for FakeRunner {
@@ -386,17 +320,21 @@ mod tests {
             args: &[String],
             _stdin: Option<&str>,
         ) -> Result<CmdOut, String> {
-            self.calls.borrow_mut().push(args.to_vec());
-            self.script.borrow_mut().remove(0)
+            self.calls.lock().unwrap().push(args.to_vec());
+            self.script.lock().unwrap().remove(0)
         }
     }
 
+    fn opener(runner: Arc<FakeRunner>) -> DockerOpener {
+        DockerOpener::new(runner)
+    }
+
     #[test]
-    fn missing_docker_and_missing_image_are_distinct_refusals() {
+    fn a_missing_runtime_and_a_missing_image_are_distinct_refusals() {
         let runner = FakeRunner::new(vec![Err("no docker binary".to_string())]);
         assert!(matches!(
-            preflight(&runner, &SandboxSpec::default()),
-            Err(CageError::DockerMissing { .. })
+            opener(runner).preflight(&StagePolicy::default()),
+            Err(WallError::Unavailable { .. })
         ));
 
         let runner = FakeRunner::new(vec![
@@ -404,51 +342,54 @@ mod tests {
             FakeRunner::fail("No such image"),
         ]);
         assert!(matches!(
-            preflight(&runner, &SandboxSpec::default()),
-            Err(CageError::ImageMissing { .. })
+            opener(runner).preflight(&StagePolicy::default()),
+            Err(WallError::ImageMissing { .. })
         ));
     }
 
     #[test]
-    fn the_cage_starts_confined_and_read_only_for_a_read_only_seat() {
+    fn a_read_only_seat_gets_a_confined_read_only_world() {
         let runner = FakeRunner::new(vec![FakeRunner::ok("abc123\n")]);
-        let cage = Cage::start(
-            &runner,
-            &SandboxSpec::default(),
-            Path::new("/wt"),
-            ToolAccess::ReadOnly,
-            "slip-scout",
-        )
-        .expect("starts");
-        assert_eq!(cage.container, "abc123");
-        let args = runner.calls.borrow()[0].join(" ");
+        let wall = opener(Arc::clone(&runner))
+            .open(
+                &StagePolicy::default(),
+                Path::new("/wt"),
+                ToolAccess::ReadOnly,
+                "slip-scout",
+            )
+            .expect("opens");
+        assert_eq!(wall.id(), "abc123");
+        let args = runner.args(0);
         assert!(args.contains("--network none"), "{args}");
         assert!(args.contains("--user 65532:65532"), "{args}");
         assert!(args.contains("--cap-drop ALL"), "{args}");
         assert!(args.contains("no-new-privileges"), "{args}");
         assert!(args.contains("/wt:/workspace:ro"), "{args}");
-        assert!(args.contains("/cage-executor hold"), "{args}");
+        assert!(
+            args.contains("/cage-executor hold"),
+            "the executor is the only program the guest runs: {args}"
+        );
         assert!(
             !args.contains("-e ") && !args.contains("--env"),
-            "no environment crosses into the cage: {args}"
+            "no environment crosses the wall: {args}"
         );
     }
 
     #[test]
-    fn a_write_seat_gets_a_writable_mount_under_the_worktree_owner() {
+    fn a_write_seat_gets_a_writable_world_under_the_worktree_owner() {
         let runner = FakeRunner::new(vec![FakeRunner::ok("abc123\n")]);
-        let dir = std::env::temp_dir().join(format!("daemar-rw-cage-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("daemar-rw-wall-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let cage = Cage::start(
-            &runner,
-            &SandboxSpec::default(),
-            &dir,
-            ToolAccess::ReadWrite,
-            "slip-build",
-        )
-        .expect("starts");
-        assert_eq!(cage.container, "abc123");
-        let args = runner.calls.borrow()[0].join(" ");
+        let wall = opener(Arc::clone(&runner))
+            .open(
+                &StagePolicy::default(),
+                &dir,
+                ToolAccess::ReadWrite,
+                "slip-build",
+            )
+            .expect("opens");
+        assert_eq!(wall.id(), "abc123");
+        let args = runner.args(0);
         assert!(
             args.contains(&format!("{}:/workspace ", dir.display()))
                 || args.contains(&format!("{}:/workspace -w", dir.display())),
@@ -459,7 +400,7 @@ mod tests {
         let meta = std::fs::metadata(&dir).unwrap();
         assert!(
             args.contains(&format!("--user {}:{}", meta.uid(), meta.gid())),
-            "the cage wears the worktree owner's identity: {args}"
+            "the wall wears the worktree owner's identity: {args}"
         );
         assert!(
             !args.contains("65532"),
@@ -469,21 +410,24 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_exec_marks_the_cage_dead() {
+    fn a_failed_send_marks_the_session_dead() {
         let runner = FakeRunner::new(vec![
             FakeRunner::ok("abc123\n"),
             FakeRunner::fail("container is not running"),
         ]);
-        let mut cage = Cage::start(
-            &runner,
-            &SandboxSpec::default(),
-            Path::new("/wt"),
-            ToolAccess::ReadOnly,
-            "x",
-        )
-        .expect("starts");
-        assert!(cage.execute("{}").is_err());
-        assert!(cage.dead, "a cage that failed an exec cannot be trusted");
+        let mut wall = opener(runner)
+            .open(
+                &StagePolicy::default(),
+                Path::new("/wt"),
+                ToolAccess::ReadOnly,
+                "x",
+            )
+            .expect("opens");
+        assert!(wall.send("{}").is_err());
+        assert!(
+            wall.dead(),
+            "a wall that failed a request cannot be trusted"
+        );
     }
 
     #[test]
@@ -492,48 +436,53 @@ mod tests {
             FakeRunner::ok("abc123\n"),
             FakeRunner::fail("cannot remove"),
         ]);
-        let cage = Cage::start(
-            &runner,
-            &SandboxSpec::default(),
-            Path::new("/wt"),
-            ToolAccess::ReadOnly,
-            "x",
-        )
-        .expect("starts");
-        assert!(matches!(cage.teardown(), Err(CageError::Lifecycle { .. })));
+        let wall = opener(runner)
+            .open(
+                &StagePolicy::default(),
+                Path::new("/wt"),
+                ToolAccess::ReadOnly,
+                "x",
+            )
+            .expect("opens");
+        assert!(matches!(wall.terminate(), Err(WallError::Lifecycle { .. })));
     }
 
     #[test]
-    fn an_already_gone_container_satisfies_teardown_as_an_anomaly() {
+    fn an_already_gone_sandbox_satisfies_teardown_as_an_anomaly() {
         let runner = FakeRunner::new(vec![
             FakeRunner::ok("abc123\n"),
             FakeRunner::fail("Error response from daemon: No such container: abc123"),
         ]);
-        let cage = Cage::start(
-            &runner,
-            &SandboxSpec::default(),
-            Path::new("/wt"),
-            ToolAccess::ReadOnly,
-            "x",
-        )
-        .expect("starts");
+        let wall = opener(runner)
+            .open(
+                &StagePolicy::default(),
+                Path::new("/wt"),
+                ToolAccess::ReadOnly,
+                "x",
+            )
+            .expect("opens");
         assert_eq!(
-            cage.teardown().expect("gone is gone"),
+            wall.terminate().expect("gone is gone"),
             Teardown::AlreadyGone,
-            "the goal is the container being gone — however that happened"
+            "the goal is the sandbox being gone — however that happened"
         );
     }
 
     #[test]
-    fn a_toolless_seat_is_refused_a_cage() {
+    fn a_toolless_seat_is_refused_a_wall() {
         let runner = FakeRunner::new(vec![]);
-        assert!(Cage::start(
-            &runner,
-            &SandboxSpec::default(),
-            Path::new("/wt"),
-            ToolAccess::None,
-            "x",
-        )
-        .is_err());
+        assert!(opener(runner)
+            .open(
+                &StagePolicy::default(),
+                Path::new("/wt"),
+                ToolAccess::None,
+                "x",
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn the_opener_names_itself_for_the_receipt() {
+        assert_eq!(DockerOpener::system().wall_name(), "docker");
     }
 }

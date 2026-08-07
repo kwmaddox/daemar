@@ -21,8 +21,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::roster::ToolAccess;
-use crate::sandbox::Cage;
 use crate::tools::{self, ToolContext, ToolOutcome};
+use crate::wall::StageWall;
 
 /// One tool request crossing the cage boundary. `expected_hash` is set by
 /// the HOST from its read record — never from model-visible arguments.
@@ -46,13 +46,13 @@ impl ToolRequest {
     }
 }
 
-pub enum StageExecutor<'r> {
+pub enum StageExecutor {
     InProcess {
         ctx: ToolContext,
         access: ToolAccess,
     },
-    Caged {
-        cage: Cage<'r>,
+    Sandboxed {
+        wall: Box<dyn StageWall>,
         access: ToolAccess,
         /// path (as the model names it) -> hash of the last successful read.
         read_hashes: HashMap<String, String>,
@@ -63,18 +63,18 @@ fn arg_path(args: &Value) -> Option<String> {
     args.get("path").and_then(Value::as_str).map(str::to_string)
 }
 
-impl StageExecutor<'_> {
+impl StageExecutor {
     pub fn execute(&mut self, name: &str, args: &Value) -> ToolOutcome {
         match self {
             StageExecutor::InProcess { ctx, access } => tools::execute(name, args, ctx, *access),
-            StageExecutor::Caged {
-                cage,
+            StageExecutor::Sandboxed {
+                wall,
                 access,
                 read_hashes,
             } => {
                 // The host half of the guard: an edit with no recorded read
-                // refuses before a docker exec is paid for. The stale case
-                // is the cage's to catch — its check is at mutation time.
+                // refuses before a crossing is paid for. The stale case is
+                // the guest's to catch — its check is at mutation time.
                 let expected_hash = match (name, arg_path(args)) {
                     ("edit", Some(path)) => match read_hashes.get(&path) {
                         Some(hash) => Some(hash.clone()),
@@ -99,18 +99,18 @@ impl StageExecutor<'_> {
                 };
                 let request_json =
                     serde_json::to_string(&request).expect("a tool request serializes");
-                let outcome = match cage.execute(&request_json) {
+                let outcome = match wall.send(&request_json) {
                     Ok(outcome_json) => match serde_json::from_str::<ToolOutcome>(&outcome_json) {
                         Ok(outcome) => outcome,
                         Err(error) => ToolOutcome {
-                            content: format!("cage returned an unreadable outcome: {error}"),
+                            content: format!("the sandbox returned an unreadable outcome: {error}"),
                             is_error: true,
                             hash: String::new(),
                             before_hash: None,
                         },
                     },
                     Err(detail) => ToolOutcome {
-                        content: format!("cage failure: {detail}"),
+                        content: format!("sandbox failure: {detail}"),
                         is_error: true,
                         hash: String::new(),
                         before_hash: None,
@@ -127,12 +127,12 @@ impl StageExecutor<'_> {
         }
     }
 
-    /// A dead cage cannot be trusted for another call; the stage must end
+    /// A dead wall cannot be trusted for another call; the stage must end
     /// as a witnessed failure. In-process execution has no such state.
     pub fn dead(&self) -> bool {
         match self {
             StageExecutor::InProcess { .. } => false,
-            StageExecutor::Caged { cage, .. } => cage.dead,
+            StageExecutor::Sandboxed { wall, .. } => wall.dead(),
         }
     }
 }

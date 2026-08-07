@@ -8,9 +8,19 @@ FROM rust:1-alpine AS builder
 RUN apk add --no-cache musl-dev
 WORKDIR /build
 COPY . .
-RUN cargo build --release -p daemar --bin cage_executor
+RUN cargo build --release -p cage-executor --bin cage_executor
+# The nonroot identity, written out as the only two text lines this image
+# will carry. A container runtime sets a numeric uid without consulting
+# anyone; a microVM's in-guest init RESOLVES the image's USER through
+# /etc/passwd and refuses to boot when it cannot (learned live: "agentd:
+# init failed: failed to resolve guest uid 65532"). Two lines is the whole
+# concession — still no shell, no libc, nothing that can be executed.
+RUN printf 'nonroot:x:65532:65532:nonroot:/:/nologin\n' > /passwd \
+ && printf 'nonroot:x:65532:\n' > /group
 
 FROM scratch
 COPY --from=builder /build/target/release/cage_executor /cage-executor
+COPY --from=builder /passwd /etc/passwd
+COPY --from=builder /group /etc/group
 USER 65532:65532
 ENTRYPOINT ["/cage-executor", "hold"]

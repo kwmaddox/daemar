@@ -104,7 +104,7 @@ fn the_caged_scout_proof_flight() {
     assert!(materialized < started && started < torn, "{notes:?}");
 
     // The container is genuinely gone.
-    let container = note_field(&notes[started], "container").expect("container id on the note");
+    let container = note_field(&notes[started], "sandbox_id").expect("sandbox id on the note");
     let inspect = docker(&["inspect", container]);
     assert!(
         !inspect.status.success(),
@@ -238,7 +238,7 @@ fn the_builder_mutates_a_caged_worktree_and_the_diff_cocks() {
         .iter()
         .find(|n| n.starts_with("sandbox started:"))
         .expect("start note");
-    let container = note_field(started, "container").expect("container id");
+    let container = note_field(started, "sandbox_id").expect("sandbox id");
     assert!(!docker(&["inspect", container]).status.success());
     std::fs::remove_dir_all(&t).ok();
 }
@@ -320,10 +320,14 @@ fn a_killed_cage_is_a_witnessed_failure() {
                 .find_map(|entry| {
                     let text = std::fs::read_to_string(entry.path()).ok()?;
                     let line = text.lines().find(|l| l.contains("sandbox started"))?;
-                    let id = line.split("container=").nth(1)?.split_whitespace().next()?;
+                    let id = line
+                        .split("sandbox_id=")
+                        .nth(1)?
+                        .split_whitespace()
+                        .next()?;
                     Some(id.trim_end_matches(['"', '\\']).to_string())
                 })
-                .expect("the sandbox-start note names its container");
+                .expect("the sandbox-start note names its sandbox");
             let killed = Command::new("docker")
                 .args(["rm", "-f", &container])
                 .output()
