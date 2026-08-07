@@ -1,0 +1,14 @@
+[package]
+name = "walls"
+version = "0.1.0"
+edition = "2021"
+description = "The runtime walls: implementations of the factory's wall seam. The runtime stops here."
+
+[dependencies]
+factory = { path = "../factory" }
+# The wall itself: the SDK carries the VMM, so linking this crate is what
+# makes a binary capable of holding a stage. Deliberately absent from
+# `factory` (runtime-free sync core) and from `cage-executor` (the guest
+# must provably not link the hypervisor).
+microsandbox = "0.6.8"
+tokio = { version = "1.53.1", features = ["rt-multi-thread"] }

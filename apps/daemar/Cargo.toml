@@ -8,6 +8,7 @@ description = "The factory's CLI: a thin skin over the factory crate."
 factory = { path = "../../crates/factory" }
 # The MCP tower folds slips for its `slip` tool and speaks JSON-RPC.
 ledger = { path = "../../crates/ledger" }
-microsandbox = "0.6.8"
 serde_json = "1"
-tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
+# The wall this executable injects into its Config. The VMM and its async
+# runtime live behind this dependency, not here.
+walls = { path = "../../crates/walls" }

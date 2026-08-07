@@ -199,8 +199,10 @@ pub fn run(
 
     // One config for the whole run: same airframe, same provider — the
     // ledgers directory is retargeted per replicate. Eval slips are signed
-    // distinctly so a stray ledger can never masquerade as operations.
-    let mut config = Config::from_env()?;
+    // distinctly so a stray ledger can never masquerade as operations. The
+    // wall is the production wall: eval flights fly what operations flies.
+    let wall = walls::opener().map_err(|detail| EvalError::Wall { detail })?;
+    let mut config = Config::from_env(wall)?;
     config.engineer = format!("eval:{}", config.engineer);
     let model = config.model_for(Role::Scout).to_string();
     progress(&format!("scout airframe: {model}"));

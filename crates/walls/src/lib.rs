@@ -1,17 +1,21 @@
-//! The microsandbox wall: a per-stage microVM implementing [`factory::wall`].
+//! The runtime walls: the one production implementation of [`factory::wall`].
 //!
-//! Why this lives in the app and not in `factory`: the SDK is async and
-//! carries the VMM itself, and `crates/factory` is a runtime-free sync core
-//! (AGENTS.md). So the runtime stops here. This adapter owns a Tokio
-//! runtime, blocks on it, and hands the engine the same synchronous
-//! `StageWall` the Docker wall hands it. Nothing below the seam learns that
-//! a hypervisor is involved.
+//! Why this is its own crate: the SDK is async and carries the VMM itself,
+//! and `crates/factory` is a runtime-free sync core (AGENTS.md). So the
+//! runtime stops here. This adapter owns a Tokio runtime, blocks on it, and
+//! hands the engine a synchronous `StageWall`. Nothing below the seam learns
+//! that a hypervisor is involved — and `apps/cage-executor` never depends on
+//! this crate, so the guest binary provably cannot link it.
 //!
-//! What this buys over the container wall, measured before it was chosen:
-//! the guest runs its OWN kernel, so a stage cannot reach the host kernel it
-//! is not sharing; secrets can be mediated at the network boundary instead
-//! of merely excluded; and network policy is per-host rather than all-or-
-//! nothing. The cost is honest and paid here: this binary links the VMM.
+//! Every executable that constructs a `Config` injects its opener from here:
+//! the factory ships the seam, never an implementation, so a config cannot
+//! exist without declaring who holds its stages.
+//!
+//! What the microVM wall buys, measured before it was chosen: the guest runs
+//! its OWN kernel, so a stage cannot reach the host kernel it is not sharing;
+//! secrets can be mediated at the network boundary instead of merely
+//! excluded; and network policy is per-host rather than all-or-nothing. The
+//! cost is honest and paid here: this crate links the VMM.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -26,23 +30,24 @@ const WORKSPACE: &str = "/workspace";
 /// The one program the guest is expected to run.
 const EXECUTOR: &str = "/cage-executor";
 
-/// Choose the wall for this process. Docker remains the default until the
-/// microVM wall has passed its proving ceremonies; `DAEMAR_WALL=microsandbox`
-/// selects the new one so it can be exercised for real before it is trusted
-/// by default. An unknown value is a refusal, never a silent fallback to a
-/// weaker boundary.
-pub fn select(config: &mut factory::config::Config) -> Result<(), String> {
-    match std::env::var("DAEMAR_WALL").ok().as_deref() {
-        None | Some("") | Some("docker") => Ok(()),
-        Some("microsandbox") => {
-            let opener = MicrosandboxOpener::new().map_err(|e| e.to_string())?;
-            config.wall = Arc::new(opener);
-            Ok(())
-        }
-        Some(other) => Err(format!(
-            "DAEMAR_WALL='{other}' is not a wall — use 'docker' or 'microsandbox'"
-        )),
+/// The production opener. There is exactly one wall; the seam stays so a
+/// second one is a construction change, not a redesign.
+///
+/// `DAEMAR_WALL` is retired: it once selected between the Docker wall and
+/// this one, and the Docker wall is gone. A value left in the environment is
+/// stale automation and must fail loudly — never a silent fallback, never a
+/// silent ignore.
+pub fn opener() -> Result<Arc<dyn WallOpener>, String> {
+    // var_os, not var: a non-UTF8 value is still a set value, and "set"
+    // is the whole question. Empty means unset, the house convention.
+    if let Some(value) = std::env::var_os("DAEMAR_WALL").filter(|v| !v.is_empty()) {
+        return Err(format!(
+            "DAEMAR_WALL='{}' is retired — microsandbox is the only wall; unset it",
+            value.to_string_lossy()
+        ));
     }
+    let opener = MicrosandboxOpener::new().map_err(|e| e.to_string())?;
+    Ok(Arc::new(opener))
 }
 
 /// Why this host cannot hold a microVM, if it cannot.
@@ -270,5 +275,25 @@ impl StageWall for MicrosandboxWall {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The retired dial must refuse loudly whatever it says — even the name
+    /// of the wall that won. Env mutation, so this test owns the variable:
+    /// cargo runs tests in one process, but no other test touches DAEMAR_WALL.
+    #[test]
+    fn a_leftover_wall_dial_refuses_instead_of_being_ignored() {
+        for stale in ["docker", "microsandbox", "firecracker"] {
+            std::env::set_var("DAEMAR_WALL", stale);
+            let refused = opener().err().expect("a set DAEMAR_WALL must refuse");
+            assert!(refused.contains("retired"), "{refused}");
+            assert!(refused.contains(stale), "{refused}");
+        }
+        std::env::remove_var("DAEMAR_WALL");
+        assert!(opener().is_ok(), "unset is the only accepted state");
     }
 }

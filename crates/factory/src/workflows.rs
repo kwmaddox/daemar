@@ -87,8 +87,8 @@ fn canonical_territory(repo: &str) -> Result<PathBuf, FlightError> {
 
 /// Pin a territory before minting: canonical path AND a resolvable HEAD.
 /// A territory that cannot pin — not a repo, unborn HEAD — refuses the
-/// flight while it still costs nothing. When the cage is on, docker and
-/// the image preflight here too, for the same reason.
+/// flight while it still costs nothing. When the wall is on, the runtime
+/// and the image preflight here too, for the same reason.
 fn pinned_territory(
     config: &Config,
     repo: &str,

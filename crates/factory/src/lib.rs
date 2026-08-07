@@ -10,8 +10,8 @@
 //! - [`tools`] — territory tools, capability-gated: reads for every tooled
 //!   seat, hash-guarded edit/write for the builder, no delete — structurally
 //! - [`worktree`] — pinned detached worktrees: stages never fly the live tree
-//! - [`wall`] — the contract between a stage and whatever holds it
-//! - [`sandbox`] — the Docker wall: one implementation of that contract
+//! - [`wall`] — the contract between a stage and whatever holds it; the
+//!   implementation lives above this crate and is injected at [`config`]
 //! - [`executor`] — the seam picking where a stage's tools actually run
 //! - [`registry`] — airframes.toml: real prices, never silent
 
@@ -22,7 +22,6 @@ pub mod pens;
 pub mod provider;
 pub mod registry;
 pub mod roster;
-pub mod sandbox;
 pub mod tools;
 pub mod wall;
 pub mod workflows;

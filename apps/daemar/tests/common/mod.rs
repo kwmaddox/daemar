@@ -272,8 +272,9 @@ pub fn territory(name: &str) -> PathBuf {
     )
 }
 
-/// The same seeded territory at a caller-chosen root — the cage tests need
-/// territories under CARGO_TARGET_TMPDIR so Docker Desktop can mount them.
+/// The same seeded territory at a caller-chosen root — the wall tests need
+/// territories under CARGO_TARGET_TMPDIR, inside the runtime's host
+/// file-sharing scope, so the sandbox can mount them.
 pub fn territory_at(dir: PathBuf) -> PathBuf {
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(dir.join("src")).expect("mkdir");
