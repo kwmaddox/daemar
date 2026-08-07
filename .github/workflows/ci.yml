@@ -39,62 +39,42 @@ jobs:
       - name: caged proof flights
         run: cargo test -p daemar --test cage -- --ignored
 
-  # Can a hosted runner hold a microVM at all? Asked, not assumed. This job
-  # is allowed to fail: its VERDICT is the deliverable, and it decides
-  # whether the microVM proofs can ever be a required check here or must
-  # move to a KVM-capable self-hosted runner. Docker remains the CI wall
-  # either way — the seam is what makes that a configuration choice rather
-  # than a compromise.
-  microvm-capability-probe:
+  # The microVM proofs, as a REQUIRED check. The probe that used to live
+  # here asked whether a hosted runner could hold a microVM; it answered
+  # yes — /dev/kvm is present with an svm-capable CPU and only the group
+  # permission is missing — so this runs the real ceremonies instead of
+  # asking about them. No self-hosted runner needed.
+  microvm-proofs:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - name: does this runner have hardware virtualization
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: linux system libraries the wall needs
+        run: sudo apt-get update && sudo apt-get install -y libcap-ng-dev
+      - name: grant this job hardware virtualization
         run: |
-          # tee, not redirect: a verdict only in the step summary is a
-          # verdict the logs cannot answer with.
-          say() { echo "$1" | tee -a $GITHUB_STEP_SUMMARY; }
-          say "### microVM capability probe"
-          if [ -e /dev/kvm ]; then
-            say "- /dev/kvm EXISTS: $(ls -l /dev/kvm)"
-            if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-              say "- VERDICT: usable by $(id -un) — microVM proofs CAN run on hosted runners"
-            else
-              say "- VERDICT: present but NOT accessible to $(id -un) (groups: $(id -Gn))"
-            fi
-          else
-            say "- VERDICT: /dev/kvm ABSENT — microVMs cannot run on hosted runners"
-          fi
-          say "- cpu flags: $(grep -o -m1 -E 'vmx|svm' /proc/cpuinfo || echo none)"
-      # The verdict above says the hardware is there and only the
-      # permission is missing. So ask the only question that settles it:
-      # after granting access, does a microVM actually boot and answer?
-      - name: can a microVM actually run here
+          # Hosted runners ship /dev/kvm as root:kvm and do not put the
+          # runner user in that group. The device is destroyed with the
+          # ephemeral VM at job end, so widening it here grants nothing
+          # that outlives this run.
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: install the sandbox runtime
         run: |
-          say() { echo "$1" | tee -a $GITHUB_STEP_SUMMARY; }
-          sudo chmod 666 /dev/kvm || true
-          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-            say "- /dev/kvm made accessible with a single chmod"
-          else
-            say "- /dev/kvm STILL inaccessible after chmod"; exit 0
-          fi
-          curl -sSL https://get.microsandbox.dev | sh >/dev/null 2>&1 || {
-            say "- microsandbox install FAILED on this runner"; exit 0; }
-          export PATH="$HOME/.microsandbox/bin:$PATH"
-          msb doctor 2>&1 | tail -3 | tee -a $GITHUB_STEP_SUMMARY || true
-          if timeout 300 msb create --name ci-probe alpine >/dev/null 2>&1; then
-            out=$(msb exec ci-probe -- echo booted 2>&1 | tail -1)
-            say "- BOOT VERDICT: a microVM ran on a hosted runner and said: $out"
-            msb rm -f ci-probe >/dev/null 2>&1 || true
-          else
-            say "- BOOT VERDICT: sandbox creation FAILED — hosted runners cannot host the wall"
-          fi
-
-      - name: can the wall adapter even be built here
+          curl -sSL https://get.microsandbox.dev | sh
+          echo "$HOME/.microsandbox/bin" >> $GITHUB_PATH
+      - name: msb doctor
+        run: msb doctor
+      # One artifact, two walls: docker builds the executor image and hands
+      # it to microsandbox, so the guest is provably the same either way.
+      - name: the executor image, handed from docker to the microVM
         run: |
-          # Building the VMM is a separate question from running it, and CI
-          # must at least compile what it ships.
-          sudo apt-get update && sudo apt-get install -y libcap-ng-dev
-          /usr/bin/time -f 'wall build: %E elapsed' cargo build -p daemar 2>&1 | tail -2 \
-            | tee -a $GITHUB_STEP_SUMMARY
+          docker build -f Dockerfile.cage -t daemar-cage:latest .
+          docker save daemar-cage:latest -o /tmp/daemar-cage.tar
+          msb load -i /tmp/daemar-cage.tar -t daemar-cage:latest
+          msb pull ubuntu
+      - name: microVM proof flights
+        run: cargo test -p daemar --test microvm -- --ignored
