@@ -45,6 +45,54 @@ pub fn select(config: &mut factory::config::Config) -> Result<(), String> {
     }
 }
 
+/// Why this host cannot hold a microVM, if it cannot.
+///
+/// The SDK carries the VMM, so "is the runtime installed" is answered by
+/// linking. What stays host-dependent is hardware virtualization, and every
+/// platform answers it differently: Apple silicon through
+/// Hypervisor.framework, Linux through KVM. This is asked BEFORE a slip is
+/// minted so an incapable host is a free refusal rather than a failed
+/// stage — and "absent" is kept distinct from "not yours", because those
+/// have different remedies. (CI taught us the second one: hosted runners
+/// have /dev/kvm and simply do not grant it to the runner user.)
+fn unsupported_host() -> Option<String> {
+    #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+    {
+        return Some("microVM walls on macOS require Apple silicon".to_string());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let kvm = Path::new("/dev/kvm");
+        if !kvm.exists() {
+            return Some(
+                "/dev/kvm is absent — microVMs need hardware virtualization \
+                 (inside a VM, enable nested virt)"
+                    .to_string(),
+            );
+        }
+        if std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(kvm)
+            .is_err()
+        {
+            return Some(
+                "/dev/kvm exists but this user cannot open it — add the user \
+                 to the kvm group"
+                    .to_string(),
+            );
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        return Some(
+            "microVM walls are supported on macOS (Apple silicon) and Linux (KVM)".to_string(),
+        );
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
 /// Opens microsandbox walls. Holds the Tokio runtime the whole process
 /// shares: one runtime, created once, blocked on from the sync engine.
 pub struct MicrosandboxOpener {
@@ -71,17 +119,10 @@ impl WallOpener for MicrosandboxOpener {
     /// minted. A machine without hardware virtualization must refuse here —
     /// loudly and for free — rather than fail a stage later.
     fn preflight(&self, _policy: &StagePolicy) -> Result<(), WallError> {
-        // The SDK carries the VMM, so "is the runtime installed" is answered
-        // by linking. What remains host-dependent is virtualization itself.
-        #[cfg(target_os = "linux")]
-        if !Path::new("/dev/kvm").exists() {
-            return Err(WallError::Unavailable {
-                detail: "/dev/kvm is absent — microVMs need hardware \
-                         virtualization (inside a VM, enable nested virt)"
-                    .to_string(),
-            });
+        match unsupported_host() {
+            Some(detail) => Err(WallError::Unavailable { detail }),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     fn open(

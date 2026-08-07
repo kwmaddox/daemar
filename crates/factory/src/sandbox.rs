@@ -366,6 +366,10 @@ mod tests {
         assert!(args.contains("no-new-privileges"), "{args}");
         assert!(args.contains("/wt:/workspace:ro"), "{args}");
         assert!(
+            args.contains("/cage-executor hold"),
+            "the executor is the only program the guest runs: {args}"
+        );
+        assert!(
             !args.contains("-e ") && !args.contains("--env"),
             "no environment crosses the wall: {args}"
         );
