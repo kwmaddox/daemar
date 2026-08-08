@@ -27,8 +27,22 @@ use crate::tools::{self, ToolContext};
 use crate::wall::{Teardown, WallMode};
 use crate::worktree;
 
-/// Turn cap for tool loops: enough for real recon, finite by construction.
-const MAX_TURNS: usize = 12;
+/// Bounds pathology — loops and runaway spend — never task scope. High turn
+/// consumption is a soft signal that a task may be doing too much and could be
+/// split, not a requirement to split. Builder gets 48: roughly twice the
+/// measured honest completion (23 turns) of a chore-grade multi-file task.
+fn turn_cap(role: Role) -> usize {
+    match role {
+        Role::Scout => 12,
+        Role::Planner => 12,
+        Role::Responder => 12,
+        Role::Builder => 48,
+    }
+}
+
+fn turn_cap_exhausted_note(completed_turns: usize, cap: usize) -> String {
+    format!("turn cap reached: completed_turns={completed_turns} cap={cap} without a report")
+}
 
 /// A territory validated and pinned BEFORE the slip was minted: the
 /// canonical source checkout and the exact commit the stage will see.
@@ -295,8 +309,9 @@ fn fly_loop(
         "content": [{ "type": "input_text", "text": stage.user }],
     })];
     let mut complaint_logged = false;
+    let turn_cap = turn_cap(role);
 
-    for turn in 1..=MAX_TURNS {
+    for turn in 1..=turn_cap {
         // Intent per turn: pairs with each model_call and keeps the silence
         // clock honest during long generations. Full prompts ride only on
         // turn 1 — later context is derivable from the tool trail.
@@ -430,10 +445,10 @@ fn fly_loop(
     // The cap is the cap: report it, leave the slip open, let the
     // controller decide.
     w.append(&Kind::Note {
-        text: format!("turn cap ({MAX_TURNS}) reached without a report"),
+        text: turn_cap_exhausted_note(turn_cap, turn_cap),
     })?;
     eprintln!(
-        "daemar: {} hit the turn cap ({MAX_TURNS}) without reporting",
+        "daemar: {} hit the turn cap ({turn_cap}) without reporting",
         agent.name
     );
     Ok(LoopEnd::Failure)
@@ -451,5 +466,26 @@ pub fn summarize(text: &str) -> String {
     } else {
         let clipped: String = first.chars().take(109).collect();
         format!("{clipped}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turn_caps_are_role_specific() {
+        assert_eq!(turn_cap(Role::Scout), 12);
+        assert_eq!(turn_cap(Role::Planner), 12);
+        assert_eq!(turn_cap(Role::Responder), 12);
+        assert_eq!(turn_cap(Role::Builder), 48);
+    }
+
+    #[test]
+    fn exhaustion_note_records_completed_turns_and_cap() {
+        assert_eq!(
+            turn_cap_exhausted_note(48, 48),
+            "turn cap reached: completed_turns=48 cap=48 without a report"
+        );
     }
 }
