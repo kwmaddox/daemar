@@ -8,13 +8,13 @@
 //!
 //! The write guard across the boundary (the phase-1 deferred question,
 //! answered): the wall spawns a fresh in-guest process per request, so
-//! the HOST retains the read-hash record — built only from successful read
-//! outcomes — and refuses an edit of an unread file before paying for a
-//! crossing. The expected hash rides to the guest in a field the model never
-//! controls, and the in-guest executor re-verifies the file's current bytes
-//! immediately before replacing: durable state outside the blast radius,
-//! the authoritative check inside it. A successful edit does NOT advance
-//! the record — the next edit of that file demands a fresh read.
+//! the HOST retains the read-hash record — updated from each successful
+//! read or mutation outcome — and refuses an edit of an unread file before
+//! paying for a crossing. The expected hash rides to the guest in a field
+//! the model never controls, and the in-guest executor re-verifies the
+//! file's current bytes immediately before replacing: durable state outside
+//! the blast radius, the authoritative check inside it. A successful
+//! mutation advances the record to its post-image.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,7 +54,8 @@ pub enum StageExecutor {
     Sandboxed {
         wall: Box<dyn StageWall>,
         access: ToolAccess,
-        /// path (as the model names it) -> hash of the last successful read.
+        /// path (as the model names it) -> hash the guard expects after the
+        /// last successful read or mutation.
         read_hashes: HashMap<String, String>,
     },
 }
@@ -116,8 +117,12 @@ impl StageExecutor {
                         before_hash: None,
                     },
                 };
-                // Record successful reads; never advance on a mutation.
-                if name == "read" && !outcome.is_error && !outcome.hash.is_empty() {
+                // Record each successful read or mutation's reported image
+                // so the next request is stamped against the world it made.
+                if matches!(name, "read" | "edit" | "write")
+                    && !outcome.is_error
+                    && !outcome.hash.is_empty()
+                {
                     if let Some(path) = arg_path(args) {
                         read_hashes.insert(path, outcome.hash.clone());
                     }
@@ -134,5 +139,106 @@ impl StageExecutor {
             StageExecutor::InProcess { .. } => false,
             StageExecutor::Sandboxed { wall, .. } => wall.dead(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
+    use crate::wall::{Teardown, WallError};
+
+    struct FakeWall {
+        requests: Rc<RefCell<Vec<String>>>,
+        outcomes: VecDeque<String>,
+    }
+
+    impl StageWall for FakeWall {
+        fn id(&self) -> &str {
+            "fake"
+        }
+
+        fn send(&mut self, request_json: &str) -> Result<String, String> {
+            self.requests.borrow_mut().push(request_json.to_string());
+            Ok(self.outcomes.pop_front().unwrap())
+        }
+
+        fn dead(&self) -> bool {
+            false
+        }
+
+        fn terminate(self: Box<Self>) -> Result<Teardown, WallError> {
+            Ok(Teardown::Removed)
+        }
+    }
+
+    fn outcome(hash: &str) -> String {
+        serde_json::to_string(&ToolOutcome {
+            content: "ok".to_string(),
+            is_error: false,
+            hash: hash.to_string(),
+            before_hash: None,
+        })
+        .unwrap()
+    }
+
+    fn sandboxed(outcomes: &[&str]) -> (StageExecutor, Rc<RefCell<Vec<String>>>) {
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let wall = FakeWall {
+            requests: requests.clone(),
+            outcomes: outcomes.iter().map(|hash| outcome(hash)).collect(),
+        };
+        (
+            StageExecutor::Sandboxed {
+                wall: Box::new(wall),
+                access: ToolAccess::ReadWrite,
+                read_hashes: HashMap::new(),
+            },
+            requests,
+        )
+    }
+
+    #[test]
+    fn unread_edits_are_refused_before_crossing_the_wall() {
+        let (mut executor, requests) = sandboxed(&[]);
+        let out = executor.execute("edit", &serde_json::json!({"path": "src/lib.rs"}));
+        assert!(out.is_error);
+        assert!(requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn successive_edits_use_the_previous_post_image_hash() {
+        let (mut executor, requests) = sandboxed(&["read-hash", "first-post", "second-post"]);
+        executor.execute("read", &serde_json::json!({"path": "src/lib.rs"}));
+        let first = executor.execute("edit", &serde_json::json!({"path": "src/lib.rs"}));
+        assert!(!first.is_error);
+        executor.execute("edit", &serde_json::json!({"path": "src/lib.rs"}));
+
+        let requests: Vec<ToolRequest> = requests
+            .borrow()
+            .iter()
+            .map(|request| serde_json::from_str(request).unwrap())
+            .collect();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[2].expected_hash.as_deref(), Some("first-post"));
+    }
+
+    #[test]
+    fn a_write_seeds_the_record_for_an_immediate_edit() {
+        let (mut executor, requests) = sandboxed(&["write-post", "edit-post"]);
+        executor.execute("write", &serde_json::json!({"path": "src/new.rs"}));
+        let out = executor.execute("edit", &serde_json::json!({"path": "src/new.rs"}));
+        assert!(!out.is_error);
+
+        let requests: Vec<ToolRequest> = requests
+            .borrow()
+            .iter()
+            .map(|request| serde_json::from_str(request).unwrap())
+            .collect();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].expected_hash.as_deref(), Some("write-post"));
     }
 }

@@ -67,8 +67,9 @@ impl ToolOutcome {
 /// Per-flight tool state: the territory root and the read-hash record.
 pub struct ToolContext {
     root: PathBuf,
-    /// Path -> content hash at last successful read. The staleness guard
-    /// writes will need; today, the audit's memory.
+    /// Path -> content hash the guard expects: from a successful read or
+    /// mutation. The staleness guard writes will need; today, the audit's
+    /// memory.
     pub read_hashes: HashMap<PathBuf, String>,
 }
 
@@ -204,7 +205,7 @@ fn write_specs() -> Value {
         {
             "type": "function",
             "name": "edit",
-            "description": "Replace ONE exact occurrence of `old` with `new` in a file you have already read. Refused if the file was not read, changed since your last read, or `old` matches zero or multiple times.",
+            "description": "Replace ONE exact occurrence of `old` with `new` in a file you have already read. Refused if the file was not read or `old` matches zero or multiple times. Several edits may ride one response, including the same file, applied in request order. After a successful edit or write, the guard expects the new content; files changed outside these tools still refuse.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -457,9 +458,9 @@ fn search(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
 // ── edit / write: the hands, hash-guarded ────────────────────────────────────
 
 /// Replace exactly one occurrence of `old` with `new`, guarded by the
-/// read-hash record: a file not read, or changed since its last read, is a
-/// refusal telling the model to read again. The guard entry is NOT advanced
-/// by the edit — a second edit demands a fresh read of the mutated file.
+/// read-hash record: a file not read, or whose bytes differ from the guard's
+/// expected image, is refused. A successful edit advances the guard to its
+/// post-image so the next edit can follow it.
 fn edit(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
     let (Some(path), Some(old), Some(new)) = (
         arg_str(args, "path"),
@@ -492,7 +493,7 @@ fn edit(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
         }
         Some(seen) if *seen != current => {
             return ToolOutcome::error(format!(
-                "edit: '{path}' changed since it was read — read it again"
+                "edit: '{path}' changed outside these tools — read it again"
             ))
         }
         Some(_) => {}
@@ -512,6 +513,7 @@ fn edit(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
         return ToolOutcome::error(format!("edit: cannot write '{path}': {e}"));
     }
     let post = content_hash(updated.as_bytes());
+    ctx.read_hashes.insert(abs, post.clone());
     ToolOutcome {
         content: format!("edited '{path}': replaced 1 occurrence"),
         is_error: false,
@@ -548,10 +550,12 @@ fn write_new(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
     if let Err(e) = file.write_all(content.as_bytes()) {
         return ToolOutcome::error(format!("write: cannot write '{path}': {e}"));
     }
+    let hash = content_hash(content.as_bytes());
+    ctx.read_hashes.insert(abs, hash.clone());
     ToolOutcome {
         content: format!("wrote '{path}' ({} bytes)", content.len()),
         is_error: false,
-        hash: content_hash(content.as_bytes()),
+        hash,
         before_hash: None,
     }
 }
@@ -778,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_refuses_unread_and_stale_files_then_replaces_exactly_once() {
+    fn edit_refuses_unread_and_stale_files_then_advances_the_record() {
         let dir = territory("edit");
         let mut ctx = ToolContext::new(&dir).unwrap();
         let args = json!({"path": "src/lib.rs", "old": "answer", "new": "reply"});
@@ -824,18 +828,18 @@ mod tests {
         let now = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
         assert!(now.contains("reply") && !now.contains("answer"));
 
-        // The guard did NOT advance: editing again without re-reading refuses.
+        // The guard advances: a second edit succeeds without re-reading.
         let out = execute(
             "edit",
-            &json!({"path": "src/lib.rs", "old": "reply", "new": "answer"}),
+            &json!({"path": "src/lib.rs", "old": "reply", "new": "response"}),
             &mut ctx,
             ToolAccess::ReadWrite,
         );
-        assert!(
-            out.is_error && out.content.contains("read it again"),
-            "{}",
-            out.content
-        );
+        assert!(!out.is_error, "{}", out.content);
+        let now = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
+        assert!(now.contains("response") && !now.contains("reply"));
+        let abs = ctx.confine("src/lib.rs").unwrap();
+        assert_eq!(ctx.read_hashes.get(&abs), Some(&out.hash));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -900,6 +904,18 @@ mod tests {
         assert_eq!(out.hash.len(), 16);
         assert_eq!(out.before_hash, None, "a new file has no pre-image");
         assert!(dir.join("src/new_module.rs").exists());
+
+        // A newly written file is immediately editable without a read.
+        let out = execute(
+            "edit",
+            &json!({"path": "src/new_module.rs", "old": "fresh", "new": "ready"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(!out.is_error, "{}", out.content);
+        assert!(std::fs::read_to_string(dir.join("src/new_module.rs"))
+            .unwrap()
+            .contains("ready"));
 
         // Existing file: refused — mutation belongs to edit.
         let out = execute(

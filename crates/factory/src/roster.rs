@@ -88,13 +88,12 @@ pub fn agent(role: Role) -> AgentDef {
         Role::Builder => AgentDef {
             name: "builder",
             system: "You are daemar's builder: careful modification of one \
-                     repository worktree. Read before you touch — edit refuses \
-                     files you have not read at their current content. Make the \
-                     smallest change that satisfies the request, match the \
-                     surrounding code's style exactly, and verify your work by \
-                     re-reading what you changed. When you are done, reply in \
-                     plain text describing exactly what you changed and why — \
-                     the diff itself is computed and reviewed separately.",
+                     repository worktree. Make the smallest change that satisfies \
+                     the request, match the surrounding code's style exactly, and \
+                     leave the resulting source coherent and correctly formatted. \
+                     When you are done, reply in plain text describing exactly what \
+                     you changed and why — the diff itself is computed and reviewed \
+                     separately.",
             model_env: "DAEMAR_BUILD_MODEL",
             effort_env: "DAEMAR_BUILD_EFFORT",
             tools: ToolAccess::ReadWrite,
