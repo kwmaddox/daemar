@@ -9,12 +9,12 @@
 //! The write guard across the boundary (the phase-1 deferred question,
 //! answered): the wall spawns a fresh in-guest process per request, so
 //! the HOST retains the read-hash record — updated from each successful
-//! read or mutation outcome — and refuses an edit of an unread file before
-//! paying for a crossing. The expected hash rides to the guest in a field
-//! the model never controls, and the in-guest executor re-verifies the
-//! file's current bytes immediately before replacing: durable state outside
-//! the blast radius, the authoritative check inside it. A successful
-//! mutation advances the record to its post-image.
+//! read or mutation outcome — and refuses an edit or delete of an unread
+//! file before paying for a crossing. The expected hash rides to the guest
+//! in a field the model never controls, and the in-guest executor re-verifies
+//! the file's current bytes immediately before replacing or unlinking:
+//! durable state outside the blast radius, the authoritative check inside it.
+//! An edit advances the record to its post-image; a delete removes it.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -73,16 +73,16 @@ impl StageExecutor {
                 access,
                 read_hashes,
             } => {
-                // The host half of the guard: an edit with no recorded read
-                // refuses before a crossing is paid for. The stale case is
-                // the guest's to catch — its check is at mutation time.
+                // The host half of the guard: a mutation with no recorded
+                // read refuses before a crossing is paid for. The stale case
+                // is the guest's to catch — its check is at mutation time.
                 let expected_hash = match (name, arg_path(args)) {
-                    ("edit", Some(path)) => match read_hashes.get(&path) {
+                    ("edit" | "delete", Some(path)) => match read_hashes.get(&path) {
                         Some(hash) => Some(hash.clone()),
                         None => {
                             return ToolOutcome {
                                 content: format!(
-                                    "edit: '{path}' has not been read — read it first"
+                                    "{name}: '{path}' has not been read — read it first"
                                 ),
                                 is_error: true,
                                 hash: String::new(),
@@ -125,6 +125,11 @@ impl StageExecutor {
                 {
                     if let Some(path) = arg_path(args) {
                         read_hashes.insert(path, outcome.hash.clone());
+                    }
+                }
+                if name == "delete" && !outcome.is_error {
+                    if let Some(path) = arg_path(args) {
+                        read_hashes.remove(&path);
                     }
                 }
                 outcome

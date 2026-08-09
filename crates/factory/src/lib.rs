@@ -8,7 +8,7 @@
 //! - [`pens`] — the controller's writes: grant, refuse, dispose
 //! - [`provider`] — the OpenAI Responses API seam, stateless by doctrine
 //! - [`tools`] — territory tools, capability-gated: reads for every tooled
-//!   seat, hash-guarded edit/write for the builder, no delete — structurally
+//!   seat, hash-guarded edit/delete plus create-new write for the builder
 //! - [`worktree`] — pinned detached worktrees: stages never fly the live tree
 //! - [`wall`] — the contract between a stage and whatever holds it; the
 //!   implementation lives above this crate and is injected at [`config`]
