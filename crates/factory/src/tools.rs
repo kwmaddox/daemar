@@ -1,4 +1,4 @@
-//! The scout's tools: read-only reconnaissance over one territory.
+//! The scout's tools: territory-confined reconnaissance and guarded mutation.
 //!
 //! The sedai pattern, inherited: `ToolOutcome { content, is_error }` —
 //! failures are content the loop continues past, never aborts. Plus two
@@ -11,10 +11,12 @@
 //!    audit rules — a logged one.
 //! 2. Content hashes on every read: the epistemic pointer that goes on the
 //!    ledger, so "what did the scout see" is answerable without copying
-//!    bytes into the record. Doubles as the staleness guard when writes
-//!    arrive (sedai's read_hashes, same idea).
+//!    bytes into the record. Doubles as the staleness guard when edits or
+//!    deletes arrive (sedai's read_hashes, same idea); deletion preserves
+//!    only its preimage witness.
 //!
-//! No shell. No writes. No network. Rung 1 by construction.
+//! No shell. No network. Mutations are restricted to the write seat and
+//! guarded by current read hashes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,11 +38,12 @@ const SEARCH_FILE_BYTES: u64 = 1_000_000;
 pub struct ToolOutcome {
     pub content: String,
     pub is_error: bool,
-    /// Content hash of what was read — or, for a mutation, the post-image.
+    /// Content hash of what was read — or, for an edit or write, the post-image.
+    /// A deletion has no post-image hash.
     pub hash: String,
-    /// The pre-image hash of a mutation, when there was one: edit records
-    /// what it replaced; a new-file write has no pre-image. Defaulted so
-    /// the outcome crosses old cage boundaries unchanged.
+    /// The pre-image hash of a mutation, when there was one: edits and deletes
+    /// record what they replaced; a new-file write has no pre-image. Defaulted
+    /// so the outcome crosses old cage boundaries unchanged.
     #[serde(default)]
     pub before_hash: Option<String>,
 }
@@ -68,8 +71,8 @@ impl ToolOutcome {
 pub struct ToolContext {
     root: PathBuf,
     /// Path -> content hash the guard expects: from a successful read or
-    /// mutation. The staleness guard writes will need; today, the audit's
-    /// memory.
+    /// surviving mutation. The staleness guard writes will need; today, the
+    /// audit's memory.
     pub read_hashes: HashMap<PathBuf, String>,
 }
 
@@ -230,14 +233,27 @@ fn write_specs() -> Value {
                 "required": ["path", "content"]
             },
             "strict": false
+        },
+        {
+            "type": "function",
+            "name": "delete",
+            "description": "Delete a file you have already read. File-only and hash-guarded: refuses directories, nonexistent paths, unread files, and files changed outside these tools.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path, relative to the territory root."}
+                },
+                "required": ["path"]
+            },
+            "strict": false
         }
     ])
 }
 
 /// Dispatch, capability-gated. Unknown tools, forbidden tools, and
 /// malformed args are error outcomes; the loop continues either way, and
-/// every outcome lands on the ledger. There is NO delete: the capability
-/// does not exist, structurally.
+/// every outcome lands on the ledger. Write-seat mutations are structurally
+/// unavailable to lesser seats.
 pub fn execute(name: &str, args: &Value, ctx: &mut ToolContext, access: ToolAccess) -> ToolOutcome {
     let readable = matches!(access, ToolAccess::ReadOnly | ToolAccess::ReadWrite);
     let writable = access == ToolAccess::ReadWrite;
@@ -247,7 +263,8 @@ pub fn execute(name: &str, args: &Value, ctx: &mut ToolContext, access: ToolAcce
         "search" if readable => search(args, ctx),
         "edit" if writable => edit(args, ctx),
         "write" if writable => write_new(args, ctx),
-        "read" | "list_files" | "search" | "edit" | "write" => {
+        "delete" if writable => delete(args, ctx),
+        "read" | "list_files" | "search" | "edit" | "write" | "delete" => {
             ToolOutcome::error(format!("forbidden: this seat may not call '{name}'"))
         }
         other => ToolOutcome::error(format!("unknown tool '{other}'")),
@@ -455,7 +472,7 @@ fn search(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
     ToolOutcome::ok(out)
 }
 
-// ── edit / write: the hands, hash-guarded ────────────────────────────────────
+// ── edit / delete / write: the hands, hash-guarded ───────────────────────────
 
 /// Replace exactly one occurrence of `old` with `new`, guarded by the
 /// read-hash record: a file not read, or whose bytes differ from the guard's
@@ -518,6 +535,47 @@ fn edit(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
         content: format!("edited '{path}': replaced 1 occurrence"),
         is_error: false,
         hash: post,
+        before_hash: Some(current),
+    }
+}
+
+/// Delete a read, unchanged file. The successful outcome preserves only its
+/// pre-image witness: there is no post-image after an unlink.
+fn delete(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
+    let Some(path) = arg_str(args, "path") else {
+        return ToolOutcome::error("delete: missing required 'path'");
+    };
+    let abs = match ctx.confine(path) {
+        Ok(abs) => abs,
+        Err(e) => return ToolOutcome::error(format!("delete: {e}")),
+    };
+    if abs.is_dir() {
+        return ToolOutcome::error(format!("delete: '{path}' is a directory"));
+    }
+    let bytes = match std::fs::read(&abs) {
+        Ok(bytes) => bytes,
+        Err(e) => return ToolOutcome::error(format!("delete: cannot read '{path}': {e}")),
+    };
+    let current = content_hash(&bytes);
+    match ctx.read_hashes.get(&abs) {
+        None => {
+            return ToolOutcome::error(format!("delete: '{path}' has not been read — read it first"))
+        }
+        Some(seen) if *seen != current => {
+            return ToolOutcome::error(format!(
+                "delete: '{path}' changed outside these tools — read it again"
+            ))
+        }
+        Some(_) => {}
+    }
+    if let Err(e) = std::fs::remove_file(&abs) {
+        return ToolOutcome::error(format!("delete: cannot remove '{path}': {e}"));
+    }
+    ctx.read_hashes.remove(&abs);
+    ToolOutcome {
+        content: format!("deleted '{path}'"),
+        is_error: false,
+        hash: String::new(),
         before_hash: Some(current),
     }
 }
@@ -751,13 +809,29 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
     #[test]
-    fn the_write_surface_is_capability_gated_and_has_no_delete() {
+    fn the_write_surface_advertises_delete_and_read_only_refuses_it_structurally() {
         let dir = territory("caps");
         let mut ctx = ToolContext::new(&dir).unwrap();
-        // A read-only seat may not mutate, even by naming the tool.
+        let write_names: Vec<String> = specs(ToolAccess::ReadWrite)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            write_names,
+            ["read", "list_files", "search", "edit", "write", "delete"]
+        );
+        let read_names: Vec<String> = specs(ToolAccess::ReadOnly)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(read_names, ["read", "list_files", "search"]);
         let out = execute(
-            "edit",
-            &json!({"path": "src/lib.rs", "old": "answer", "new": "reply"}),
+            "delete",
+            &json!({"path": "src/lib.rs"}),
             &mut ctx,
             ToolAccess::ReadOnly,
         );
@@ -766,18 +840,97 @@ mod tests {
             "{}",
             out.content
         );
-        // The advertised ReadWrite surface is exactly the allowed set —
-        // delete does not exist, structurally (the moghedien pattern).
-        let names: Vec<String> = specs(ToolAccess::ReadWrite)
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|s| s["name"].as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(names, ["read", "list_files", "search", "edit", "write"]);
-        assert!(!names
-            .iter()
-            .any(|n| n.contains("delete") || n.contains("remove")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unread_file_cannot_be_deleted() {
+        let dir = territory("delete-unread");
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        let out = execute(
+            "delete",
+            &json!({"path": "src/lib.rs"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(
+            out.is_error && out.content.contains("read it first"),
+            "{}",
+            out.content
+        );
+        assert!(dir.join("src/lib.rs").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_read_file_changed_before_deletion_is_refused() {
+        let dir = territory("delete-stale");
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        execute(
+            "read",
+            &json!({"path": "src/lib.rs"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        std::fs::write(dir.join("src/lib.rs"), "changed\n").unwrap();
+        let out = execute(
+            "delete",
+            &json!({"path": "src/lib.rs"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(
+            out.is_error && out.content.contains("read it again"),
+            "{}",
+            out.content
+        );
+        assert!(dir.join("src/lib.rs").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_read_file_is_deleted_with_its_preimage_hash_and_read_record_removed() {
+        let dir = territory("delete");
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        let bytes = std::fs::read(dir.join("src/lib.rs")).unwrap();
+        let expected = content_hash(&bytes);
+        execute(
+            "read",
+            &json!({"path": "src/lib.rs"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        let abs = ctx.confine("src/lib.rs").unwrap();
+        let out = execute(
+            "delete",
+            &json!({"path": "src/lib.rs"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.before_hash, Some(expected));
+        assert!(out.hash.is_empty(), "a deletion has no post-image hash");
+        assert!(!dir.join("src/lib.rs").exists());
+        assert!(!ctx.read_hashes.contains_key(&abs));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_directory_cannot_be_deleted() {
+        let dir = territory("delete-directory");
+        let mut ctx = ToolContext::new(&dir).unwrap();
+        let out = execute(
+            "delete",
+            &json!({"path": "src"}),
+            &mut ctx,
+            ToolAccess::ReadWrite,
+        );
+        assert!(
+            out.is_error && out.content.contains("is a directory"),
+            "{}",
+            out.content
+        );
+        assert!(dir.join("src").is_dir());
         std::fs::remove_dir_all(&dir).ok();
     }
 

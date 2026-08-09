@@ -140,21 +140,13 @@ fn the_write_guard_survives_the_change_of_transport() {
     let f = factory("microvm-guard", &stub);
     let t = wall_territory("guard");
 
-    // An edit of a file the model never read must be refused BEFORE the
+    // A delete of a file the model never read must be refused BEFORE the
     // wall is crossed — the host holds that record, whatever the transport.
-    stub.push_tool_call(
-        "call_1",
-        "edit",
-        r#"{"path":"src/lib.rs","old":"42","new":"43"}"#,
-    );
-    // Now the honest sequence: read, then edit.
+    stub.push_tool_call("call_1", "delete", r#"{"path":"src/lib.rs"}"#);
+    // Now the honest sequence: read, then delete.
     stub.push_tool_call("call_2", "read", r#"{"path":"src/lib.rs"}"#);
-    stub.push_tool_call(
-        "call_3",
-        "edit",
-        r#"{"path":"src/lib.rs","old":"42","new":"43"}"#,
-    );
-    stub.push_ok("guard held; the edit landed after a read.");
+    stub.push_tool_call("call_3", "delete", r#"{"path":"src/lib.rs"}"#);
+    stub.push_ok("guard held; the delete landed after a read.");
     let out = daemar_cmd(&f, &["build", "--repo", t.to_str().unwrap(), "answer 42"])
         .output()
         .expect("run daemar");
@@ -166,17 +158,17 @@ fn the_write_guard_survives_the_change_of_transport() {
     );
 
     let (_, slip, events) = the_slip(&f);
-    let edits: Vec<_> = slip
+    let deletes: Vec<_> = slip
         .tool_trail
         .iter()
-        .filter(|c| c.tool == "edit")
+        .filter(|c| c.tool == "delete")
         .collect();
-    assert_eq!(edits.len(), 2, "both edit attempts are on the trail");
-    assert!(!edits[0].ok, "an unread file cannot be edited");
-    assert!(edits[1].ok, "a read file can: {:?}", edits[1]);
+    assert_eq!(deletes.len(), 2, "both delete attempts are on the trail");
+    assert!(!deletes[0].ok, "an unread file cannot be deleted");
+    assert!(deletes[1].ok, "a read file can: {:?}", deletes[1]);
 
-    // Provenance survived the transport change: the successful edit says
-    // what it changed FROM as well as to.
+    // Provenance survived the transport change: the successful delete says
+    // what it removed FROM, with no post-image to report.
     let before_recorded = events.iter().any(|e| {
         if let EventKind::Known(Kind::ToolCall {
             tool,
@@ -185,12 +177,20 @@ fn the_write_guard_survives_the_change_of_transport() {
             ..
         }) = &e.kind
         {
-            tool == "edit" && *ok && before_hash.as_ref().is_some_and(|h| h.len() == 16)
+            tool == "delete" && *ok && before_hash.as_ref().is_some_and(|h| h.len() == 16)
         } else {
             false
         }
     });
-    assert!(before_recorded, "the caged edit records its preimage hash");
+    assert!(before_recorded, "the caged delete records its preimage hash");
+    let diff_names_deletion = events.iter().any(|e| {
+        if let EventKind::Known(Kind::SectionWritten { section, body, .. }) = &e.kind {
+            section == "diff.v1" && body.contains("src/lib.rs")
+        } else {
+            false
+        }
+    });
+    assert!(diff_names_deletion, "the diff receipt names the deleted file");
     std::fs::remove_dir_all(&t).ok();
 }
 

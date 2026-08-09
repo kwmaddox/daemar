@@ -65,11 +65,13 @@ fixtures/       hand-authored ledgers — the schema's test corpus. Tracked.
   proves the wall). A code-owned diff (gate:diff) cocks the slip at build->apply;
   APPLY is phase 3. Tools: read/list/search plus hash-guarded `edit`
   (read-first; `old` exact-match, single occurrence) and create-new-only
-  `write`. The guard refuses unread files and files changed outside the tools;
-  each successful edit or write advances its record to the post-image, so
-  several edits — including several to the same file — may ride one response
-  in request order. Turn caps are per-role: Builder 48, all read seats 12;
-  they bound pathology, never task scope. There is no delete.
+  `write`, and ReadWrite-only `delete` (read-first, hash-guarded, file-only).
+  The guard refuses unread files and files changed outside the tools; each
+  successful edit or write advances its record to the post-image, while delete
+  removes its record. Several edits — including several to the same file — may
+  ride one response in request order. The diff gate captures deletions. Turn
+  caps are per-role: Builder 48, all read seats 12; they bound pathology,
+  never task scope.
 - `daemar plan "<request>"` — plan phase, then the slip cocks at
   plan->respond and the process EXITS (exit-and-resume: boundary waits and
   crashes share one recovery). `daemar grant|refuse <slip-id>` — the

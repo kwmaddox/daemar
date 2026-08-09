@@ -174,8 +174,8 @@ pub fn add_detached(repo: &Path, commit: &str, dest: &Path) -> Result<PathBuf, W
 /// The code-owned diff: everything the builder changed in the worktree,
 /// relative to its pinned base — including brand-new files, which are
 /// marked intent-to-add first (forced, so even an ignored path cannot hide
-/// a mutation from the controller's review). The worktree is left intact:
-/// it IS the artifact awaiting apply.
+/// a mutation), and deletions. The worktree is left intact: it IS the
+/// artifact awaiting apply.
 pub fn diff_against_base(worktree: &Path, base: &str) -> Result<String, WorktreeError> {
     run_git(worktree, &["add", "-A", "-N", "-f"])?;
     run_git(worktree, &["diff", "--binary", "--no-ext-diff", base])
@@ -335,6 +335,7 @@ mod tests {
         std::fs::create_dir_all(repo.join("src")).unwrap();
         git_seed(&repo, &["init", "-q"]);
         std::fs::write(repo.join("src/lib.rs"), "pub fn answer() {}\n").unwrap();
+        std::fs::write(repo.join("src/deleted.rs"), "pub fn gone() {}\n").unwrap();
         git_seed(&repo, &["add", "."]);
         git_seed(&repo, &["commit", "-q", "-m", "first"]);
         let commit = head(&repo).expect("head resolves");
@@ -369,12 +370,13 @@ mod tests {
     }
 
     #[test]
-    fn the_diff_sees_edits_and_brand_new_files_alike() {
+    fn the_diff_sees_edits_brand_new_files_and_deletions_alike() {
         let (root, commit) = scratch("diff");
         let dest = root.join("wt/slip-3/build");
         let wt = add_detached(&root.join("repo"), &commit, &dest).expect("materializes");
         std::fs::write(wt.join("src/lib.rs"), "pub fn answer() -> u8 { 43 }\n").unwrap();
         std::fs::write(wt.join("src/new_file.rs"), "pub fn fresh() {}\n").unwrap();
+        std::fs::remove_file(wt.join("src/deleted.rs")).unwrap();
         let patch = diff_against_base(&wt, &commit).expect("diffs");
         assert!(
             patch.contains("-pub fn answer() {}") || patch.contains("43"),
@@ -383,6 +385,10 @@ mod tests {
         assert!(
             patch.contains("new_file.rs"),
             "new files must not hide: {patch}"
+        );
+        assert!(
+            patch.contains("deleted.rs") && patch.contains("-pub fn gone() {}"),
+            "deletions must not hide: {patch}"
         );
         let clean_wt = add_detached(&root.join("repo"), &commit, &root.join("wt/slip-4/build"))
             .expect("materializes");

@@ -91,9 +91,10 @@ pub fn agent(role: Role) -> AgentDef {
                      repository worktree. Make the smallest change that satisfies \
                      the request, match the surrounding code's style exactly, and \
                      leave the resulting source coherent and correctly formatted. \
-                     When you are done, reply in plain text describing exactly what \
-                     you changed and why — the diff itself is computed and reviewed \
-                     separately.",
+                     Both edit and delete require a current read; delete is \
+                     hash-guarded and file-only. When you are done, reply in plain \
+                     text describing exactly what you changed and why — the diff \
+                     itself is computed and reviewed separately.",
             model_env: "DAEMAR_BUILD_MODEL",
             effort_env: "DAEMAR_BUILD_EFFORT",
             tools: ToolAccess::ReadWrite,

@@ -59,9 +59,9 @@ fn serve(request: &str) -> ToolOutcome {
         Err(error) => return refuse(format!("cage: no workspace: {error}")),
     };
     // The host's read record arrives as an expected hash: seed the fresh
-    // context so the edit guard compares against what the model last saw.
-    // The authoritative staleness check is edit's own re-hash of the file,
-    // here, immediately before any bytes change.
+    // context so the guarded mutation compares against what the model last
+    // saw. The authoritative staleness check is the tool's own re-hash of
+    // the file, here, immediately before bytes change or it is unlinked.
     if let (Some(expected), Some(path)) = (
         request.expected_hash.as_ref(),
         request.args.get("path").and_then(|v| v.as_str()),
