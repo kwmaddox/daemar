@@ -559,7 +559,9 @@ fn delete(args: &Value, ctx: &mut ToolContext) -> ToolOutcome {
     let current = content_hash(&bytes);
     match ctx.read_hashes.get(&abs) {
         None => {
-            return ToolOutcome::error(format!("delete: '{path}' has not been read — read it first"))
+            return ToolOutcome::error(format!(
+                "delete: '{path}' has not been read — read it first"
+            ))
         }
         Some(seen) if *seen != current => {
             return ToolOutcome::error(format!(

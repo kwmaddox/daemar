@@ -182,7 +182,10 @@ fn the_write_guard_survives_the_change_of_transport() {
             false
         }
     });
-    assert!(before_recorded, "the caged delete records its preimage hash");
+    assert!(
+        before_recorded,
+        "the caged delete records its preimage hash"
+    );
     let diff_names_deletion = events.iter().any(|e| {
         if let EventKind::Known(Kind::SectionWritten { section, body, .. }) = &e.kind {
             section == "diff.v1" && body.contains("src/lib.rs")
@@ -190,7 +193,10 @@ fn the_write_guard_survives_the_change_of_transport() {
             false
         }
     });
-    assert!(diff_names_deletion, "the diff receipt names the deleted file");
+    assert!(
+        diff_names_deletion,
+        "the diff receipt names the deleted file"
+    );
     std::fs::remove_dir_all(&t).ok();
 }
 
