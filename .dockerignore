@@ -1,9 +1,0 @@
-# The cage build context: source only. Secrets NEVER enter a build context,
-# and runtime state has no business in an image.
-target/
-ledgers/
-worktrees/
-secrets/
-eval/territories/
-eval/dossiers/
-.git/

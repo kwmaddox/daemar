@@ -1,6 +1,0 @@
-# SOPS creation rules: anything under secrets/ encrypts to the engineer's
-# age identity. The private key lives in ~/.config/sops/age/keys.txt and
-# never enters this repo.
-creation_rules:
-  - path_regex: secrets/.*
-    age: age1866c23tk3avld4e939g5yycln7ahsmueu69ar3gc3xd5aq2t2sqqt4pv5g
