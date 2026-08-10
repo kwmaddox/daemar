@@ -1,6 +1,0 @@
-{"schema":"ledger.v1","slip_id":"0198a003-cccc-7003-8000-000000000003","seq":1,"ts":"2026-08-03T18:40:12Z","kind":"slip_opened.v1","payload":{"request":"Scout the auth module: where do sessions live and what touches them","workflow":"scout","engineer":"kendall"}}
-{"schema":"ledger.v1","slip_id":"0198a003-cccc-7003-8000-000000000003","seq":2,"ts":"2026-08-03T18:40:13Z","kind":"phase_started.v1","payload":{"phase":"scout","owner":"scout","lane":"agent"}}
-{"schema":"ledger.v1","slip_id":"0198a003-cccc-7003-8000-000000000003","seq":3,"ts":"2026-08-03T18:41:30Z","kind":"model_call.v1","payload":{"phase":"scout","model":"google/gemini-3.6-flash","tokens":15300,"cost":0.03}}
-{"schema":"ledger.v1","slip_id":"0198a003-cccc-7003-8000-000000000003","seq":4,"ts":"2026-08-03T18:41:52Z","kind":"query_made.v1","payload":{"phase":"scout","query":"prior scout sections mentioning auth"}}
-{"schema":"ledger.v1","slip_id":"0198a003-cccc-7003-8000-000000000003","seq":5,"ts":"2026-08-03T18:42:36Z","kind":"model_call.v1","payload":{"phase":"scout","model":"google/gemini-3.6-flash","tokens":11800,"cost":0.02}}
-{"schema":"ledger.v1","slip_id":"0198a003-cccc-7003-8000-000000000003","seq":6,"ts":"2026-08-03T18:42:59Z","kind":"note.v1","payload":{"text":"scout is walking the session middleware chain"}}
