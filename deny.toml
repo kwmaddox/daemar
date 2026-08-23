@@ -1,0 +1,27 @@
+# Dependency policy (PER-67). Checked by scripts/check.sh via `cargo deny check`.
+# The bans are the enforcement half of conventions.md C2: error-helper crates
+# cannot exist in the dependency graph, so violating C2 fails before any code
+# compiles.
+
+[graph]
+all-features = true
+
+[licenses]
+# Permissive-only allowlist; extending it is a deliberate event.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+]
+
+[bans]
+deny = [
+    { crate = "anyhow", reason = "C2: no error-helper crates — native error handling only (conventions.md)" },
+    { crate = "eyre", reason = "C2: no error-helper crates — native error handling only (conventions.md)" },
+    { crate = "color-eyre", reason = "C2: no error-helper crates — native error handling only (conventions.md)" },
+    { crate = "thiserror", reason = "C2: no error-helper crates — hand-written Display/Error impls (conventions.md)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

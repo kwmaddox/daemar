@@ -10,5 +10,4 @@ license = "Apache-2.0"
 daemar-sandbox = { path = "crates/sandbox" }
 tar = "0.4"
 uuid = { version = "1", features = ["v4"] }
-thiserror = "2"
 clap = { version = "4", features = ["derive"] }

@@ -33,6 +33,17 @@ enum Cli {
     },
 }
 
+/// Print an error and its full `source()` chain. Messages describe the
+/// failure; causes live in the chain (conventions.md C2).
+fn report(context: &str, e: &daemar_sandbox::Error) {
+    eprintln!("dsbx: {context}{e}");
+    let mut cause = std::error::Error::source(e);
+    while let Some(c) = cause {
+        eprintln!("dsbx:   caused by: {c}");
+        cause = c.source();
+    }
+}
+
 fn main() -> ExitCode {
     let Cli::Run {
         worktree,
@@ -52,7 +63,7 @@ fn main() -> ExitCode {
     let outcome = match daemar_sandbox::run(&spec) {
         Ok(outcome) => outcome,
         Err(e) => {
-            eprintln!("dsbx: {e}");
+            report("", &e);
             return ExitCode::from(2);
         }
     };
@@ -103,7 +114,7 @@ fn main() -> ExitCode {
                 }
             }
             Err(e) => {
-                eprintln!("dsbx: apply failed: {e}");
+                report("apply failed: ", &e);
                 return ExitCode::from(2);
             }
         }

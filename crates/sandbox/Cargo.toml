@@ -8,6 +8,3 @@ description = "One-shot sandboxed command execution: VM boundary, no network, ov
 [dependencies]
 tar.workspace = true
 uuid.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]

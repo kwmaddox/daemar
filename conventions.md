@@ -16,8 +16,9 @@ Rules of the file:
   that behavior is proven, is the jurisdiction of `specs/` and its
   batteries — a conformance review against this file never adjudicates
   correctness or test coverage.
-- When a worked example conflicts with another convention's rule, the rule
-  wins. Examples illustrate; they never license.
+- When a worked example conflicts with a convention's rule — another
+  convention's or its own — the rule text wins. Examples illustrate; they
+  never license.
 - Future slices extend this list; they do not rewrite it. IDs are never
   reused. Entries marked **override** deliberately depart from community
   idiom and say why.
@@ -49,8 +50,8 @@ leaks implementation and cannot grow variants without breaking callers.
 `anyhow`, `eyre`, and `thiserror` are banned everywhere, including binaries.
 Error enums derive `Debug` only; `Display` and `std::error::Error`
 (including `source()`) are written by hand.
-*Enforcement: gate (cargo-deny bans, pending PER-67; clippy disallowed
-types/macros, pending PER-66).*
+*Enforcement: gate (cargo-deny bans — live, `deny.toml` via
+`scripts/check.sh`; clippy disallowed types/macros pending PER-66).*
 
 The house pattern:
 
