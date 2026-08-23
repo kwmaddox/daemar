@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/sandbox", "crates/sandbox-cli"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+daemar-sandbox = { path = "crates/sandbox" }
+tar = "0.4"
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }

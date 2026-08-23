@@ -1,0 +1,14 @@
+[package]
+name = "daemar-sandbox-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Manual driver for daemar-sandbox: run one command in the sandbox, inspect or apply its changes"
+
+[[bin]]
+name = "dsbx"
+path = "src/main.rs"
+
+[dependencies]
+daemar-sandbox.workspace = true
+clap.workspace = true
