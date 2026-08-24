@@ -37,3 +37,6 @@ untouched (docs, pure tests, behavior-preserving fixes) skip this.
 3. Every piece of accepted scope ships with its tests. Scope may be cut
    with written justification in the ticket; accepted-but-untested scope
    may not ship.
+4. Where the diff touches Rust, a conformance review against
+   `conventions.md` was run and its findings resolved or ticketed
+   (findings cite C-IDs).
