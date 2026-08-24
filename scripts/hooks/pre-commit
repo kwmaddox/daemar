@@ -1,0 +1,6 @@
+#!/bin/sh
+# Versioned pre-commit gate, activated via `just bootstrap` (which sets
+# core.hooksPath to scripts/hooks). Gates the working tree, not the index:
+# assumes seam commits, not partial staging. `git commit --no-verify` is
+# the loud, deliberate escape hatch.
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"
