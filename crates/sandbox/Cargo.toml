@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "One-shot sandboxed command execution: VM boundary, no network, overlay filesystem. Behaviors: specs/sandbox.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 tar.workspace = true
 uuid.workspace = true

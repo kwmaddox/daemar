@@ -50,8 +50,8 @@ leaks implementation and cannot grow variants without breaking callers.
 `anyhow`, `eyre`, and `thiserror` are banned everywhere, including binaries.
 Error enums derive `Debug` only; `Display` and `std::error::Error`
 (including `source()`) are written by hand.
-*Enforcement: gate (cargo-deny bans — live, `deny.toml` via
-`scripts/check.sh`; clippy disallowed types/macros pending PER-66).*
+*Enforcement: gate (cargo-deny bans, `deny.toml`; clippy disallowed
+types/macros, `clippy.toml` — both live via `scripts/check.sh`).*
 
 The house pattern:
 
@@ -109,8 +109,8 @@ structure instead of string-matching error prose.
 
 `unwrap`, `expect`, `panic!`, `todo!`, `unimplemented!`, `dbg!`, and
 unchecked indexing/slicing appear only in test code.
-*Enforcement: gate (clippy restriction lints + test exemptions, pending
-PER-66).*
+*Enforcement: gate (clippy restriction lints + test exemptions — live,
+workspace lint table + `clippy.toml` via `scripts/check.sh`).*
 
 Why: a panic in the factory is an unreported failure path; every production
 failure flows through the error contract (C1).
@@ -119,8 +119,8 @@ failure flows through the error contract (C1).
 
 The only lint suppression is `#[expect(lint, reason = "...")]`. A bare
 `#[allow]` — including file-level — is a defect.
-*Enforcement: gate (clippy `allow_attributes_without_reason`, pending
-PER-66).*
+*Enforcement: gate (clippy `allow_attributes_without_reason` — live,
+workspace lint table via `scripts/check.sh`).*
 
 Why: an unexplained suppression hides a decision; `#[expect]` additionally
 fails when the lint stops firing, so stale suppressions self-report.
@@ -272,8 +272,8 @@ intermediate `String` or `Vec` first is a defect. Building a collection
 where no sink exists is fine, and a transformation that inherently requires
 the whole collection (e.g. reversal) may buffer once — the defect is
 buffering that a streaming write could replace.
-*Enforcement: gate, partial (pedantic allocation lints under `-D warnings`,
-pending PER-66); review for design-level cases.*
+*Enforcement: gate, partial (pedantic allocation lints under `-D warnings`
+— live via `scripts/check.sh`); review for design-level cases.*
 
 ```rust
 // wrong

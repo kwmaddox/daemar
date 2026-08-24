@@ -21,6 +21,8 @@ use crate::{DEFAULT_IMAGE, TESTED_CONTAINER_VERSION};
 /// driver as script arguments, never spliced into shell text.
 #[derive(Debug, Clone)]
 pub struct RunSpec {
+    /// Argv of the workload. Passed to the in-guest driver as script
+    /// arguments, never spliced into shell text; must not be empty.
     pub command: Vec<String>,
     /// Host directory mounted read-only as the overlay lower layer (B3, B4).
     pub worktree: PathBuf,
@@ -29,44 +31,76 @@ pub struct RunSpec {
     pub image: String,
     /// Wall-clock limit; the container is killed and reaped on expiry (B8).
     pub timeout: Duration,
+    /// CPU cap for the guest VM, when set.
     pub cpus: Option<u32>,
-    /// e.g. "2048M", "4G".
+    /// Memory cap for the guest VM, e.g. "2048M", "4G".
     pub memory: Option<String>,
 }
 
+/// Default wall-clock limit for a run ([`RunSpec::timeout`]). The one
+/// defaults-const here; if a second accretes, fold them into a config
+/// struct instead.
+const DEFAULT_TIMEOUT: Duration = Duration::from_mins(5);
+
 impl RunSpec {
+    /// A spec with the defaults: pinned image, default timeout, no
+    /// resource caps.
+    #[must_use]
     pub fn new(command: Vec<String>, worktree: impl Into<PathBuf>) -> Self {
         RunSpec {
             command,
             worktree: worktree.into(),
             image: DEFAULT_IMAGE.to_string(),
-            timeout: Duration::from_secs(300),
+            timeout: DEFAULT_TIMEOUT,
             cpus: None,
             memory: None,
         }
     }
 }
 
+/// What one sandboxed run produced: the workload's own exit code, its
+/// captured output, and the change-set the overlay recorded.
 #[derive(Debug)]
 pub struct RunOutcome {
     /// The workload's exit code (B10) — not the container's.
     pub exit_code: i32,
+    /// Everything the workload wrote to stdout.
     pub stdout: Vec<u8>,
+    /// Everything the workload wrote to stderr.
     pub stderr: Vec<u8>,
+    /// What the run changed; reaches the host only via
+    /// [`ChangeSet::apply_to`].
     pub changes: ChangeSet,
 }
 
 /// Execute one sandboxed run: create session, boot VM, run, collect, reap.
+///
+/// # Errors
+///
+/// [`Error::EmptyCommand`] / [`Error::BadWorktree`] for an invalid spec;
+/// [`Error::Session`] / [`Error::Spawn`] when the host side cannot be set
+/// up; [`Error::Timeout`] when the wall-clock limit expires (B8);
+/// [`Error::Driver`] when the in-guest driver fails before or after the
+/// workload; [`Error::Results`] / [`Error::Archive`] when the results
+/// cannot be read back.
 pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
     if spec.command.is_empty() {
         return Err(Error::EmptyCommand);
     }
-    let worktree = spec
-        .worktree
-        .canonicalize()
-        .map_err(|_| Error::BadWorktree(spec.worktree.clone()))?;
+    let worktree = match spec.worktree.canonicalize() {
+        Ok(worktree) => worktree,
+        Err(source) => {
+            return Err(Error::BadWorktree {
+                path: spec.worktree.clone(),
+                source: Some(source),
+            })
+        }
+    };
     if !worktree.is_dir() {
-        return Err(Error::BadWorktree(spec.worktree.clone()));
+        return Err(Error::BadWorktree {
+            path: spec.worktree.clone(),
+            source: None,
+        });
     }
     warn_on_version_drift();
 
@@ -82,14 +116,72 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
     }
     // From here on, the guard owns cleanup on every path (B9).
     let guard = SessionGuard(session.clone());
-    fs::write(bin_dir.join(driver::DRIVER_FILENAME), driver::driver_script()).map_err(|e| {
-        Error::Session {
-            path: bin_dir.clone(),
-            source: e,
-        }
+    fs::write(
+        bin_dir.join(driver::DRIVER_FILENAME),
+        driver::driver_script(),
+    )
+    .map_err(|e| Error::Session {
+        path: bin_dir.clone(),
+        source: e,
     })?;
 
     let name = format!("daemar-{run_id}");
+    let mut cmd = container_command(spec, &worktree, &name, &bin_dir, &out_dir);
+    let mut child = cmd.spawn().map_err(Error::Spawn)?;
+    let stdout_reader = child.stdout.take().map(drain);
+    let stderr_reader = child.stderr.take().map(drain);
+
+    let Some(status) = wait_with_timeout(&mut child, spec.timeout) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        reap(&name);
+        drop(guard);
+        return Err(Error::Timeout(spec.timeout));
+    };
+    let stdout = join_drained(stdout_reader);
+    let stderr = join_drained(stderr_reader);
+
+    let exit_code_file = out_dir.join(driver::EXIT_CODE_FILE);
+    let tar_path = out_dir.join(driver::CHANGES_TAR);
+    let Ok(raw) = fs::read_to_string(&exit_code_file) else {
+        // The driver never reached the workload.
+        reap(&name);
+        return Err(driver_failure(status, &stderr));
+    };
+    let exit_code: i32 = match raw.trim().parse() {
+        Ok(code) => code,
+        // The cause is quoted verbatim in the message; a ParseIntError
+        // carries nothing beyond it.
+        Err(_) => {
+            return Err(Error::Archive(format!(
+                "unparseable workload exit code {raw:?}"
+            )))
+        }
+    };
+    if !tar_path.is_file() {
+        reap(&name);
+        return Err(Error::Driver {
+            stage: "export",
+            code: status.code(),
+        });
+    }
+    let changes = ChangeSet::from_tar(tar_path, &worktree, guard)?;
+    Ok(RunOutcome {
+        exit_code,
+        stdout,
+        stderr,
+        changes,
+    })
+}
+
+/// Assemble the full `container run` invocation for one spec.
+fn container_command(
+    spec: &RunSpec,
+    worktree: &std::path::Path,
+    name: &str,
+    bin_dir: &std::path::Path,
+    out_dir: &std::path::Path,
+) -> Command {
     let mut cmd = Command::new("container");
     cmd.arg("run")
         .arg("--rm")
@@ -102,13 +194,13 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
         .arg("--tmpfs")
         .arg(driver::GUEST_OVL)
         .arg("--name")
-        .arg(&name)
+        .arg(name)
         .arg("--mount")
-        .arg(mount_arg(&worktree, driver::GUEST_LOWER, true))
+        .arg(mount_arg(worktree, driver::GUEST_LOWER, true))
         .arg("--mount")
-        .arg(mount_arg(&out_dir, driver::GUEST_OUT, false))
+        .arg(mount_arg(out_dir, driver::GUEST_OUT, false))
         .arg("--mount")
-        .arg(mount_arg(&bin_dir, driver::GUEST_BIN, true));
+        .arg(mount_arg(bin_dir, driver::GUEST_BIN, true));
     if let Some(cpus) = spec.cpus {
         cmd.arg("--cpus").arg(cpus.to_string());
     }
@@ -122,77 +214,42 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    cmd
+}
 
-    let mut child = cmd.spawn().map_err(Error::Spawn)?;
-    let stdout_reader = drain(child.stdout.take().expect("piped stdout"));
-    let stderr_reader = drain(child.stderr.take().expect("piped stderr"));
-
-    let status = match wait_with_timeout(&mut child, spec.timeout) {
-        Some(status) => status,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            reap(&name);
-            drop(guard);
-            return Err(Error::Timeout(spec.timeout));
-        }
+/// Classify a container exit that produced no workload exit code: the
+/// driver failed. Stage from the driver's exit-code protocol; anything
+/// else is a container-level failure (bad image, runtime error) — stderr
+/// has the story.
+fn driver_failure(status: std::process::ExitStatus, stderr: &[u8]) -> Error {
+    let stage = match status.code() {
+        Some(driver::EXIT_MKDIR) => "mkdir",
+        Some(driver::EXIT_OVERLAY) => "overlay mount",
+        Some(driver::EXIT_CD) => "cd",
+        _ => "container",
     };
-    let stdout = stdout_reader.join().unwrap_or_default();
-    let stderr = stderr_reader.join().unwrap_or_default();
-
-    let exit_code_file = out_dir.join(driver::EXIT_CODE_FILE);
-    let tar_path = out_dir.join(driver::CHANGES_TAR);
-    match fs::read_to_string(&exit_code_file) {
-        Ok(raw) => {
-            let exit_code: i32 = raw.trim().parse().map_err(|_| {
-                Error::Archive(format!("unparseable workload exit code {raw:?}"))
-            })?;
-            if !tar_path.is_file() {
-                reap(&name);
-                return Err(Error::Driver {
-                    stage: "export",
-                    code: status.code(),
-                });
-            }
-            let changes = ChangeSet::from_tar(tar_path, &worktree, guard)?;
-            Ok(RunOutcome {
-                exit_code,
-                stdout,
-                stderr,
-                changes,
-            })
-        }
-        Err(_) => {
-            // The driver never reached the workload. Stage from the exit
-            // code; anything else is a container-level failure (bad image,
-            // runtime error) — stderr has the story.
-            reap(&name);
-            let stage = match status.code() {
-                Some(driver::EXIT_MKDIR) => "mkdir",
-                Some(driver::EXIT_OVERLAY) => "overlay mount",
-                Some(driver::EXIT_CD) => "cd",
-                _ => "container",
-            };
-            let tail = String::from_utf8_lossy(&stderr);
-            let tail = tail.lines().rev().take(5).collect::<Vec<_>>();
-            eprintln!(
-                "daemar-sandbox: driver failed at {stage}: {}",
-                tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
-            );
-            Err(Error::Driver {
-                stage,
-                code: status.code(),
-            })
-        }
+    let tail = String::from_utf8_lossy(stderr);
+    let mut last_lines = tail.lines().rev().take(5).collect::<Vec<_>>();
+    last_lines.reverse();
+    eprintln!(
+        "daemar-sandbox: driver failed at {stage}: {}",
+        last_lines.join(" | ")
+    );
+    Error::Driver {
+        stage,
+        code: status.code(),
     }
 }
 
+/// Collect a drained stream. `None` means the pipe was never there (the
+/// child was spawned with piped stdio, so this is unreachable in practice);
+/// either way the answer is "no output".
+fn join_drained(handle: Option<std::thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    handle.map_or_else(Vec::new, |h| h.join().unwrap_or_default())
+}
+
 fn mount_arg(source: &std::path::Path, target: &str, readonly: bool) -> String {
-    let mut arg = format!(
-        "type=bind,source={},target={}",
-        source.display(),
-        target
-    );
+    let mut arg = format!("type=bind,source={},target={}", source.display(), target);
     if readonly {
         arg.push_str(",readonly");
     }
@@ -274,10 +331,7 @@ mod tests {
 
     #[test]
     fn missing_worktree_is_rejected() {
-        let spec = RunSpec::new(
-            vec!["true".into()],
-            "/nonexistent/daemar/worktree/path",
-        );
-        assert!(matches!(run(&spec), Err(Error::BadWorktree(_))));
+        let spec = RunSpec::new(vec!["true".into()], "/nonexistent/daemar/worktree/path");
+        assert!(matches!(run(&spec), Err(Error::BadWorktree { .. })));
     }
 }

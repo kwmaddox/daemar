@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Manual driver for daemar-sandbox: run one command in the sandbox, inspect or apply its changes"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "dsbx"
 path = "src/main.rs"

@@ -1,0 +1,25 @@
+# Clippy policy for the L0 quality gate (PER-66). Rule IDs cite
+# conventions.md at the repo root.
+
+# C2 — no error-helper crates, anywhere including binaries. Errors are
+# explicit enums with hand-written Display/Error impls; proc-macro error
+# helpers are banned for supply-chain surface and because derived impls
+# are invisible to reviewing agents. cargo-deny bans the crates from the
+# dependency graph (L1, deny.toml); these entries make individual uses
+# fail clippy with a citable reason.
+disallowed-types = [
+    { path = "anyhow::Error", reason = "C2: no error-helper crates — use the crate's explicit error enum" },
+]
+disallowed-macros = [
+    { path = "anyhow::anyhow", reason = "C2: no error-helper crates — construct the explicit error variant" },
+    { path = "anyhow::bail", reason = "C2: no error-helper crates — return the explicit error variant" },
+    { path = "anyhow::ensure", reason = "C2: no error-helper crates — check and return the explicit error variant" },
+    { path = "thiserror::Error", reason = "C2: no error-helper crates — write Display and std::error::Error by hand" },
+]
+
+# C4 — panics stay in tests. Unit tests (#[cfg(test)] modules) are
+# exempted here; integration-test targets are not covered by these flags
+# (rust-clippy#13981) and carry a file-level #![expect] preamble instead.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

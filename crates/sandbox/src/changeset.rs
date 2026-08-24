@@ -23,14 +23,43 @@ use crate::error::Error;
 /// One reported change, relative to the worktree root (B5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
-    Added { path: PathBuf, mode: u32 },
-    Modified { path: PathBuf, mode: u32 },
-    Deleted { path: PathBuf },
-    DirAdded { path: PathBuf },
-    Symlink { path: PathBuf, target: PathBuf },
+    /// A file that did not exist in the worktree.
+    Added {
+        /// Path relative to the worktree root.
+        path: PathBuf,
+        /// Unix mode bits as recorded in the archive.
+        mode: u32,
+    },
+    /// A file that exists in the worktree with different content or mode.
+    Modified {
+        /// Path relative to the worktree root.
+        path: PathBuf,
+        /// Unix mode bits as recorded in the archive.
+        mode: u32,
+    },
+    /// A file or directory the run deleted (overlay whiteout).
+    Deleted {
+        /// Path relative to the worktree root.
+        path: PathBuf,
+    },
+    /// A directory that did not exist in the worktree.
+    DirAdded {
+        /// Path relative to the worktree root.
+        path: PathBuf,
+    },
+    /// A symlink the run created or replaced.
+    Symlink {
+        /// Path relative to the worktree root.
+        path: PathBuf,
+        /// The link target, exactly as recorded; validated only at
+        /// promotion time.
+        target: PathBuf,
+    },
 }
 
 impl Change {
+    /// The changed path, relative to the worktree root.
+    #[must_use]
     pub fn path(&self) -> &Path {
         match self {
             Change::Added { path, .. }
@@ -69,7 +98,9 @@ impl Drop for SessionGuard {
 /// entry lands in exactly one of these lists.
 #[derive(Debug, Default)]
 pub struct ApplyReport {
+    /// Entries written into the destination (files, dirs, symlinks).
     pub applied: Vec<PathBuf>,
+    /// Deletion entries whose target existed and was removed.
     pub deleted: Vec<PathBuf>,
     /// Entries refused, with the reason (path escape, symlink escape,
     /// unsupported type, missing deletion target).
@@ -93,13 +124,24 @@ impl ChangeSet {
         let mut entries = Vec::new();
         let mut unsupported = Vec::new();
 
-        for entry in archive.entries().map_err(|e| Error::Archive(e.to_string()))? {
+        for entry in archive
+            .entries()
+            .map_err(|e| Error::Archive(e.to_string()))?
+        {
             let mut entry = entry.map_err(|e| Error::Archive(e.to_string()))?;
-            let rel = normalize_entry_path(&entry.path().map_err(|e| Error::Archive(e.to_string()))?);
+            let rel =
+                normalize_entry_path(&entry.path().map_err(|e| Error::Archive(e.to_string()))?);
             let Some(rel) = rel else { continue }; // "." / empty
 
             let header = entry.header();
             let mode = header.mode().unwrap_or(0o644);
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "tar::EntryType hides a #[doc(hidden)] __Nonexhaustive variant \
+                          (pre-#[non_exhaustive] idiom), so no arm can name every variant; \
+                          the wildcard is the unsupported-by-default bucket, not a panic \
+                          path (C4)"
+            )]
             match header.entry_type() {
                 tar::EntryType::Char => {
                     let major = header.device_major().ok().flatten().unwrap_or(1);
@@ -129,7 +171,10 @@ impl ChangeSet {
                     }
                 }
                 tar::EntryType::Symlink => {
-                    match entry.link_name().map_err(|e| Error::Archive(e.to_string()))? {
+                    match entry
+                        .link_name()
+                        .map_err(|e| Error::Archive(e.to_string()))?
+                    {
                         Some(target) => entries.push(Change::Symlink {
                             path: rel,
                             target: target.into_owned(),
@@ -151,14 +196,21 @@ impl ChangeSet {
         })
     }
 
+    /// The reported changes, in archive order.
+    #[must_use]
     pub fn entries(&self) -> &[Change] {
         &self.entries
     }
 
+    /// Archive entries this slice does not support, with the reason.
+    /// Never applied; surfaced so nothing is silently dropped.
+    #[must_use]
     pub fn unsupported(&self) -> &[(PathBuf, String)] {
         &self.unsupported
     }
 
+    /// True when the run changed nothing (and nothing was unsupported).
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty() && self.unsupported.is_empty()
     }
@@ -167,6 +219,12 @@ impl ChangeSet {
     /// original worktree but may be any directory. Sanitization is applied
     /// per entry; refusals are reported, never fatal. No ownership is
     /// restored; setuid/setgid bits are stripped and reported.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Results`] when the backing archive cannot be reopened,
+    /// [`Error::Archive`] when it no longer parses. Per-entry failures are
+    /// never errors — they land in [`ApplyReport::rejected`].
     pub fn apply_to(&self, dest: &Path) -> Result<ApplyReport, Error> {
         let mut report = ApplyReport::default();
         for (path, why) in &self.unsupported {
@@ -187,8 +245,8 @@ impl ChangeSet {
                 Change::Deleted { path } => {
                     let target = dest.join(path);
                     let removed = match fs::symlink_metadata(&target) {
-                        Ok(md) if md.is_dir() => fs::remove_dir_all(&target).map(|_| true),
-                        Ok(_) => fs::remove_file(&target).map(|_| true),
+                        Ok(md) if md.is_dir() => fs::remove_dir_all(&target).map(|()| true),
+                        Ok(_) => fs::remove_file(&target).map(|()| true),
                         Err(_) => Ok(false),
                     };
                     match removed {
@@ -196,15 +254,17 @@ impl ChangeSet {
                         Ok(false) => report
                             .rejected
                             .push((path.clone(), "deletion target not found".into())),
-                        Err(e) => report.rejected.push((path.clone(), format!("delete failed: {e}"))),
+                        Err(e) => report
+                            .rejected
+                            .push((path.clone(), format!("delete failed: {e}"))),
                     }
                 }
-                Change::DirAdded { path } => {
-                    match fs::create_dir_all(dest.join(path)) {
-                        Ok(()) => report.applied.push(path.clone()),
-                        Err(e) => report.rejected.push((path.clone(), format!("mkdir failed: {e}"))),
-                    }
-                }
+                Change::DirAdded { path } => match fs::create_dir_all(dest.join(path)) {
+                    Ok(()) => report.applied.push(path.clone()),
+                    Err(e) => report
+                        .rejected
+                        .push((path.clone(), format!("mkdir failed: {e}"))),
+                },
                 Change::Symlink { path, target } => {
                     if let Err(why) = validate_symlink_target(path, target) {
                         report.rejected.push((path.clone(), why));
@@ -221,17 +281,25 @@ impl ChangeSet {
         // Stream file/symlink content out of the archive.
         let file = fs::File::open(&self.tar_path).map_err(Error::Results)?;
         let mut archive = tar::Archive::new(file);
-        for entry in archive.entries().map_err(|e| Error::Archive(e.to_string()))? {
+        for entry in archive
+            .entries()
+            .map_err(|e| Error::Archive(e.to_string()))?
+        {
             let mut entry = entry.map_err(|e| Error::Archive(e.to_string()))?;
-            let Some(rel) = normalize_entry_path(&entry.path().map_err(|e| Error::Archive(e.to_string()))?)
+            let Some(rel) =
+                normalize_entry_path(&entry.path().map_err(|e| Error::Archive(e.to_string()))?)
             else {
                 continue;
             };
-            let Some(change) = want.get(&rel) else { continue };
+            let Some(change) = want.get(&rel) else {
+                continue;
+            };
             let target = dest.join(&rel);
             if let Some(parent) = target.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
-                    report.rejected.push((rel.clone(), format!("mkdir parent failed: {e}")));
+                    report
+                        .rejected
+                        .push((rel.clone(), format!("mkdir parent failed: {e}")));
                     continue;
                 }
             }
@@ -240,7 +308,9 @@ impl ChangeSet {
                     let _ = fs::remove_file(&target);
                     match std::os::unix::fs::symlink(link, &target) {
                         Ok(()) => report.applied.push(rel.clone()),
-                        Err(e) => report.rejected.push((rel.clone(), format!("symlink failed: {e}"))),
+                        Err(e) => report
+                            .rejected
+                            .push((rel.clone(), format!("symlink failed: {e}"))),
                     }
                 }
                 Change::Added { mode, .. } | Change::Modified { mode, .. } => {
@@ -253,10 +323,12 @@ impl ChangeSet {
                                 report.stripped.push(rel.clone());
                             }
                         }
-                        Err(e) => report.rejected.push((rel.clone(), format!("write failed: {e}"))),
+                        Err(e) => report
+                            .rejected
+                            .push((rel.clone(), format!("write failed: {e}"))),
                     }
                 }
-                _ => {}
+                Change::Deleted { .. } | Change::DirAdded { .. } => {}
             }
         }
 
@@ -264,7 +336,11 @@ impl ChangeSet {
     }
 }
 
-fn write_file(entry: &mut tar::Entry<'_, fs::File>, target: &Path, mode: u32) -> std::io::Result<()> {
+fn write_file(
+    entry: &mut tar::Entry<'_, fs::File>,
+    target: &Path,
+    mode: u32,
+) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     // Never write through an existing symlink at the target itself.
     if let Ok(md) = fs::symlink_metadata(target) {
@@ -319,7 +395,9 @@ fn validate_dest_path(dest: &Path, rel: &Path) -> Result<(), String> {
             }
             Component::ParentDir => return Err("path contains ..".into()),
             Component::CurDir => {}
-            _ => return Err("non-normal path component".into()),
+            Component::Prefix(_) | Component::RootDir => {
+                return Err("non-normal path component".into())
+            }
         }
     }
     Ok(())
@@ -331,19 +409,23 @@ fn validate_symlink_target(rel: &Path, target: &Path) -> Result<(), String> {
     if target.is_absolute() {
         return Err("symlink target is absolute".into());
     }
-    // Resolve lexically from the symlink's parent directory.
-    let mut depth: i64 = rel.components().count() as i64 - 1;
+    // Resolve lexically from the symlink's parent directory: `depth` is how
+    // many directories deep that parent sits inside the destination. `rel`
+    // is normalized non-empty, so the subtraction cannot underflow.
+    let mut depth = rel.components().count().saturating_sub(1);
     for comp in target.components() {
         match comp {
             Component::ParentDir => {
-                depth -= 1;
-                if depth < 0 {
+                let Some(up) = depth.checked_sub(1) else {
                     return Err("symlink target escapes destination".into());
-                }
+                };
+                depth = up;
             }
             Component::Normal(_) => depth += 1,
             Component::CurDir => {}
-            _ => return Err("symlink target has non-normal component".into()),
+            Component::Prefix(_) | Component::RootDir => {
+                return Err("symlink target has non-normal component".into())
+            }
         }
     }
     Ok(())
@@ -355,9 +437,8 @@ fn same_content_and_mode(
     tar_mode: u32,
 ) -> Result<bool, Error> {
     use std::os::unix::fs::PermissionsExt;
-    let md = match fs::metadata(host) {
-        Ok(md) => md,
-        Err(_) => return Ok(false),
+    let Ok(md) = fs::metadata(host) else {
+        return Ok(false);
     };
     if md.permissions().mode() & 0o7777 != tar_mode & 0o7777 {
         return Ok(false);
@@ -366,17 +447,26 @@ fn same_content_and_mode(
         return Ok(false);
     }
     let mut host_file = fs::File::open(host).map_err(|e| Error::Io("compare", e))?;
-    let mut a = [0u8; 8192];
-    let mut b = [0u8; 8192];
+    let mut archive_buf = [0u8; 8192];
+    let mut host_buf = [0u8; 8192];
     loop {
-        let n = entry.read(&mut a).map_err(|e| Error::Io("compare", e))?;
+        let n = entry
+            .read(&mut archive_buf)
+            .map_err(|e| Error::Io("compare", e))?;
         if n == 0 {
             return Ok(true);
         }
+        // `n <= buf.len()` by `Read`'s contract; if a subslice ever fails,
+        // "differs" is the conservative answer (a spurious Modified entry,
+        // never a dropped one).
+        let (Some(archive_chunk), Some(host_chunk)) = (archive_buf.get(..n), host_buf.get_mut(..n))
+        else {
+            return Ok(false);
+        };
         host_file
-            .read_exact(&mut b[..n])
+            .read_exact(host_chunk)
             .map_err(|e| Error::Io("compare", e))?;
-        if a[..n] != b[..n] {
+        if archive_chunk != host_chunk {
             return Ok(false);
         }
     }
@@ -422,5 +512,7 @@ mod tests {
         assert!(validate_symlink_target(Path::new("a/b"), Path::new("../../out")).is_err());
         assert!(validate_symlink_target(Path::new("a/b"), Path::new("/etc")).is_err());
         assert!(validate_symlink_target(Path::new("top"), Path::new("sub/ok")).is_ok());
+        // A top-level link has depth 0: any leading `..` escapes.
+        assert!(validate_symlink_target(Path::new("top"), Path::new("../out")).is_err());
     }
 }

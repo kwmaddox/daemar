@@ -9,6 +9,18 @@
 //! `docs/research/substrate-refutation.md` (egress asserted on raw IP, never
 //! DNS; the probe itself validated against an open-network control).
 
+// clippy's `allow-*-in-tests` config does not reach integration-test
+// targets (rust-clippy#13981), so the C4 test exemption is granted here
+// explicitly. `#![expect]` per C5: this self-reports if the battery ever
+// stops using these.
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "test code is exempt from C4; allow-*-in-tests cannot cover \
+              integration targets (rust-clippy#13981)"
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,7 +35,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn fixture_worktree(name: &str) -> PathBuf {
@@ -37,15 +49,15 @@ fn fixture_worktree(name: &str) -> PathBuf {
 }
 
 fn sh(worktree: &Path, script: &str) -> RunSpec {
-    RunSpec::new(
-        vec!["sh".into(), "-c".into(), script.into()],
-        worktree,
-    )
+    RunSpec::new(vec!["sh".into(), "-c".into(), script.into()], worktree)
 }
 
 /// B9: no daemar container may remain after any run.
 fn assert_no_leaked_containers() {
-    let out = Command::new("container").args(["ls", "-a"]).output().unwrap();
+    let out = Command::new("container")
+        .args(["ls", "-a"])
+        .output()
+        .unwrap();
     let listing = String::from_utf8_lossy(&out.stdout);
     assert!(
         !listing.contains("daemar-"),
@@ -57,7 +69,10 @@ fn assert_no_leaked_containers() {
 fn tree_snapshot(root: &Path) -> Vec<String> {
     use std::os::unix::fs::PermissionsExt;
     fn walk(root: &Path, dir: &Path, acc: &mut Vec<String>) {
-        let mut names: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
         names.sort();
         for path in names {
             let rel = path.strip_prefix(root).unwrap().to_path_buf();
@@ -80,7 +95,7 @@ fn tree_snapshot(root: &Path) -> Vec<String> {
 // ── B1 ───────────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b1_command_runs_in_a_vm_with_its_own_kernel() {
     let _guard = serial();
     let wt = fixture_worktree("b1");
@@ -89,7 +104,10 @@ fn b1_command_runs_in_a_vm_with_its_own_kernel() {
     let boot_id = |_: usize| {
         let outcome = daemar_sandbox::run(&sh(&wt, "cat /proc/sys/kernel/random/boot_id")).unwrap();
         assert_eq!(outcome.exit_code, 0);
-        String::from_utf8(outcome.stdout).unwrap().trim().to_string()
+        String::from_utf8(outcome.stdout)
+            .unwrap()
+            .trim()
+            .to_string()
     };
     let first = boot_id(0);
     let second = boot_id(1);
@@ -105,7 +123,10 @@ fn b1_command_runs_in_a_vm_with_its_own_kernel() {
 /// host VPN tunnels break internet forwarding (observed: issue #1307 class),
 /// so probe validation does not depend on external connectivity.
 fn nat_gateway_ip() -> String {
-    let out = Command::new("container").args(["network", "list"]).output().unwrap();
+    let out = Command::new("container")
+        .args(["network", "list"])
+        .output()
+        .unwrap();
     let listing = String::from_utf8_lossy(&out.stdout);
     let subnet = listing
         .lines()
@@ -125,7 +146,7 @@ fn tcp_probe(ip: &str, port: u16) -> String {
 }
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b2_probe_detects_open_egress_control() {
     let _guard = serial();
     // The #2062 lesson: a probe that fails for an unrelated reason makes an
@@ -149,7 +170,15 @@ fn b2_probe_detects_open_egress_control() {
 
     let gateway = nat_gateway_ip();
     let out = Command::new("container")
-        .args(["run", "--rm", "--progress", "none", daemar_sandbox::DEFAULT_IMAGE, "bash", "-c"])
+        .args([
+            "run",
+            "--rm",
+            "--progress",
+            "none",
+            daemar_sandbox::DEFAULT_IMAGE,
+            "bash",
+            "-c",
+        ])
         .arg(tcp_probe(&gateway, port))
         .output()
         .unwrap();
@@ -167,7 +196,7 @@ fn b2_probe_detects_open_egress_control() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b2_no_network_path_raw_ip_fails() {
     let _guard = serial();
     let wt = fixture_worktree("b2");
@@ -205,7 +234,7 @@ fn b2_no_network_path_raw_ip_fails() {
 // ── B3 / B4 / B7 ─────────────────────────────────────────────────────────
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b3_host_worktree_byte_identical_after_hostile_run() {
     let _guard = serial();
     let wt = fixture_worktree("b3");
@@ -224,7 +253,7 @@ fn b3_host_worktree_byte_identical_after_hostile_run() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b4_command_edits_worktree_in_place_in_its_own_view() {
     let _guard = serial();
     let wt = fixture_worktree("b4");
@@ -245,7 +274,7 @@ fn b4_command_edits_worktree_in_place_in_its_own_view() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b7_nothing_outside_worktree_mount_is_readable() {
     let _guard = serial();
     let wt = fixture_worktree("b7");
@@ -279,7 +308,7 @@ fn b7_nothing_outside_worktree_mount_is_readable() {
 // ── B5 / B6 ──────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b5_changeset_reports_exactly_the_changes() {
     let _guard = serial();
     let wt = fixture_worktree("b5");
@@ -320,10 +349,10 @@ fn b5_changeset_reports_exactly_the_changes() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b6_promotion_sanitizes_setuid_and_symlink_escapes() {
-    let _guard = serial();
     use std::os::unix::fs::PermissionsExt;
+    let _guard = serial();
     let wt = fixture_worktree("b6");
     let outcome = daemar_sandbox::run(&sh(
         &wt,
@@ -342,20 +371,23 @@ fn b6_promotion_sanitizes_setuid_and_symlink_escapes() {
 
     // setuid stripped (B6)
     assert!(report.stripped.iter().any(|p| p.ends_with("suid-bin")));
-    let mode = fs::metadata(dest.join("suid-bin")).unwrap().permissions().mode();
+    let mode = fs::metadata(dest.join("suid-bin"))
+        .unwrap()
+        .permissions()
+        .mode();
     assert_eq!(mode & 0o7000, 0, "setuid survived promotion (B6)");
 
     // escaping symlinks rejected, in-tree symlink allowed (B6)
     let rejected: Vec<_> = report.rejected.iter().map(|(p, _)| p.clone()).collect();
     assert!(rejected.iter().any(|p| p.ends_with("abs-link")));
     assert!(rejected.iter().any(|p| p.ends_with("rel-escape-link")));
-    assert!(!dest.join("abs-link").symlink_metadata().is_ok());
+    assert!(dest.join("abs-link").symlink_metadata().is_err());
     assert!(dest.join("ok-link").symlink_metadata().is_ok());
     assert_no_leaked_containers();
 }
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b6_promotion_roundtrip_into_worktree() {
     let _guard = serial();
     let wt = fixture_worktree("b6rt");
@@ -365,7 +397,11 @@ fn b6_promotion_roundtrip_into_worktree() {
     ))
     .unwrap();
     let report = outcome.changes.apply_to(&wt).unwrap();
-    assert!(report.rejected.is_empty(), "unexpected rejects: {:?}", report.rejected);
+    assert!(
+        report.rejected.is_empty(),
+        "unexpected rejects: {:?}",
+        report.rejected
+    );
     assert_eq!(fs::read_to_string(wt.join("new.txt")).unwrap(), "hi\n");
     assert!(!wt.join("doomed.txt").exists());
     assert_eq!(
@@ -378,7 +414,7 @@ fn b6_promotion_roundtrip_into_worktree() {
 // ── B8 / B9 ──────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b8_b9_timeout_kills_and_leaves_nothing_behind() {
     let _guard = serial();
     let wt = fixture_worktree("b8");
@@ -394,24 +430,19 @@ fn b8_b9_timeout_kills_and_leaves_nothing_behind() {
     assert_no_leaked_containers();
     // Session temp state is gone too (B9).
     let sessions = std::env::temp_dir().join("daemar-sandbox");
-    let leftovers = fs::read_dir(&sessions)
-        .map(|it| it.count())
-        .unwrap_or(0);
+    let leftovers = fs::read_dir(&sessions).map_or(0, Iterator::count);
     assert_eq!(leftovers, 0, "session dirs left behind (B9)");
 }
 
 // ── B10 ──────────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
 fn b10_stdout_stderr_exit_code_roundtrip() {
     let _guard = serial();
     let wt = fixture_worktree("b10");
-    let outcome = daemar_sandbox::run(&sh(
-        &wt,
-        "echo to-stdout; echo to-stderr >&2; exit 7",
-    ))
-    .unwrap();
+    let outcome =
+        daemar_sandbox::run(&sh(&wt, "echo to-stdout; echo to-stderr >&2; exit 7")).unwrap();
     assert_eq!(outcome.exit_code, 7, "exit code not faithful (B10)");
     assert_eq!(String::from_utf8_lossy(&outcome.stdout).trim(), "to-stdout");
     assert!(String::from_utf8_lossy(&outcome.stderr).contains("to-stderr"));

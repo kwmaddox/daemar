@@ -5,36 +5,63 @@
 
 use std::path::PathBuf;
 
+/// Everything that can go wrong in a sandboxed run, from spec validation
+/// through promotion. Variants are the failure contract: callers branch on
+/// structure, never on message text.
 #[derive(Debug)]
 pub enum Error {
-    BadWorktree(PathBuf),
-    EmptyCommand,
-    Session {
+    /// The requested worktree does not exist or is not a directory. The io
+    /// cause of the failed canonicalization, when there is one, says which
+    /// (not-found vs permission-denied); the `is_dir` rejection has none.
+    BadWorktree {
+        /// The worktree path as the caller supplied it (pre-canonicalization).
         path: PathBuf,
+        /// Why canonicalization failed; `None` when the path resolved but
+        /// was not a directory.
+        source: Option<std::io::Error>,
+    },
+    /// `RunSpec::command` was empty — there is nothing to run.
+    EmptyCommand,
+    /// Could not prepare the per-run session directory on the host.
+    Session {
+        /// The session path that could not be created or written.
+        path: PathBuf,
+        /// The underlying filesystem failure.
         source: std::io::Error,
     },
+    /// Could not spawn the `container` CLI at all.
     Spawn(std::io::Error),
+    /// The run exceeded its wall-clock limit and was killed (behavior B8).
     Timeout(std::time::Duration),
-    Driver { stage: &'static str, code: Option<i32> },
+    /// The in-guest driver failed before (or while exporting after) the
+    /// workload; the workload itself never reported an exit code.
+    Driver {
+        /// Which driver stage failed: "mkdir", "overlay mount", "cd",
+        /// "export", or "container" for container-level failures.
+        stage: &'static str,
+        /// The container process exit code, when it exited at all.
+        code: Option<i32>,
+    },
+    /// Could not read the run's results back from the session mounts.
     Results(std::io::Error),
+    /// The exported change archive was malformed or unreadable.
     Archive(String),
+    /// An io failure during a named host-side operation (e.g. "compare").
     Io(&'static str, std::io::Error),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::BadWorktree(path) => write!(
+            Error::BadWorktree { path, .. } => write!(
                 f,
                 "worktree {} does not exist or is not a directory",
                 path.display()
             ),
             Error::EmptyCommand => write!(f, "command must not be empty"),
-            Error::Session { path, .. } => write!(
-                f,
-                "failed to prepare session directory {}",
-                path.display()
-            ),
+            Error::Session { path, .. } => {
+                write!(f, "failed to prepare session directory {}", path.display())
+            }
             Error::Spawn(_) => write!(
                 f,
                 "failed to spawn `container` (is the container CLI installed and running?)"
@@ -59,8 +86,12 @@ impl std::error::Error for Error {
             Error::Session { source, .. }
             | Error::Spawn(source)
             | Error::Results(source)
-            | Error::Io(_, source) => Some(source),
-            Error::BadWorktree(_)
+            | Error::Io(_, source)
+            | Error::BadWorktree {
+                source: Some(source),
+                ..
+            } => Some(source),
+            Error::BadWorktree { source: None, .. }
             | Error::EmptyCommand
             | Error::Timeout(_)
             | Error::Driver { .. }
@@ -86,7 +117,10 @@ mod tests {
     fn display_text_is_locked() {
         let cases: Vec<(Error, &str)> = vec![
             (
-                Error::BadWorktree(PathBuf::from("/w")),
+                Error::BadWorktree {
+                    path: PathBuf::from("/w"),
+                    source: Some(io_err()),
+                },
                 "worktree /w does not exist or is not a directory",
             ),
             (Error::EmptyCommand, "command must not be empty"),
@@ -137,16 +171,26 @@ mod tests {
             Error::Spawn(io_err()),
             Error::Results(io_err()),
             Error::Io("compare", io_err()),
+            Error::BadWorktree {
+                path: PathBuf::from("/w"),
+                source: Some(io_err()),
+            },
         ];
         for err in &with_cause {
             assert!(err.source().is_some(), "missing source: {err}");
         }
 
         let without_cause = [
-            Error::BadWorktree(PathBuf::from("/w")),
+            Error::BadWorktree {
+                path: PathBuf::from("/w"),
+                source: None,
+            },
             Error::EmptyCommand,
             Error::Timeout(Duration::from_secs(1)),
-            Error::Driver { stage: "cd", code: None },
+            Error::Driver {
+                stage: "cd",
+                code: None,
+            },
             Error::Archive(String::new()),
         ];
         for err in &without_cause {

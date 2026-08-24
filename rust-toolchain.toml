@@ -1,0 +1,7 @@
+# Pinned toolchain: clippy's lint set changes with every Rust release, so
+# an unpinned toolchain means the gate drifts on rustup update. Bumps are
+# deliberate, tested events — same policy as the cargo-deny pin in
+# scripts/check.sh.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]

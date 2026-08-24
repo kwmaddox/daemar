@@ -39,26 +39,17 @@ pub fn driver_script() -> String {
         r#"#!/bin/sh
 set -u
 fail() {{ echo "daemar-driver: $1" >&2; exit "$2"; }}
-mkdir -p {ovl}/upper {ovl}/work {ovl}/merged || fail "mkdir" {e_mkdir}
+mkdir -p {GUEST_OVL}/upper {GUEST_OVL}/work {GUEST_OVL}/merged || fail "mkdir" {EXIT_MKDIR}
 mount -t overlay overlay \
-  -o lowerdir={lower},upperdir={ovl}/upper,workdir={ovl}/work \
-  {ovl}/merged || fail "overlay mount" {e_overlay}
-cd {ovl}/merged || fail "cd" {e_cd}
+  -o lowerdir={GUEST_LOWER},upperdir={GUEST_OVL}/upper,workdir={GUEST_OVL}/work \
+  {GUEST_OVL}/merged || fail "overlay mount" {EXIT_OVERLAY}
+cd {GUEST_OVL}/merged || fail "cd" {EXIT_CD}
 "$@"
 rc=$?
-echo "$rc" > {out}/{exit_code}
-tar -C {ovl}/upper -cf {out}/{tar} . || fail "export" {e_export}
+echo "$rc" > {GUEST_OUT}/{EXIT_CODE_FILE}
+tar -C {GUEST_OVL}/upper -cf {GUEST_OUT}/{CHANGES_TAR} . || fail "export" {EXIT_EXPORT}
 exit "$rc"
-"#,
-        ovl = GUEST_OVL,
-        lower = GUEST_LOWER,
-        out = GUEST_OUT,
-        tar = CHANGES_TAR,
-        exit_code = EXIT_CODE_FILE,
-        e_mkdir = EXIT_MKDIR,
-        e_overlay = EXIT_OVERLAY,
-        e_cd = EXIT_CD,
-        e_export = EXIT_EXPORT,
+"#
     )
 }
 

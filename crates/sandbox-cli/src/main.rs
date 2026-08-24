@@ -1,3 +1,7 @@
+//! `dsbx`: manual driver for `daemar-sandbox`. Run one command in the
+//! sandbox, print its output and change-set, optionally promote the
+//! changes (behaviors: `specs/sandbox.md`).
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -83,7 +87,7 @@ fn main() -> ExitCode {
                 Change::Deleted { path } => eprintln!("  deleted   {}", path.display()),
                 Change::DirAdded { path } => eprintln!("  dir       {}", path.display()),
                 Change::Symlink { path, target } => {
-                    eprintln!("  symlink   {} -> {}", path.display(), target.display())
+                    eprintln!("  symlink   {} -> {}", path.display(), target.display());
                 }
             }
         }
@@ -92,11 +96,7 @@ fn main() -> ExitCode {
         }
     }
 
-    let dest = if apply {
-        Some(worktree)
-    } else {
-        apply_to
-    };
+    let dest = if apply { Some(worktree) } else { apply_to };
     if let Some(dest) = dest {
         match outcome.changes.apply_to(&dest) {
             Ok(report) => {
@@ -121,7 +121,5 @@ fn main() -> ExitCode {
     }
 
     // Mirror the workload's exit code so dsbx composes in scripts (B10).
-    u8::try_from(outcome.exit_code)
-        .map(ExitCode::from)
-        .unwrap_or(ExitCode::FAILURE)
+    u8::try_from(outcome.exit_code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
