@@ -1,0 +1,148 @@
+id: no-box-dyn-error
+snapshots:
+  ? |
+    fn bare() -> Box<dyn Error> { todo!() }
+  : labels:
+    - source: dyn Error
+      style: primary
+      start: 17
+      end: 26
+    - source: Box
+      style: secondary
+      start: 13
+      end: 16
+    - source: Box<dyn Error>
+      style: secondary
+      start: 13
+      end: 27
+    - source: <dyn Error>
+      style: secondary
+      start: 16
+      end: 27
+    - source: Error
+      style: secondary
+      start: 21
+      end: 26
+  ? |
+    fn raw_spelled() -> Box<dyn r#Error> { todo!() }
+  : labels:
+    - source: dyn r#Error
+      style: primary
+      start: 24
+      end: 35
+    - source: Box
+      style: secondary
+      start: 20
+      end: 23
+    - source: Box<dyn r#Error>
+      style: secondary
+      start: 20
+      end: 36
+    - source: <dyn r#Error>
+      style: secondary
+      start: 23
+      end: 36
+    - source: r#Error
+      style: secondary
+      start: 28
+      end: 35
+  ? |
+    fn scoped_box() -> std::boxed::Box<dyn error::Error> { todo!() }
+  : labels:
+    - source: dyn error::Error
+      style: primary
+      start: 35
+      end: 51
+    - source: std::boxed::Box
+      style: secondary
+      start: 19
+      end: 34
+    - source: std::boxed::Box<dyn error::Error>
+      style: secondary
+      start: 19
+      end: 52
+    - source: <dyn error::Error>
+      style: secondary
+      start: 34
+      end: 52
+    - source: Error
+      style: secondary
+      start: 46
+      end: 51
+    - source: error::Error
+      style: secondary
+      start: 39
+      end: 51
+  ? |
+    fn scoped_with_bounds() -> Box<dyn std::error::Error + Send + Sync + 'static> { todo!() }
+  : labels:
+    - source: dyn std::error::Error
+      style: primary
+      start: 31
+      end: 52
+    - source: Box
+      style: secondary
+      start: 27
+      end: 30
+    - source: Box<dyn std::error::Error + Send + Sync + 'static>
+      style: secondary
+      start: 27
+      end: 77
+    - source: <dyn std::error::Error + Send + Sync + 'static>
+      style: secondary
+      start: 30
+      end: 77
+    - source: Error
+      style: secondary
+      start: 47
+      end: 52
+    - source: std::error::Error
+      style: secondary
+      start: 35
+      end: 52
+  ? |
+    struct Holder { failure: Box<dyn Error> }
+  : labels:
+    - source: dyn Error
+      style: primary
+      start: 29
+      end: 38
+    - source: Box
+      style: secondary
+      start: 25
+      end: 28
+    - source: Box<dyn Error>
+      style: secondary
+      start: 25
+      end: 39
+    - source: <dyn Error>
+      style: secondary
+      start: 28
+      end: 39
+    - source: Error
+      style: secondary
+      start: 33
+      end: 38
+  ? |
+    type BoxErr = Box<dyn Error>;
+  : labels:
+    - source: dyn Error
+      style: primary
+      start: 18
+      end: 27
+    - source: Box
+      style: secondary
+      start: 14
+      end: 17
+    - source: Box<dyn Error>
+      style: secondary
+      start: 14
+      end: 28
+    - source: <dyn Error>
+      style: secondary
+      start: 17
+      end: 28
+    - source: Error
+      style: secondary
+      start: 22
+      end: 27

@@ -1,0 +1,55 @@
+id: no-string-literal-dispatch
+valid:
+  - |
+    fn enum_dispatch(change: &Change) {
+        match change {
+            Change::Deleted { .. } => {}
+            _ => {}
+        }
+    }
+  - |
+    fn single_sentinel_is_not_dispatch(s: &str) -> bool {
+        s == "sentinel"
+    }
+  - |
+    fn literal_in_arm_body_not_pattern(n: u32) -> &'static str {
+        match n { 1 => "one", _ => "other" }
+    }
+  - |
+    fn mixed_operands_are_not_a_chain(s: &str, n: u32) -> bool {
+        s == "a" || n == 1
+    }
+  - |
+    fn different_expressions_are_not_a_chain(a: &str, b: &str) -> bool {
+        a == "x" || b == "y"
+    }
+  - |
+    fn test_assertions_are_not_dispatch(s: &str) {
+        assert_eq!(s, "expected");
+    }
+  # The reasoned-ignore escape hatch cannot be pinned here: this harness
+  # tests the bare rule and does not apply suppression comments. That a
+  # reasoned `// ast-grep-ignore: no-string-literal-dispatch -- <why>`
+  # silences the finding in `ast-grep scan` is proven in the PER-68
+  # inject-violate-revert demo.
+invalid:
+  - |
+    fn match_on_string(s: &str) {
+        match s { "add" => {}, "del" => {}, _ => {} }
+    }
+  - |
+    fn or_pattern_with_raw_string(s: &str) {
+        match s { r"raw" | "cooked" => {}, _ => {} }
+    }
+  - |
+    fn eq_chain(kind: &str) -> bool {
+        kind == "deleted" || kind == "added"
+    }
+  - |
+    fn ne_chain(kind: &str) -> bool {
+        kind != "x" && kind != "y"
+    }
+  - |
+    fn longer_chain(kind: &str) -> bool {
+        kind == "a" || kind == "b" || kind == "c"
+    }

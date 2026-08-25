@@ -1,0 +1,51 @@
+# C6: domain states are enums — string-literal dispatch is the smell this
+# rule gates. Two triggers, both near-FP-free by construction:
+#
+#   1. A string (or raw-string) literal used as a match-arm pattern, at any
+#      depth inside the pattern (or-patterns, struct patterns). Matching on
+#      a string is dispatch over a closed set that never became an enum.
+#   2. Two-plus ==/!= comparisons of the same expression against string
+#      literals ($X == "a" || $X == "b") — the closed-set dispatch shape in
+#      C6's own wrong-example. Metavariable $X repeats, so comparisons of
+#      *different* expressions never match; longer chains match via their
+#      innermost pair.
+#
+# A single `x == "sentinel"` comparison is deliberately NOT matched — one
+# comparison is not dispatch, and gating it would ban legitimate sentinel
+# checks (review territory, like the rest of C6's semantic remainder).
+#
+# The legitimate hit this heuristic anticipates is a parse boundary that
+# converts input to the enum exactly once (C6 allows it). That site takes a
+# reasoned suppression on the line above the match:
+#   // ast-grep-ignore: no-string-literal-dispatch -- parse boundary, converts once
+id: no-string-literal-dispatch
+language: rust
+severity: error
+message: "C6: string-literal dispatch — a closed set of meanings is an enum; parse boundaries converting exactly once take a reasoned ast-grep-ignore"
+files:
+  - "crates/**/*.rs"
+rule:
+  any:
+    - kind: string_literal
+      inside:
+        stopBy: end
+        kind: match_pattern
+    - kind: raw_string_literal
+      inside:
+        stopBy: end
+        kind: match_pattern
+    - pattern:
+        context: "fn f() { $X == $A || $X == $B; }"
+        selector: binary_expression
+    - pattern:
+        context: "fn f() { $X != $A && $X != $B; }"
+        selector: binary_expression
+constraints:
+  A:
+    any:
+      - kind: string_literal
+      - kind: raw_string_literal
+  B:
+    any:
+      - kind: string_literal
+      - kind: raw_string_literal

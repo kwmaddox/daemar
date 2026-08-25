@@ -1,0 +1,60 @@
+id: ignore-discipline
+snapshots:
+  ? |
+    fn bare_blanket_waiver(s: &str) -> bool {
+        // ast-grep-ignore
+        s == "a" || s == "b"
+    }
+  : labels:
+    - source: // ast-grep-ignore
+      style: primary
+      start: 46
+      end: 64
+  ? |
+    fn block_comment_bare() {
+        /* ast-grep-ignore */
+        let _ = 1;
+    }
+  : labels:
+    - source: /* ast-grep-ignore */
+      style: primary
+      start: 30
+      end: 51
+  ? |
+    fn comma_list_is_not_one_rule(s: &str) -> bool {
+        // ast-grep-ignore: rule-a, rule-b -- one waiver per rule, please
+        s == "a" || s == "b"
+    }
+  : labels:
+    - source: '// ast-grep-ignore: rule-a, rule-b -- one waiver per rule, please'
+      style: primary
+      start: 53
+      end: 118
+  ? |
+    fn prose_mention() {
+        // consider adding an ast-grep-ignore here if the boundary is legit
+    }
+  : labels:
+    - source: // consider adding an ast-grep-ignore here if the boundary is legit
+      style: primary
+      start: 25
+      end: 92
+  ? |
+    fn rule_named_but_no_reason(s: &str) -> bool {
+        // ast-grep-ignore: no-string-literal-dispatch
+        s == "a" || s == "b"
+    }
+  : labels:
+    - source: '// ast-grep-ignore: no-string-literal-dispatch'
+      style: primary
+      start: 51
+      end: 97
+  ? |
+    fn trailing_bare_self_suppresses() {
+        let x = compute(); // ast-grep-ignore
+    }
+  : labels:
+    - source: // ast-grep-ignore
+      style: primary
+      start: 60
+      end: 78

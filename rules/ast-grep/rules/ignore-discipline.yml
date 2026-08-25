@@ -1,0 +1,29 @@
+# C5's principle applied to this pack's own escape hatch: every
+# ast-grep-ignore comment must name exactly one rule and carry a reason —
+#   // ast-grep-ignore: <rule-id> -- <why>
+# The bare form (`// ast-grep-ignore`) silently waives EVERY rule on the
+# next line; the rule-only form waives without explaining. Both are banned,
+# in line and block comments. Comment kinds keep string literals that
+# merely mention the token out of scope.
+#
+# Self-suppression hole and its closure: a *trailing* bare ignore
+# (`code(); // ast-grep-ignore`) suppresses every finding on its own line —
+# including this rule's — so `ast-grep scan` alone can never flag it. The
+# gate therefore runs this same rule a second time in scripts/check.sh over
+# a token-renamed copy (ast-grep-ignore → AST-GREP-IGNORE-TOKEN) piped via
+# --stdin: the renamed token no longer suppresses anything, so the trailing
+# form becomes visible. The regexes below accept both spellings so one rule
+# file serves both passes and the two channels cannot drift.
+id: ignore-discipline
+language: rust
+severity: error
+message: "C5 (principle): an ast-grep-ignore must name one rule and carry a reason — // ast-grep-ignore: <rule-id> -- <why>"
+files:
+  - "crates/**/*.rs"
+rule:
+  any:
+    - kind: line_comment
+    - kind: block_comment
+  regex: "(ast-grep-ignore|AST-GREP-IGNORE-TOKEN)"
+  not:
+    regex: "(ast-grep-ignore|AST-GREP-IGNORE-TOKEN): [a-z0-9][a-z0-9-]* -- \\S"

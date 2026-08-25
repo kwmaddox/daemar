@@ -32,7 +32,8 @@ Rules of the file:
 Every fallible `pub fn` in a library crate returns `Result<_, E>` where `E`
 is defined in this crate. No foreign error type, no `Box<dyn Error>`, no
 `String` error crosses a public boundary.
-*Enforcement: gate, partial (ast-grep `no-box-dyn-error`, pending PER-68);
+*Enforcement: gate, partial (ast-grep `no-box-dyn-error` — live via
+`scripts/check.sh`; alias uses are blind, see `rules/ast-grep/README.md`);
 review for foreign error types.*
 
 ```rust
@@ -138,7 +139,10 @@ fails when the lint stops firing, so stale suppressions self-report.
 A value drawn from a closed set of meanings is an enum. Matching on string
 literals is legitimate only at a parse boundary that converts input to the
 enum exactly once.
-*Enforcement: review; ast-grep heuristic (pending PER-68).*
+*Enforcement: gate, partial (ast-grep `no-string-literal-dispatch` — match
+arms over string literals and `==`/`!=`-literal chains, live via
+`scripts/check.sh`; parse boundaries take a reasoned ast-grep-ignore);
+review for the semantic remainder (single comparisons, stringly flow).*
 
 ```rust
 // wrong
@@ -160,7 +164,10 @@ has no fitting type. A bare numeric is acceptable when it is a dimensionless
 count whose meaning is unambiguous from its name and which carries no
 invariant (`cpus: u32`); a unit (`timeout_secs`) or an invariant (nonzero,
 bounded) requires a type that encodes it.
-*Enforcement: review; ast-grep name heuristic (pending PER-68).*
+*Enforcement: gate, partial (ast-grep `no-stringly-typed-field` — `String`
+fields named `*_id`/`kind`/`status`/`state`/`*_type`, live via
+`scripts/check.sh`); review for primitives beyond the name list and for
+`pub fn` parameters.*
 
 ```rust
 // wrong

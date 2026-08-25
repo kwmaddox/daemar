@@ -1,0 +1,43 @@
+# C1: errors are crate-native — no Box<dyn Error> anywhere, tests included
+# (C4's test exemptions already license unwrap/expect, so tests never need
+# the boxed-error `?` idiom; AC amended 2026-08-25 to drop the tests carve-out).
+#
+# Detection anchors on the dynamic_type node whose `trait` field is the
+# Error identifier (bare, scoped, or raw-spelled), sitting inside Box's
+# type_arguments. The trait-field anchor is what keeps near-misses clean:
+# `Box<dyn Fn() -> Result<(), Error>>` has a function_type in the trait
+# field, so a boxed closure returning an error never matches. `+ Send`-style
+# bounds nest one bounded_type layer per `+`; the stopBy climbs exactly
+# those layers and nothing else, so `Rc<dyn Error>` (even inside a
+# Box<Result<...>>) stays out of this rule's claim.
+#
+# Alias-blind by design: `type BoxErr = Box<dyn Error>` is caught at the
+# definition; uses of the alias are not (see README — Dylint/PER-69 is the
+# semantic escalation).
+id: no-box-dyn-error
+language: rust
+severity: error
+message: "C1: Box<dyn Error> erases the failure contract — return the crate-native error enum instead"
+files:
+  - "crates/**/*.rs"
+rule:
+  kind: dynamic_type
+  has:
+    field: trait
+    any:
+      - kind: type_identifier
+        regex: "^(r#)?Error$"
+      - kind: scoped_type_identifier
+        has:
+          field: name
+          regex: "^(r#)?Error$"
+  inside:
+    kind: type_arguments
+    stopBy:
+      not:
+        kind: bounded_type
+    inside:
+      kind: generic_type
+      has:
+        field: type
+        regex: "^((std|alloc)::boxed::)?Box$"

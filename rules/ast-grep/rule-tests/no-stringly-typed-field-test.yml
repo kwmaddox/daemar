@@ -1,0 +1,25 @@
+id: no-stringly-typed-field
+valid:
+  - |
+    struct FreeText { name: String, stderr: String }
+  - |
+    struct Typed { kind: Kind, run_id: RunId, state: State }
+  - |
+    struct NameNearMisses { grid: String, id_kind_note: String, statement: String }
+  - |
+    struct NotBareString { kind: Option<Kind>, tags: Vec<String> }
+  - |
+    fn parameters_are_not_fields(kind: String) {}
+invalid:
+  - |
+    struct Run { run_id: String }
+  - |
+    struct Change { kind: String }
+  - |
+    struct Session { status: String, state: String }
+  - |
+    struct Entry { entry_type: String }
+  - |
+    enum Event { Node { node_id: String } }
+  - |
+    struct Qualified { run_id: std::string::String }

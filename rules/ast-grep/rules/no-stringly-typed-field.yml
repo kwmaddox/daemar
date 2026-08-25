@@ -1,0 +1,26 @@
+# C7: domain values get newtypes — a String field whose *name* says it
+# identifies something (`*_id`) or draws from a closed set (`kind`,
+# `status`, `state`, `*_type`) is the stringly-typed smell. The name list
+# is exactly the PER-68 AC set; extending it is a one-line diff with a
+# fixture, and every extension buys FP surface (`name: String` is usually
+# legitimate free text), so additions are deliberate.
+#
+# field_declaration covers struct fields and enum struct-variant fields
+# alike. Only the bare `String` type (optionally std::string::-qualified)
+# matches: `kind: Kind` and `run_id: RunId` are the fix, not a hit, and
+# Option<String>/Vec<String> stay review territory.
+id: no-stringly-typed-field
+language: rust
+severity: error
+message: "C7: stringly-typed field — a name like *_id/kind/status/state/*_type marks an identifier or closed set; give it a newtype or enum, not String"
+files:
+  - "crates/**/*.rs"
+rule:
+  kind: field_declaration
+  all:
+    - has:
+        field: name
+        regex: "^(r#)?([a-zA-Z0-9_]*_id|kind|status|state|[a-zA-Z0-9_]*_type)$"
+    - has:
+        field: type
+        regex: "^(std::string::)?String$"

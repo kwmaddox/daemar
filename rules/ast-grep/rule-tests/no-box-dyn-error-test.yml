@@ -1,0 +1,32 @@
+id: no-box-dyn-error
+valid:
+  - |
+    fn crate_native() -> Result<RunOutcome, Error> { todo!() }
+  - |
+    fn boxed_non_error() -> Box<dyn Iterator<Item = u8>> { todo!() }
+  - |
+    fn boxed_closure_returning_error() -> Box<dyn Fn() -> Result<(), Error>> { todo!() }
+  - |
+    fn concrete_boxed_error() -> Box<MyError> { todo!() }
+  - |
+    fn borrowed_trait_object(e: &dyn Error) {}
+  # Rc<dyn Error> — including one nested inside a Box's generic args — is
+  # deliberately outside this rule's claim: the rule bans Box<dyn Error>,
+  # and other erased-error containers are review territory (C1's text).
+  - |
+    fn other_container() -> Rc<dyn Error> { todo!() }
+  - |
+    fn nested_other_container() -> Box<Result<(), Rc<dyn Error>>> { todo!() }
+invalid:
+  - |
+    fn bare() -> Box<dyn Error> { todo!() }
+  - |
+    fn scoped_with_bounds() -> Box<dyn std::error::Error + Send + Sync + 'static> { todo!() }
+  - |
+    type BoxErr = Box<dyn Error>;
+  - |
+    fn scoped_box() -> std::boxed::Box<dyn error::Error> { todo!() }
+  - |
+    fn raw_spelled() -> Box<dyn r#Error> { todo!() }
+  - |
+    struct Holder { failure: Box<dyn Error> }

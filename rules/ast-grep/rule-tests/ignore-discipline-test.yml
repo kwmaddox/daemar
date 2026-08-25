@@ -1,0 +1,49 @@
+id: ignore-discipline
+valid:
+  - |
+    fn disciplined(s: &str) -> Mode {
+        // ast-grep-ignore: no-string-literal-dispatch -- parse boundary, converts once
+        match s { "fast" => Mode::Fast, _ => Mode::Safe }
+    }
+  - |
+    fn comments_without_the_token_are_fine() {
+        // suppressions in this repo carry reasons; see the pack README
+    }
+invalid:
+  # The trailing bare form matches here because this harness applies the
+  # bare rule without suppression processing. In real `ast-grep scan` the
+  # match is swallowed: a trailing ignore suppresses every finding on its
+  # own line — including this rule's. The token-renamed --stdin pass in
+  # scripts/check.sh is what actually catches this form at the gate; the
+  # fixture pins that the rule itself recognizes it.
+  - |
+    fn trailing_bare_self_suppresses() {
+        let x = compute(); // ast-grep-ignore
+    }
+  - |
+    fn bare_blanket_waiver(s: &str) -> bool {
+        // ast-grep-ignore
+        s == "a" || s == "b"
+    }
+  - |
+    fn rule_named_but_no_reason(s: &str) -> bool {
+        // ast-grep-ignore: no-string-literal-dispatch
+        s == "a" || s == "b"
+    }
+  - |
+    fn block_comment_bare() {
+        /* ast-grep-ignore */
+        let _ = 1;
+    }
+  - |
+    fn comma_list_is_not_one_rule(s: &str) -> bool {
+        // ast-grep-ignore: rule-a, rule-b -- one waiver per rule, please
+        s == "a" || s == "b"
+    }
+  # Lexically strict on purpose: even a prose mention of the control token
+  # must use the disciplined spelling, because the guard pass cannot tell
+  # prose from control comments without expansion into ast-grep's engine.
+  - |
+    fn prose_mention() {
+        // consider adding an ast-grep-ignore here if the boundary is legit
+    }
