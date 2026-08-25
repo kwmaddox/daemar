@@ -119,8 +119,14 @@ failure flows through the error contract (C1).
 
 The only lint suppression is `#[expect(lint, reason = "...")]`. A bare
 `#[allow]` — including file-level — is a defect.
-*Enforcement: gate (clippy `allow_attributes_without_reason` — live,
-workspace lint table via `scripts/check.sh`).*
+*Enforcement: gate, for literal suppression syntax — clippy
+`allow_attributes` + `allow_attributes_without_reason` (canonical outer
+forms, reason-less `#[expect]`) and ast-grep `no-allow-attributes` (inner
+`#![allow]`, raw `r#allow` spellings, cfg_attr smuggling, literal
+transcriber emissions), both live via `scripts/check.sh`. Suppressions a
+macro synthesizes from non-literal tokens (caller-supplied or split-token
+meta) are beyond surface analysis — review, until the macro-suppression
+follow-up (PER-78) lands a sound channel.*
 
 Why: an unexplained suppression hides a decision; `#[expect]` additionally
 fails when the lint stops firing, so stale suppressions self-report.

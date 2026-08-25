@@ -9,19 +9,30 @@ set -eu
 # Pinned tool versions. Bumps are deliberate, tested events — same policy
 # as the container CLI pin (specs/sandbox.md operating rules).
 CARGO_DENY_VERSION="0.20.2"
+AST_GREP_VERSION="0.45.2"
 
-installed="$(cargo deny --version 2>/dev/null | awk '{print $2}')" || {
-    echo "check: cargo-deny is not installed" >&2
-    echo "check: install with: cargo install cargo-deny --locked --version $CARGO_DENY_VERSION" >&2
-    exit 1
+require_pinned() {
+    tool="$1"; want="$2"; got="$3"; crate="$4"
+    if [ -z "$got" ]; then
+        echo "check: $tool is not installed" >&2
+        echo "check: install with: cargo install $crate --locked --version $want" >&2
+        exit 1
+    fi
+    if [ "$got" != "$want" ]; then
+        echo "check: $tool $got differs from pinned $want" >&2
+        echo "check: install with: cargo install $crate --locked --version $want" >&2
+        exit 1
+    fi
 }
-if [ "$installed" != "$CARGO_DENY_VERSION" ]; then
-    echo "check: cargo-deny $installed differs from pinned $CARGO_DENY_VERSION" >&2
-    echo "check: install with: cargo install cargo-deny --locked --version $CARGO_DENY_VERSION" >&2
-    exit 1
-fi
+
+require_pinned cargo-deny "$CARGO_DENY_VERSION" \
+    "$(cargo deny --version 2>/dev/null | awk '{print $2}')" cargo-deny
+require_pinned ast-grep "$AST_GREP_VERSION" \
+    "$(ast-grep --version 2>/dev/null | awk '{print $2}')" ast-grep
 
 cargo fmt --all --check
+ast-grep test
+ast-grep scan
 cargo clippy --all-targets --all-features -- -D warnings
 cargo deny check
 cargo test --workspace

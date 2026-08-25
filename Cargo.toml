@@ -30,6 +30,10 @@ string_slice = "deny"
 wildcard_enum_match_arm = "deny"
 map_err_ignore = "deny"
 allow_attributes_without_reason = "deny"
+# C5 (PER-75): rejects outer #[allow] even with a reason — #[expect] only.
+# Inner #![allow] is outside clippy's reach; the ast-grep rule
+# no-allow-attributes (rules/ast-grep) closes that half of the gate.
+allow_attributes = "deny"
 disallowed_types = "deny"
 disallowed_methods = "deny"
 disallowed_macros = "deny"
