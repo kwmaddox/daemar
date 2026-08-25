@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::changeset::{ChangeSet, SessionGuard};
 use crate::driver;
-use crate::error::Error;
+use crate::error::{DriverStage, Error};
 use crate::{DEFAULT_IMAGE, TESTED_CONTAINER_VERSION};
 
 /// What to run and where. `command` is argv — it is passed to the in-guest
@@ -80,9 +80,10 @@ pub struct RunOutcome {
 /// [`Error::EmptyCommand`] / [`Error::BadWorktree`] for an invalid spec;
 /// [`Error::Session`] / [`Error::Spawn`] when the host side cannot be set
 /// up; [`Error::Timeout`] when the wall-clock limit expires (B8);
-/// [`Error::Driver`] when the in-guest driver fails before or after the
-/// workload; [`Error::Results`] / [`Error::Archive`] when the results
-/// cannot be read back.
+/// [`Error::Driver`] when the in-guest driver fails — before the workload
+/// for the setup stages, after it for [`DriverStage::Export`];
+/// [`Error::Results`] / [`Error::Archive`] / [`Error::ExitCode`] when the
+/// results cannot be read back.
 pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
     if spec.command.is_empty() {
         return Err(Error::EmptyCommand);
@@ -144,24 +145,23 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
     let exit_code_file = out_dir.join(driver::EXIT_CODE_FILE);
     let tar_path = out_dir.join(driver::CHANGES_TAR);
     let Ok(raw) = fs::read_to_string(&exit_code_file) else {
-        // The driver never reached the workload.
+        // No exit code recorded: a driver setup stage failed before the
+        // workload, or the container itself failed (timing unknown).
         reap(&name);
         return Err(driver_failure(status, &stderr));
     };
     let exit_code: i32 = match raw.trim().parse() {
         Ok(code) => code,
-        // The cause is quoted verbatim in the message; a ParseIntError
+        // The raw file content is the whole story; a ParseIntError
         // carries nothing beyond it.
-        Err(_) => {
-            return Err(Error::Archive(format!(
-                "unparseable workload exit code {raw:?}"
-            )))
-        }
+        Err(_) => return Err(Error::ExitCode { raw }),
     };
     if !tar_path.is_file() {
         reap(&name);
         return Err(Error::Driver {
-            stage: "export",
+            stage: DriverStage::Export {
+                workload_exit: exit_code,
+            },
             code: status.code(),
         });
     }
@@ -223,10 +223,10 @@ fn container_command(
 /// has the story.
 fn driver_failure(status: std::process::ExitStatus, stderr: &[u8]) -> Error {
     let stage = match status.code() {
-        Some(driver::EXIT_MKDIR) => "mkdir",
-        Some(driver::EXIT_OVERLAY) => "overlay mount",
-        Some(driver::EXIT_CD) => "cd",
-        _ => "container",
+        Some(driver::EXIT_MKDIR) => DriverStage::Mkdir,
+        Some(driver::EXIT_OVERLAY) => DriverStage::OverlayMount,
+        Some(driver::EXIT_CD) => DriverStage::Cd,
+        _ => DriverStage::Container,
     };
     let tail = String::from_utf8_lossy(stderr);
     let mut last_lines = tail.lines().rev().take(5).collect::<Vec<_>>();

@@ -5,6 +5,43 @@
 
 use std::path::PathBuf;
 
+/// Which stage of the in-guest driver failed. `Display` renders the short
+/// stage label ("mkdir", "overlay mount", "cd", "export", "container")
+/// used in diagnostics; failure *timing* is worded by [`Error::Driver`]'s
+/// `Display` arms, which distinguish pre-workload stages from the
+/// post-workload export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverStage {
+    /// `mkdir -p` of the overlay dirs failed (pre-workload).
+    Mkdir,
+    /// The overlay mount failed (pre-workload).
+    OverlayMount,
+    /// `cd` into the merged overlay failed (pre-workload).
+    Cd,
+    /// Export of the change tar failed — *after* the workload ran; its
+    /// exit code was already recorded and is carried here.
+    Export {
+        /// The workload's own exit code, read back before the missing
+        /// tar was discovered.
+        workload_exit: i32,
+    },
+    /// Container-level failure (bad image, runtime error); whether the
+    /// workload ran is unknown.
+    Container,
+}
+
+impl std::fmt::Display for DriverStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            DriverStage::Mkdir => "mkdir",
+            DriverStage::OverlayMount => "overlay mount",
+            DriverStage::Cd => "cd",
+            DriverStage::Export { .. } => "export",
+            DriverStage::Container => "container",
+        })
+    }
+}
+
 /// Everything that can go wrong in a sandboxed run, from spec validation
 /// through promotion. Variants are the failure contract: callers branch on
 /// structure, never on message text.
@@ -33,19 +70,25 @@ pub enum Error {
     Spawn(std::io::Error),
     /// The run exceeded its wall-clock limit and was killed (behavior B8).
     Timeout(std::time::Duration),
-    /// The in-guest driver failed before (or while exporting after) the
-    /// workload; the workload itself never reported an exit code.
+    /// The in-guest driver failed; `stage` says where. The pre-workload
+    /// stages mean the workload never ran; [`DriverStage::Export`] means
+    /// it ran and its exit code is carried in the stage.
     Driver {
-        /// Which driver stage failed: "mkdir", "overlay mount", "cd",
-        /// "export", or "container" for container-level failures.
-        stage: &'static str,
+        /// Which driver stage failed.
+        stage: DriverStage,
         /// The container process exit code, when it exited at all.
         code: Option<i32>,
     },
     /// Could not read the run's results back from the session mounts.
     Results(std::io::Error),
-    /// The exported change archive was malformed or unreadable.
-    Archive(String),
+    /// The exported change archive was malformed; the tar error is the
+    /// source.
+    Archive(std::io::Error),
+    /// The driver's exit-code file held something other than an integer.
+    ExitCode {
+        /// Raw file content (parser input; no structured form exists).
+        raw: String,
+    },
     /// An io failure during a named host-side operation (e.g. "compare").
     Io(&'static str, std::io::Error),
 }
@@ -69,12 +112,28 @@ impl std::fmt::Display for Error {
             Error::Timeout(limit) => {
                 write!(f, "run exceeded timeout of {limit:?} and was killed")
             }
+            Error::Driver {
+                stage: DriverStage::Export { workload_exit },
+                code,
+            } => write!(
+                f,
+                "driver failed to export changes after the command ran (workload exit \
+                 code {workload_exit}); container exit code {code:?}"
+            ),
+            Error::Driver {
+                stage: DriverStage::Container,
+                code,
+            } => write!(
+                f,
+                "container failed (bad image or runtime error); container exit code {code:?}"
+            ),
             Error::Driver { stage, code } => write!(
                 f,
                 "driver failed before the command ran ({stage}); container exit code {code:?}"
             ),
             Error::Results(_) => write!(f, "failed to read run results from session"),
-            Error::Archive(what) => write!(f, "malformed change archive: {what}"),
+            Error::Archive(_) => write!(f, "malformed change archive"),
+            Error::ExitCode { raw } => write!(f, "unparseable workload exit code {raw:?}"),
             Error::Io(during, _) => write!(f, "io error during {during}"),
         }
     }
@@ -87,6 +146,7 @@ impl std::error::Error for Error {
             | Error::Spawn(source)
             | Error::Results(source)
             | Error::Io(_, source)
+            | Error::Archive(source)
             | Error::BadWorktree {
                 source: Some(source),
                 ..
@@ -95,7 +155,7 @@ impl std::error::Error for Error {
             | Error::EmptyCommand
             | Error::Timeout(_)
             | Error::Driver { .. }
-            | Error::Archive(_) => None,
+            | Error::ExitCode { .. } => None,
         }
     }
 }
@@ -139,20 +199,48 @@ mod tests {
                 Error::Timeout(Duration::from_secs(5)),
                 "run exceeded timeout of 5s and was killed",
             ),
+            // PER-76: each Driver timing class renders its own truthful
+            // wording — pre-run stages, post-run export (with the workload's
+            // recorded exit code), and timing-unknown container failures.
             (
                 Error::Driver {
-                    stage: "overlay mount",
+                    stage: DriverStage::Mkdir,
+                    code: Some(124),
+                },
+                "driver failed before the command ran (mkdir); container exit code Some(124)",
+            ),
+            (
+                Error::Driver {
+                    stage: DriverStage::OverlayMount,
                     code: Some(125),
                 },
                 "driver failed before the command ran (overlay mount); container exit code Some(125)",
             ),
             (
+                Error::Driver {
+                    stage: DriverStage::Export { workload_exit: 0 },
+                    code: Some(127),
+                },
+                "driver failed to export changes after the command ran (workload exit code 0); \
+                 container exit code Some(127)",
+            ),
+            (
+                Error::Driver {
+                    stage: DriverStage::Container,
+                    code: Some(1),
+                },
+                "container failed (bad image or runtime error); container exit code Some(1)",
+            ),
+            (
                 Error::Results(io_err()),
                 "failed to read run results from session",
             ),
+            (Error::Archive(io_err()), "malformed change archive"),
             (
-                Error::Archive("truncated header".into()),
-                "malformed change archive: truncated header",
+                Error::ExitCode {
+                    raw: "abc\n".into(),
+                },
+                "unparseable workload exit code \"abc\\n\"",
             ),
             (Error::Io("compare", io_err()), "io error during compare"),
         ];
@@ -171,6 +259,7 @@ mod tests {
             Error::Spawn(io_err()),
             Error::Results(io_err()),
             Error::Io("compare", io_err()),
+            Error::Archive(io_err()),
             Error::BadWorktree {
                 path: PathBuf::from("/w"),
                 source: Some(io_err()),
@@ -188,10 +277,14 @@ mod tests {
             Error::EmptyCommand,
             Error::Timeout(Duration::from_secs(1)),
             Error::Driver {
-                stage: "cd",
+                stage: DriverStage::Cd,
                 code: None,
             },
-            Error::Archive(String::new()),
+            Error::Driver {
+                stage: DriverStage::Export { workload_exit: 3 },
+                code: Some(127),
+            },
+            Error::ExitCode { raw: String::new() },
         ];
         for err in &without_cause {
             assert!(err.source().is_none(), "unexpected source: {err}");

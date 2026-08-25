@@ -110,7 +110,14 @@ fn main() -> ExitCode {
                     eprintln!("  stripped setuid/setgid: {}", path.display());
                 }
                 for (path, why) in &report.rejected {
-                    eprintln!("  rejected {}: {why}", path.display());
+                    // The reason's io cause lives in its source() (C2);
+                    // surface it inline so no detail is lost at the CLI.
+                    match std::error::Error::source(why) {
+                        Some(cause) => {
+                            eprintln!("  rejected {}: {why}: {cause}", path.display());
+                        }
+                        None => eprintln!("  rejected {}: {why}", path.display()),
+                    }
                 }
             }
             Err(e) => {

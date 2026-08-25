@@ -79,7 +79,7 @@ pub struct ChangeSet {
     /// Entries the archive contained but this slice does not support
     /// (block devices, fifos, hard links, non-whiteout char devices).
     /// Never applied; surfaced so nothing is silently dropped.
-    unsupported: Vec<(PathBuf, String)>,
+    unsupported: Vec<(PathBuf, UnsupportedKind)>,
     tar_path: PathBuf,
     _session: SessionGuard,
 }
@@ -94,6 +94,113 @@ impl Drop for SessionGuard {
     }
 }
 
+/// Why an archive entry is outside this slice's support (C6). `Clone`
+/// because every [`ChangeSet::apply_to`] call copies these into its
+/// report's rejected list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnsupportedKind {
+    /// Non-whiteout character device.
+    CharDevice,
+    /// Symlink entry with no target recorded.
+    SymlinkWithoutTarget,
+    /// Any other entry type; carries the tar type's debug name (the
+    /// foreign `tar::EntryType` stays out of the pub API).
+    EntryType(String),
+}
+
+impl std::fmt::Display for UnsupportedKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnsupportedKind::CharDevice => f.write_str("char device"),
+            UnsupportedKind::SymlinkWithoutTarget => f.write_str("symlink without target"),
+            UnsupportedKind::EntryType(name) => write!(f, "unsupported entry type {name}"),
+        }
+    }
+}
+
+/// Why a promotion entry was refused (C6). `Display` describes the
+/// refusal; io causes live in `source()` (C2), so chain printers keep
+/// the detail.
+#[derive(Debug)]
+pub enum RejectReason {
+    /// The archive entry's type is outside this slice's support.
+    Unsupported(UnsupportedKind),
+    /// The entry path is absolute.
+    AbsolutePath,
+    /// The entry path contains `..`.
+    ParentEscape,
+    /// The entry path traverses a symlink component inside the
+    /// destination; carries the offending component's path.
+    SymlinkComponent(PathBuf),
+    /// The entry path has a non-normal component (prefix or root).
+    NonNormalComponent,
+    /// The symlink entry's target is absolute.
+    SymlinkTargetAbsolute,
+    /// The symlink entry's target lexically escapes the destination.
+    SymlinkTargetEscapes,
+    /// The symlink entry's target has a non-normal component.
+    SymlinkTargetNonNormal,
+    /// A deletion entry whose target does not exist in the destination.
+    DeletionTargetMissing,
+    /// Removing a deletion entry's target failed.
+    DeleteFailed(std::io::Error),
+    /// Creating a directory entry failed.
+    MkdirFailed(std::io::Error),
+    /// Creating a file entry's parent directory failed (distinct from
+    /// `MkdirFailed`: the entry itself was a file, not a directory).
+    MkdirParentFailed(std::io::Error),
+    /// Writing a symlink entry failed.
+    SymlinkFailed(std::io::Error),
+    /// Writing a file entry failed.
+    WriteFailed(std::io::Error),
+}
+
+impl std::fmt::Display for RejectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RejectReason::Unsupported(kind) => write!(f, "{kind}"),
+            RejectReason::AbsolutePath => f.write_str("absolute path"),
+            RejectReason::ParentEscape => f.write_str("path contains .."),
+            RejectReason::SymlinkComponent(at) => {
+                write!(f, "path traverses symlink component {}", at.display())
+            }
+            RejectReason::NonNormalComponent => f.write_str("non-normal path component"),
+            RejectReason::SymlinkTargetAbsolute => f.write_str("symlink target is absolute"),
+            RejectReason::SymlinkTargetEscapes => f.write_str("symlink target escapes destination"),
+            RejectReason::SymlinkTargetNonNormal => {
+                f.write_str("symlink target has non-normal component")
+            }
+            RejectReason::DeletionTargetMissing => f.write_str("deletion target not found"),
+            RejectReason::DeleteFailed(_) => f.write_str("delete failed"),
+            RejectReason::MkdirFailed(_) => f.write_str("mkdir failed"),
+            RejectReason::MkdirParentFailed(_) => f.write_str("mkdir parent failed"),
+            RejectReason::SymlinkFailed(_) => f.write_str("symlink failed"),
+            RejectReason::WriteFailed(_) => f.write_str("write failed"),
+        }
+    }
+}
+
+impl std::error::Error for RejectReason {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RejectReason::DeleteFailed(source)
+            | RejectReason::MkdirFailed(source)
+            | RejectReason::MkdirParentFailed(source)
+            | RejectReason::SymlinkFailed(source)
+            | RejectReason::WriteFailed(source) => Some(source),
+            RejectReason::Unsupported(_)
+            | RejectReason::AbsolutePath
+            | RejectReason::ParentEscape
+            | RejectReason::SymlinkComponent(_)
+            | RejectReason::NonNormalComponent
+            | RejectReason::SymlinkTargetAbsolute
+            | RejectReason::SymlinkTargetEscapes
+            | RejectReason::SymlinkTargetNonNormal
+            | RejectReason::DeletionTargetMissing => None,
+        }
+    }
+}
+
 /// Outcome of [`ChangeSet::apply_to`]. Nothing is silently dropped: every
 /// entry lands in exactly one of these lists.
 #[derive(Debug, Default)]
@@ -102,9 +209,8 @@ pub struct ApplyReport {
     pub applied: Vec<PathBuf>,
     /// Deletion entries whose target existed and was removed.
     pub deleted: Vec<PathBuf>,
-    /// Entries refused, with the reason (path escape, symlink escape,
-    /// unsupported type, missing deletion target).
-    pub rejected: Vec<(PathBuf, String)>,
+    /// Entries refused, with the reason.
+    pub rejected: Vec<(PathBuf, RejectReason)>,
     /// Files whose setuid/setgid bits were stripped during promotion.
     pub stripped: Vec<PathBuf>,
 }
@@ -124,13 +230,9 @@ impl ChangeSet {
         let mut entries = Vec::new();
         let mut unsupported = Vec::new();
 
-        for entry in archive
-            .entries()
-            .map_err(|e| Error::Archive(e.to_string()))?
-        {
-            let mut entry = entry.map_err(|e| Error::Archive(e.to_string()))?;
-            let rel =
-                normalize_entry_path(&entry.path().map_err(|e| Error::Archive(e.to_string()))?);
+        for entry in archive.entries().map_err(Error::Archive)? {
+            let mut entry = entry.map_err(Error::Archive)?;
+            let rel = normalize_entry_path(&entry.path().map_err(Error::Archive)?);
             let Some(rel) = rel else { continue }; // "." / empty
 
             let header = entry.header();
@@ -149,7 +251,7 @@ impl ChangeSet {
                     if major == 0 && minor == 0 {
                         entries.push(Change::Deleted { path: rel });
                     } else {
-                        unsupported.push((rel, "char device".into()));
+                        unsupported.push((rel, UnsupportedKind::CharDevice));
                     }
                 }
                 tar::EntryType::Directory => {
@@ -170,20 +272,15 @@ impl ChangeSet {
                         entries.push(Change::Added { path: rel, mode });
                     }
                 }
-                tar::EntryType::Symlink => {
-                    match entry
-                        .link_name()
-                        .map_err(|e| Error::Archive(e.to_string()))?
-                    {
-                        Some(target) => entries.push(Change::Symlink {
-                            path: rel,
-                            target: target.into_owned(),
-                        }),
-                        None => unsupported.push((rel, "symlink without target".into())),
-                    }
-                }
+                tar::EntryType::Symlink => match entry.link_name().map_err(Error::Archive)? {
+                    Some(target) => entries.push(Change::Symlink {
+                        path: rel,
+                        target: target.into_owned(),
+                    }),
+                    None => unsupported.push((rel, UnsupportedKind::SymlinkWithoutTarget)),
+                },
                 other => {
-                    unsupported.push((rel, format!("unsupported entry type {other:?}")));
+                    unsupported.push((rel, UnsupportedKind::EntryType(format!("{other:?}"))));
                 }
             }
         }
@@ -205,7 +302,7 @@ impl ChangeSet {
     /// Archive entries this slice does not support, with the reason.
     /// Never applied; surfaced so nothing is silently dropped.
     #[must_use]
-    pub fn unsupported(&self) -> &[(PathBuf, String)] {
+    pub fn unsupported(&self) -> &[(PathBuf, UnsupportedKind)] {
         &self.unsupported
     }
 
@@ -227,8 +324,10 @@ impl ChangeSet {
     /// never errors — they land in [`ApplyReport::rejected`].
     pub fn apply_to(&self, dest: &Path) -> Result<ApplyReport, Error> {
         let mut report = ApplyReport::default();
-        for (path, why) in &self.unsupported {
-            report.rejected.push((path.clone(), why.clone()));
+        for (path, kind) in &self.unsupported {
+            report
+                .rejected
+                .push((path.clone(), RejectReason::Unsupported(kind.clone())));
         }
 
         // Deletions and directory creations don't need archive content.
@@ -253,17 +352,17 @@ impl ChangeSet {
                         Ok(true) => report.deleted.push(path.clone()),
                         Ok(false) => report
                             .rejected
-                            .push((path.clone(), "deletion target not found".into())),
+                            .push((path.clone(), RejectReason::DeletionTargetMissing)),
                         Err(e) => report
                             .rejected
-                            .push((path.clone(), format!("delete failed: {e}"))),
+                            .push((path.clone(), RejectReason::DeleteFailed(e))),
                     }
                 }
                 Change::DirAdded { path } => match fs::create_dir_all(dest.join(path)) {
                     Ok(()) => report.applied.push(path.clone()),
                     Err(e) => report
                         .rejected
-                        .push((path.clone(), format!("mkdir failed: {e}"))),
+                        .push((path.clone(), RejectReason::MkdirFailed(e))),
                 },
                 Change::Symlink { path, target } => {
                     if let Err(why) = validate_symlink_target(path, target) {
@@ -281,14 +380,9 @@ impl ChangeSet {
         // Stream file/symlink content out of the archive.
         let file = fs::File::open(&self.tar_path).map_err(Error::Results)?;
         let mut archive = tar::Archive::new(file);
-        for entry in archive
-            .entries()
-            .map_err(|e| Error::Archive(e.to_string()))?
-        {
-            let mut entry = entry.map_err(|e| Error::Archive(e.to_string()))?;
-            let Some(rel) =
-                normalize_entry_path(&entry.path().map_err(|e| Error::Archive(e.to_string()))?)
-            else {
+        for entry in archive.entries().map_err(Error::Archive)? {
+            let mut entry = entry.map_err(Error::Archive)?;
+            let Some(rel) = normalize_entry_path(&entry.path().map_err(Error::Archive)?) else {
                 continue;
             };
             let Some(change) = want.get(&rel) else {
@@ -299,7 +393,7 @@ impl ChangeSet {
                 if let Err(e) = fs::create_dir_all(parent) {
                     report
                         .rejected
-                        .push((rel.clone(), format!("mkdir parent failed: {e}")));
+                        .push((rel.clone(), RejectReason::MkdirParentFailed(e)));
                     continue;
                 }
             }
@@ -310,7 +404,7 @@ impl ChangeSet {
                         Ok(()) => report.applied.push(rel.clone()),
                         Err(e) => report
                             .rejected
-                            .push((rel.clone(), format!("symlink failed: {e}"))),
+                            .push((rel.clone(), RejectReason::SymlinkFailed(e))),
                     }
                 }
                 Change::Added { mode, .. } | Change::Modified { mode, .. } => {
@@ -325,7 +419,7 @@ impl ChangeSet {
                         }
                         Err(e) => report
                             .rejected
-                            .push((rel.clone(), format!("write failed: {e}"))),
+                            .push((rel.clone(), RejectReason::WriteFailed(e))),
                     }
                 }
                 Change::Deleted { .. } | Change::DirAdded { .. } => {}
@@ -369,9 +463,9 @@ fn normalize_entry_path(p: &Path) -> Option<PathBuf> {
 
 /// Component-wise validation of a promotion path (B6): relative, no `..`,
 /// no writing through an existing symlink component inside `dest`.
-fn validate_dest_path(dest: &Path, rel: &Path) -> Result<(), String> {
+fn validate_dest_path(dest: &Path, rel: &Path) -> Result<(), RejectReason> {
     if rel.is_absolute() {
-        return Err("absolute path".into());
+        return Err(RejectReason::AbsolutePath);
     }
     let mut probe = dest.to_path_buf();
     let components: Vec<_> = rel.components().collect();
@@ -385,18 +479,15 @@ fn validate_dest_path(dest: &Path, rel: &Path) -> Result<(), String> {
                 if !is_last {
                     if let Ok(md) = fs::symlink_metadata(&probe) {
                         if md.file_type().is_symlink() {
-                            return Err(format!(
-                                "path traverses symlink component {}",
-                                probe.display()
-                            ));
+                            return Err(RejectReason::SymlinkComponent(probe));
                         }
                     }
                 }
             }
-            Component::ParentDir => return Err("path contains ..".into()),
+            Component::ParentDir => return Err(RejectReason::ParentEscape),
             Component::CurDir => {}
             Component::Prefix(_) | Component::RootDir => {
-                return Err("non-normal path component".into())
+                return Err(RejectReason::NonNormalComponent)
             }
         }
     }
@@ -405,9 +496,9 @@ fn validate_dest_path(dest: &Path, rel: &Path) -> Result<(), String> {
 
 /// A promoted symlink entry may not point outside the destination tree:
 /// absolute targets and lexical escapes are rejected (B6).
-fn validate_symlink_target(rel: &Path, target: &Path) -> Result<(), String> {
+fn validate_symlink_target(rel: &Path, target: &Path) -> Result<(), RejectReason> {
     if target.is_absolute() {
-        return Err("symlink target is absolute".into());
+        return Err(RejectReason::SymlinkTargetAbsolute);
     }
     // Resolve lexically from the symlink's parent directory: `depth` is how
     // many directories deep that parent sits inside the destination. `rel`
@@ -417,14 +508,14 @@ fn validate_symlink_target(rel: &Path, target: &Path) -> Result<(), String> {
         match comp {
             Component::ParentDir => {
                 let Some(up) = depth.checked_sub(1) else {
-                    return Err("symlink target escapes destination".into());
+                    return Err(RejectReason::SymlinkTargetEscapes);
                 };
                 depth = up;
             }
             Component::Normal(_) => depth += 1,
             Component::CurDir => {}
             Component::Prefix(_) | Component::RootDir => {
-                return Err("symlink target has non-normal component".into())
+                return Err(RejectReason::SymlinkTargetNonNormal)
             }
         }
     }
@@ -490,9 +581,18 @@ mod tests {
     fn dest_path_validation_rejects_escapes() {
         let dest = std::env::temp_dir();
         assert!(validate_dest_path(&dest, Path::new("ok/file.txt")).is_ok());
-        assert!(validate_dest_path(&dest, Path::new("../evil")).is_err());
-        assert!(validate_dest_path(&dest, Path::new("a/../../evil")).is_err());
-        assert!(validate_dest_path(&dest, Path::new("/abs")).is_err());
+        assert!(matches!(
+            validate_dest_path(&dest, Path::new("../evil")),
+            Err(RejectReason::ParentEscape)
+        ));
+        assert!(matches!(
+            validate_dest_path(&dest, Path::new("a/../../evil")),
+            Err(RejectReason::ParentEscape)
+        ));
+        assert!(matches!(
+            validate_dest_path(&dest, Path::new("/abs")),
+            Err(RejectReason::AbsolutePath)
+        ));
     }
 
     #[test]
@@ -501,7 +601,7 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
         std::os::unix::fs::symlink("/", base.join("link")).unwrap();
         let err = validate_dest_path(&base, Path::new("link/etc/passwd")).unwrap_err();
-        assert!(err.contains("symlink"));
+        assert!(matches!(err, RejectReason::SymlinkComponent(_)));
         fs::remove_dir_all(&base).unwrap();
     }
 
@@ -509,10 +609,82 @@ mod tests {
     fn symlink_target_validation() {
         // link at a/b -> ../ok stays inside; -> ../../out escapes.
         assert!(validate_symlink_target(Path::new("a/b"), Path::new("../ok")).is_ok());
-        assert!(validate_symlink_target(Path::new("a/b"), Path::new("../../out")).is_err());
-        assert!(validate_symlink_target(Path::new("a/b"), Path::new("/etc")).is_err());
+        assert!(matches!(
+            validate_symlink_target(Path::new("a/b"), Path::new("../../out")),
+            Err(RejectReason::SymlinkTargetEscapes)
+        ));
+        assert!(matches!(
+            validate_symlink_target(Path::new("a/b"), Path::new("/etc")),
+            Err(RejectReason::SymlinkTargetAbsolute)
+        ));
         assert!(validate_symlink_target(Path::new("top"), Path::new("sub/ok")).is_ok());
         // A top-level link has depth 0: any leading `..` escapes.
-        assert!(validate_symlink_target(Path::new("top"), Path::new("../out")).is_err());
+        assert!(matches!(
+            validate_symlink_target(Path::new("top"), Path::new("../out")),
+            Err(RejectReason::SymlinkTargetEscapes)
+        ));
+    }
+
+    /// Locks `RejectReason`'s `Display` contract: the message describes the
+    /// refusal; io causes live in `source()`, never in the text (C2).
+    #[test]
+    fn reject_reason_display_and_sources() {
+        let io = || std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let with_source = [
+            (RejectReason::DeleteFailed(io()), "delete failed"),
+            (RejectReason::MkdirFailed(io()), "mkdir failed"),
+            (RejectReason::MkdirParentFailed(io()), "mkdir parent failed"),
+            (RejectReason::SymlinkFailed(io()), "symlink failed"),
+            (RejectReason::WriteFailed(io()), "write failed"),
+        ];
+        for (reason, want) in &with_source {
+            assert_eq!(reason.to_string(), *want);
+            assert!(std::error::Error::source(reason).is_some(), "{want}");
+        }
+
+        let without_source = [
+            (
+                RejectReason::Unsupported(UnsupportedKind::CharDevice),
+                "char device",
+            ),
+            (
+                RejectReason::Unsupported(UnsupportedKind::SymlinkWithoutTarget),
+                "symlink without target",
+            ),
+            (
+                RejectReason::Unsupported(UnsupportedKind::EntryType("Fifo".into())),
+                "unsupported entry type Fifo",
+            ),
+            (RejectReason::AbsolutePath, "absolute path"),
+            (RejectReason::ParentEscape, "path contains .."),
+            (
+                RejectReason::SymlinkComponent(PathBuf::from("/d/link")),
+                "path traverses symlink component /d/link",
+            ),
+            (
+                RejectReason::NonNormalComponent,
+                "non-normal path component",
+            ),
+            (
+                RejectReason::SymlinkTargetAbsolute,
+                "symlink target is absolute",
+            ),
+            (
+                RejectReason::SymlinkTargetEscapes,
+                "symlink target escapes destination",
+            ),
+            (
+                RejectReason::SymlinkTargetNonNormal,
+                "symlink target has non-normal component",
+            ),
+            (
+                RejectReason::DeletionTargetMissing,
+                "deletion target not found",
+            ),
+        ];
+        for (reason, want) in &without_source {
+            assert_eq!(reason.to_string(), *want);
+            assert!(std::error::Error::source(reason).is_none(), "{want}");
+        }
     }
 }

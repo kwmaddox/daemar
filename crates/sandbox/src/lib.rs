@@ -22,8 +22,8 @@ mod driver;
 mod error;
 mod runner;
 
-pub use changeset::{ApplyReport, Change, ChangeSet};
-pub use error::Error;
+pub use changeset::{ApplyReport, Change, ChangeSet, RejectReason, UnsupportedKind};
+pub use error::{DriverStage, Error};
 pub use runner::{run, RunOutcome, RunSpec};
 
 /// The `container` CLI version this crate was built and battery-tested
