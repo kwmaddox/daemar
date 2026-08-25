@@ -28,6 +28,41 @@ snapshots:
       start: 44
       end: 61
   ? |
+    fn auto_trait_first() -> Box<dyn Send + std::error::Error + Sync> { todo!() }
+  : labels:
+    - source: std::error::Error
+      style: primary
+      start: 40
+      end: 57
+    - source: Error
+      style: secondary
+      start: 52
+      end: 57
+    - source: dyn Send + std::error::Error
+      style: secondary
+      start: 29
+      end: 57
+    - source: Box
+      style: secondary
+      start: 25
+      end: 28
+    - source: Box<dyn Send + std::error::Error + Sync>
+      style: secondary
+      start: 25
+      end: 65
+    - source: <dyn Send + std::error::Error + Sync>
+      style: secondary
+      start: 28
+      end: 65
+    - source: dyn Send
+      style: secondary
+      start: 29
+      end: 37
+    - source: dyn Send + std::error::Error
+      style: secondary
+      start: 29
+      end: 57
+  ? |
     fn bare() -> Box<dyn Error> { todo!() }
   : labels:
     - source: dyn Error
@@ -51,6 +86,95 @@ snapshots:
       start: 21
       end: 26
   ? |
+    fn lifetime_first() -> Box<dyn 'static + std::error::Error + Send + Sync> { todo!() }
+  : labels:
+    - source: std::error::Error
+      style: primary
+      start: 41
+      end: 58
+    - source: Error
+      style: secondary
+      start: 53
+      end: 58
+    - source: '''static + std::error::Error'
+      style: secondary
+      start: 31
+      end: 58
+    - source: Box
+      style: secondary
+      start: 23
+      end: 26
+    - source: Box<dyn 'static + std::error::Error + Send + Sync>
+      style: secondary
+      start: 23
+      end: 73
+    - source: <dyn 'static + std::error::Error + Send + Sync>
+      style: secondary
+      start: 26
+      end: 73
+    - source: dyn
+      style: secondary
+      start: 27
+      end: 30
+    - source: <dyn 'static + std::error::Error + Send + Sync>
+      style: secondary
+      start: 26
+      end: 73
+  ? |
+    fn raw_box() -> std::boxed::r#Box<dyn std::error::Error> { todo!() }
+  : labels:
+    - source: dyn std::error::Error
+      style: primary
+      start: 34
+      end: 55
+    - source: std::boxed::r#Box
+      style: secondary
+      start: 16
+      end: 33
+    - source: std::boxed::r#Box<dyn std::error::Error>
+      style: secondary
+      start: 16
+      end: 56
+    - source: <dyn std::error::Error>
+      style: secondary
+      start: 33
+      end: 56
+    - source: Error
+      style: secondary
+      start: 50
+      end: 55
+    - source: std::error::Error
+      style: secondary
+      start: 38
+      end: 55
+  ? |
+    fn raw_boxed() -> std::r#boxed::Box<dyn std::error::Error> { todo!() }
+  : labels:
+    - source: dyn std::error::Error
+      style: primary
+      start: 36
+      end: 57
+    - source: std::r#boxed::Box
+      style: secondary
+      start: 18
+      end: 35
+    - source: std::r#boxed::Box<dyn std::error::Error>
+      style: secondary
+      start: 18
+      end: 58
+    - source: <dyn std::error::Error>
+      style: secondary
+      start: 35
+      end: 58
+    - source: Error
+      style: secondary
+      start: 52
+      end: 57
+    - source: std::error::Error
+      style: secondary
+      start: 40
+      end: 57
+  ? |
     fn raw_spelled() -> Box<dyn r#Error> { todo!() }
   : labels:
     - source: dyn r#Error
@@ -73,6 +197,33 @@ snapshots:
       style: secondary
       start: 28
       end: 35
+  ? |
+    fn raw_std() -> r#std::boxed::Box<dyn std::error::Error> { todo!() }
+  : labels:
+    - source: dyn std::error::Error
+      style: primary
+      start: 34
+      end: 55
+    - source: r#std::boxed::Box
+      style: secondary
+      start: 16
+      end: 33
+    - source: r#std::boxed::Box<dyn std::error::Error>
+      style: secondary
+      start: 16
+      end: 56
+    - source: <dyn std::error::Error>
+      style: secondary
+      start: 33
+      end: 56
+    - source: Error
+      style: secondary
+      start: 50
+      end: 55
+    - source: std::error::Error
+      style: secondary
+      start: 38
+      end: 55
   ? |
     fn scoped_box() -> std::boxed::Box<dyn error::Error> { todo!() }
   : labels:
@@ -100,6 +251,41 @@ snapshots:
       style: secondary
       start: 39
       end: 51
+  ? |
+    fn scoped_box_auto_first() -> std::boxed::Box<dyn Sync + std::error::Error + Send> { todo!() }
+  : labels:
+    - source: std::error::Error
+      style: primary
+      start: 57
+      end: 74
+    - source: Error
+      style: secondary
+      start: 69
+      end: 74
+    - source: dyn Sync + std::error::Error
+      style: secondary
+      start: 46
+      end: 74
+    - source: std::boxed::Box
+      style: secondary
+      start: 30
+      end: 45
+    - source: std::boxed::Box<dyn Sync + std::error::Error + Send>
+      style: secondary
+      start: 30
+      end: 82
+    - source: <dyn Sync + std::error::Error + Send>
+      style: secondary
+      start: 45
+      end: 82
+    - source: dyn Sync
+      style: secondary
+      start: 46
+      end: 54
+    - source: dyn Sync + std::error::Error
+      style: secondary
+      start: 46
+      end: 74
   ? |
     fn scoped_with_bounds() -> Box<dyn std::error::Error + Send + Sync + 'static> { todo!() }
   : labels:

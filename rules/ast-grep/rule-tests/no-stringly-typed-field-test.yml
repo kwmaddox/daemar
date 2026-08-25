@@ -27,3 +27,13 @@ invalid:
     struct Absolute { status: ::std::string::String }
   - |
     struct AllocPath { state: alloc::string::String }
+  # PER-68 rereview finding P3: r# is not part of the identifier — raw
+  # spellings resolve to ordinary String.
+  - |
+    struct RawType { status: r#String }
+  - |
+    struct RawTail { status: std::string::r#String }
+  - |
+    struct RawEverySegment { status: ::r#std::r#string::r#String }
+  - |
+    struct RawAllocTail { status: alloc::string::r#String }

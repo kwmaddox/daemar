@@ -40,8 +40,12 @@ match s { "fast" => Mode::Fast, _ => Mode::Safe }
 ```
 
 The `ignore-discipline` rule enforces exactly this shape: one named rule,
-` -- `, a reason. Bare `// ast-grep-ignore` (a blanket waiver of every
-rule on the next line) and rule-only ignores fail the gate.
+` -- `, non-empty reason *text*. The gate's contract is lexical presence,
+not adequacy — a semantically empty "reason" (`-- /**/`, `-- .`) passes
+the gate and fails review, the same jurisdiction that judges whether a
+suppressed site is really a parse boundary. Bare `// ast-grep-ignore` (a
+blanket waiver of every rule on the next line) and rule-only ignores fail
+the gate.
 
 ### The trailing-ignore guard pass
 
@@ -73,6 +77,13 @@ not by fixtures.
 - **Heuristics claim shapes, not semantics.** C6's rule flags dispatch
   *shapes*; whether a site is a legitimate parse boundary is the
   reviewer's call, recorded in the reasoned ignore.
+- **Paren-stripping is one level deep.** Deeper nesting dies at L0
+  (`clippy::double_parens` is deny via `clippy::all`); the surviving path
+  is a `#[rustfmt::skip]` *plus* a fulfilled, reasoned
+  `#[expect(clippy::double_parens)]` — two loud directives that C5's
+  design routes through review by construction. Arbitrary-depth stripping
+  would need recursive utils, and fixed depth-N just invites the N+1
+  finding; Dylint (PER-69) is the class-wide closure if ever wanted.
 - **Macro-synthesized suppressions** are out of every surface rule's reach
   (PER-75 third adversarial pass); PER-78 owns that class, blocked on
   PER-69.

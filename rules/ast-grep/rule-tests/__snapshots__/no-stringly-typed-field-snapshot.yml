@@ -91,6 +91,66 @@ snapshots:
       start: 27
       end: 46
   ? |
+    struct RawAllocTail { status: alloc::string::r#String }
+  : labels:
+    - source: 'status: alloc::string::r#String'
+      style: primary
+      start: 22
+      end: 53
+    - source: status
+      style: secondary
+      start: 22
+      end: 28
+    - source: alloc::string::r#String
+      style: secondary
+      start: 30
+      end: 53
+  ? |
+    struct RawEverySegment { status: ::r#std::r#string::r#String }
+  : labels:
+    - source: 'status: ::r#std::r#string::r#String'
+      style: primary
+      start: 25
+      end: 60
+    - source: status
+      style: secondary
+      start: 25
+      end: 31
+    - source: ::r#std::r#string::r#String
+      style: secondary
+      start: 33
+      end: 60
+  ? |
+    struct RawTail { status: std::string::r#String }
+  : labels:
+    - source: 'status: std::string::r#String'
+      style: primary
+      start: 17
+      end: 46
+    - source: status
+      style: secondary
+      start: 17
+      end: 23
+    - source: std::string::r#String
+      style: secondary
+      start: 25
+      end: 46
+  ? |
+    struct RawType { status: r#String }
+  : labels:
+    - source: 'status: r#String'
+      style: primary
+      start: 17
+      end: 33
+    - source: status
+      style: secondary
+      start: 17
+      end: 23
+    - source: r#String
+      style: secondary
+      start: 25
+      end: 33
+  ? |
     struct Run { run_id: String }
   : labels:
     - source: 'run_id: String'

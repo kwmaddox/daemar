@@ -33,15 +33,14 @@ severity: error
 message: "C6: string-literal dispatch — a closed set of meanings is an enum; parse boundaries converting exactly once take a reasoned ast-grep-ignore"
 files:
   - "crates/**/*.rs"
+# Orientation and literal-kind logic lives once in lit-cmp; eq-lit/ne-lit
+# are thin operator filters over it (PER-68 rereview, finding S1).
 utils:
-  eq-lit:
+  lit-cmp:
     kind: binary_expression
     any:
       - all:
           - has:
-              field: operator
-              regex: "^==$"
-          - has:
               field: left
               any:
                 - kind: string_literal
@@ -51,9 +50,6 @@ utils:
               pattern: $X
       - all:
           - has:
-              field: operator
-              regex: "^==$"
-          - has:
               field: right
               any:
                 - kind: string_literal
@@ -61,39 +57,24 @@ utils:
           - has:
               field: left
               pattern: $X
+  eq-lit:
+    all:
+      - matches: lit-cmp
+      - has:
+          field: operator
+          regex: "^==$"
+  ne-lit:
+    all:
+      - matches: lit-cmp
+      - has:
+          field: operator
+          regex: "^!=$"
   eq-lit-stripped:
     any:
       - matches: eq-lit
       - kind: parenthesized_expression
         has:
           matches: eq-lit
-  ne-lit:
-    kind: binary_expression
-    any:
-      - all:
-          - has:
-              field: operator
-              regex: "^!=$"
-          - has:
-              field: left
-              any:
-                - kind: string_literal
-                - kind: raw_string_literal
-          - has:
-              field: right
-              pattern: $X
-      - all:
-          - has:
-              field: operator
-              regex: "^!=$"
-          - has:
-              field: right
-              any:
-                - kind: string_literal
-                - kind: raw_string_literal
-          - has:
-              field: left
-              pattern: $X
   ne-lit-stripped:
     any:
       - matches: ne-lit

@@ -9,6 +9,17 @@ valid:
     fn comments_without_the_token_are_fine() {
         // suppressions in this repo carry reasons; see the pack README
     }
+  # PER-68 rereview finding P4, pinned as the contract boundary: the gate
+  # validates lexical presence of reason text (a non-whitespace, non-*
+  # character after --), not reason adequacy. `-- /**/` is semantically
+  # empty, but so are `-- .` and `-- ()`, and no character class closes
+  # that class — judging adequacy is review's jurisdiction, same as
+  # judging whether a match site is really a parse boundary.
+  - |
+    struct EmptyNestedReason {
+        /* ast-grep-ignore: no-stringly-typed-field -- /**/ */
+        state: String,
+    }
   # Grammar nuance folded into finding P2: a second complete-looking
   # directive inside the reason text is inert — ast-grep honors only the
   # first rule id, the rest is reason prose. Disciplined shape, so valid.

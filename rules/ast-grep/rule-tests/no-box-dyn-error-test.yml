@@ -17,6 +17,15 @@ valid:
     fn other_container() -> Rc<dyn Error> { todo!() }
   - |
     fn nested_other_container() -> Box<Result<(), Rc<dyn Error>>> { todo!() }
+  - |
+    fn no_error_bound_anywhere() -> Box<dyn Send + Sync> { todo!() }
+  - |
+    fn bounded_closure_returning_error() -> Box<dyn Fn() -> Result<(), Error> + Send> { todo!() }
+  # Box<impl Error> is an abstract_type, not a trait object — outside this
+  # rule's Box<dyn Error> claim (and dead at a real pub boundary anyway:
+  # it still erases the contract, which is C1 review territory).
+  - |
+    fn opaque_not_dyn() -> Box<impl Error + Send> { todo!() }
 invalid:
   - |
     fn bare() -> Box<dyn Error> { todo!() }
@@ -32,3 +41,20 @@ invalid:
     struct Holder { failure: Box<dyn Error> }
   - |
     fn absolute_path() -> ::std::boxed::Box<dyn std::error::Error + Send + Sync + 'static> { todo!() }
+  # PER-68 rereview finding P1: bound order is free — Error need not be
+  # the first bound (the lifetime-first form parses with no dynamic_type
+  # at all; the rule matches the swallowed-dyn ERROR node as evidence).
+  - |
+    fn auto_trait_first() -> Box<dyn Send + std::error::Error + Sync> { todo!() }
+  - |
+    fn lifetime_first() -> Box<dyn 'static + std::error::Error + Send + Sync> { todo!() }
+  - |
+    fn scoped_box_auto_first() -> std::boxed::Box<dyn Sync + std::error::Error + Send> { todo!() }
+  # PER-68 rereview finding P2: r# is not part of the identifier — raw
+  # spellings resolve to the same std Box.
+  - |
+    fn raw_box() -> std::boxed::r#Box<dyn std::error::Error> { todo!() }
+  - |
+    fn raw_std() -> r#std::boxed::Box<dyn std::error::Error> { todo!() }
+  - |
+    fn raw_boxed() -> std::r#boxed::Box<dyn std::error::Error> { todo!() }

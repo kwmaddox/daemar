@@ -6,9 +6,11 @@
 # legitimate free text), so additions are deliberate.
 #
 # field_declaration covers struct fields and enum struct-variant fields
-# alike. Only the bare `String` type (optionally std::string::-qualified)
-# matches: `kind: Kind` and `run_id: RunId` are the fix, not a hit, and
-# Option<String>/Vec<String> stay review territory.
+# alike. The type must resolve textually to String by a direct path —
+# bare, std::string::- or alloc::string::-qualified, absolute (leading
+# ::), with r#-raw spelling accepted on any segment (rereview P3: `r#` is
+# not part of the identifier). `kind: Kind` and `run_id: RunId` are the
+# fix, not a hit, and Option<String>/Vec<String> stay review territory.
 id: no-stringly-typed-field
 language: rust
 severity: error
@@ -23,4 +25,4 @@ rule:
         regex: "^(r#)?([a-zA-Z0-9_]*_id|kind|status|state|[a-zA-Z0-9_]*_type)$"
     - has:
         field: type
-        regex: "^(::)?((std|alloc)::string::)?String$"
+        regex: "^(::)?((r#)?(std|alloc)::(r#)?string::)?(r#)?String$"

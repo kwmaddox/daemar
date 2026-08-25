@@ -6,6 +6,14 @@
 # in line and block comments. Comment kinds keep string literals that
 # merely mention the token out of scope.
 #
+# The contract is lexical presence of reason text, not reason adequacy
+# (PER-68 rereview, finding P4): the gate requires a non-whitespace,
+# non-`*` character after `--`, and stops there. Semantically empty
+# "reasons" (`-- /**/`, `-- .`, `-- ()`) pass the gate — no character
+# class closes that class, and each exclusion is churn — and fail review
+# instead, the same jurisdiction that judges whether a suppressed site is
+# really a parse boundary.
+#
 # The reason's first character may not be `*` (or whitespace): in a block
 # comment the closing */ sits inside the node text, and with `\S` alone an
 # empty reason (`/* ast-grep-ignore: rule -- */`) reads the delimiter's `*`
