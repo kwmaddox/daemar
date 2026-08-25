@@ -54,11 +54,15 @@ renamed token no longer suppresses anything, so every ignore comment is
 visible. The rule's regexes accept both spellings, so one file serves
 both passes and the channels cannot drift.
 
-Two deliberate lexical strictnesses, priced in: a comment that merely
+Three deliberate lexical strictnesses, priced in: a comment that merely
 *mentions* `ast-grep-ignore` in prose must still use the disciplined
-spelling (the fixture `prose_mention` pins this), and the rule-test
-harness applies no suppression processing, so the escape hatch is proven
-by the gate demo, not by fixtures.
+spelling (the fixture `prose_mention` pins this); a reason may not start
+with `*` — in a block comment the closing `*/` is part of the node text,
+and without lookahead in Rust's regex engine an empty reason would read
+the delimiter as its reason (`-- */` bypass, PER-68 adversarial finding
+P2) — reword such a reason; and the rule-test harness applies no
+suppression processing, so the escape hatch is proven by the gate demo,
+not by fixtures.
 
 ## Known limits
 

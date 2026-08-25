@@ -27,6 +27,18 @@ valid:
     fn test_assertions_are_not_dispatch(s: &str) {
         assert_eq!(s, "expected");
     }
+  - |
+    fn parenthesized_different_expressions(a: &str, b: &str) -> bool {
+        ("x" == a) || (b == "y")
+    }
+  - |
+    fn call_wrapped_comparison_is_not_a_chain_member(x: &str) -> bool {
+        f(x == "a") || (x == "b")
+    }
+  - |
+    fn ne_or_tautology_is_not_dispatch(x: &str) -> bool {
+        x != "a" || x != "b"
+    }
   # The reasoned-ignore escape hatch cannot be pinned here: this harness
   # tests the bare rule and does not apply suppression comments. That a
   # reasoned `// ast-grep-ignore: no-string-literal-dispatch -- <why>`
@@ -52,4 +64,26 @@ invalid:
   - |
     fn longer_chain(kind: &str) -> bool {
         kind == "a" || kind == "b" || kind == "c"
+    }
+  # PER-68 adversarial finding P1: equivalent chains must not escape via
+  # parentheses or operand orientation.
+  - |
+    fn parenthesized_chain(x: &str) -> bool {
+        (x == "a") || (x == "b")
+    }
+  - |
+    fn reversed_operands(x: &str) -> bool {
+        "a" == x || "b" == x
+    }
+  - |
+    fn mixed_parens_and_orientation(x: &str) -> bool {
+        ("a" == x) || (x == "b")
+    }
+  - |
+    fn parenthesized_ne_chain(x: &str) -> bool {
+        ("a" != x) && (x != "b")
+    }
+  - |
+    fn raw_string_in_chain(x: &str) -> bool {
+        x == r"raw" || x == "b"
     }

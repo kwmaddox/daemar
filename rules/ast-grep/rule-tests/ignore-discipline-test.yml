@@ -9,6 +9,14 @@ valid:
     fn comments_without_the_token_are_fine() {
         // suppressions in this repo carry reasons; see the pack README
     }
+  # Grammar nuance folded into finding P2: a second complete-looking
+  # directive inside the reason text is inert — ast-grep honors only the
+  # first rule id, the rest is reason prose. Disciplined shape, so valid.
+  - |
+    fn second_directive_is_inert_reason_text(s: &str) -> Mode {
+        // ast-grep-ignore: no-string-literal-dispatch -- see ast-grep-ignore: other-rule -- prose
+        match s { "fast" => Mode::Fast, _ => Mode::Safe }
+    }
 invalid:
   # The trailing bare form matches here because this harness applies the
   # bare rule without suppression processing. In real `ast-grep scan` the
@@ -46,4 +54,20 @@ invalid:
   - |
     fn prose_mention() {
         // consider adding an ast-grep-ignore here if the boundary is legit
+    }
+  # PER-68 adversarial finding P2: in a block comment the closing */ is
+  # part of the node text, so an empty reason must not read the delimiter
+  # as its reason — ast-grep still honors the directive, silently waiving
+  # a real violation.
+  - |
+    struct EmptyBlockReason {
+        /* ast-grep-ignore: no-stringly-typed-field -- */
+        state: String,
+    }
+  # Priced-in lexical strictness from the P2 fix (no lookahead in Rust's
+  # regex crate): a reason may not start with `*` — reword it.
+  - |
+    fn reason_starting_with_star(s: &str) -> bool {
+        // ast-grep-ignore: no-string-literal-dispatch -- *see* the parse boundary note
+        s == "a" || s == "b"
     }

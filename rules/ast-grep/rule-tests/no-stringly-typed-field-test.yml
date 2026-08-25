@@ -23,3 +23,7 @@ invalid:
     enum Event { Node { node_id: String } }
   - |
     struct Qualified { run_id: std::string::String }
+  - |
+    struct Absolute { status: ::std::string::String }
+  - |
+    struct AllocPath { state: alloc::string::String }

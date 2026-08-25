@@ -16,6 +16,36 @@ snapshots:
       start: 29
       end: 35
   ? |
+    struct Absolute { status: ::std::string::String }
+  : labels:
+    - source: 'status: ::std::string::String'
+      style: primary
+      start: 18
+      end: 47
+    - source: status
+      style: secondary
+      start: 18
+      end: 24
+    - source: ::std::string::String
+      style: secondary
+      start: 26
+      end: 47
+  ? |
+    struct AllocPath { state: alloc::string::String }
+  : labels:
+    - source: 'state: alloc::string::String'
+      style: primary
+      start: 19
+      end: 47
+    - source: state
+      style: secondary
+      start: 19
+      end: 24
+    - source: alloc::string::String
+      style: secondary
+      start: 26
+      end: 47
+  ? |
     struct Change { kind: String }
   : labels:
     - source: 'kind: String'

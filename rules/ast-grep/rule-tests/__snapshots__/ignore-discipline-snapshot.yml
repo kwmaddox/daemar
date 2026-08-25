@@ -40,6 +40,16 @@ snapshots:
       start: 25
       end: 92
   ? |
+    fn reason_starting_with_star(s: &str) -> bool {
+        // ast-grep-ignore: no-string-literal-dispatch -- *see* the parse boundary note
+        s == "a" || s == "b"
+    }
+  : labels:
+    - source: '// ast-grep-ignore: no-string-literal-dispatch -- *see* the parse boundary note'
+      style: primary
+      start: 52
+      end: 131
+  ? |
     fn rule_named_but_no_reason(s: &str) -> bool {
         // ast-grep-ignore: no-string-literal-dispatch
         s == "a" || s == "b"
@@ -58,3 +68,13 @@ snapshots:
       style: primary
       start: 60
       end: 78
+  ? |
+    struct EmptyBlockReason {
+        /* ast-grep-ignore: no-stringly-typed-field -- */
+        state: String,
+    }
+  : labels:
+    - source: '/* ast-grep-ignore: no-stringly-typed-field -- */'
+      style: primary
+      start: 30
+      end: 79

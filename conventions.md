@@ -34,7 +34,13 @@ is defined in this crate. No foreign error type, no `Box<dyn Error>`, no
 `String` error crosses a public boundary.
 *Enforcement: gate, partial (ast-grep `no-box-dyn-error` — live via
 `scripts/check.sh`; alias uses are blind, see `rules/ast-grep/README.md`);
-review for foreign error types.*
+review for foreign error types. The gate deliberately over-approximates
+this rule: it bans `Box<dyn Error>` at any position — private items and
+tests included — not just at the `pub` boundary the rule text governs. A
+private erased error has no role in the house pattern (it reaches the
+contract only via a C8 or C3 violation), and C4's test exemptions remove
+the test-side need; a genuine exception takes a reasoned
+`ast-grep-ignore`.*
 
 ```rust
 // wrong
@@ -167,7 +173,12 @@ bounded) requires a type that encodes it.
 *Enforcement: gate, partial (ast-grep `no-stringly-typed-field` — `String`
 fields named `*_id`/`kind`/`status`/`state`/`*_type`, live via
 `scripts/check.sh`); review for primitives beyond the name list and for
-`pub fn` parameters.*
+`pub fn` parameters. The gate deliberately over-approximates this rule:
+it flags matching fields at any visibility, not just those crossing a
+`pub` boundary. The heuristic targets the storage site — a private
+stringly field loses the closed set at the point of representation and
+leaks the design through accessors, `Debug`, or serialization regardless
+of visibility; a genuine exception takes a reasoned `ast-grep-ignore`.*
 
 ```rust
 // wrong

@@ -6,13 +6,22 @@
 #      a string is dispatch over a closed set that never became an enum.
 #   2. Two-plus ==/!= comparisons of the same expression against string
 #      literals ($X == "a" || $X == "b") — the closed-set dispatch shape in
-#      C6's own wrong-example. Metavariable $X repeats, so comparisons of
-#      *different* expressions never match; longer chains match via their
-#      innermost pair.
+#      C6's own wrong-example. Covered structurally (PER-68 adversarial
+#      pass, finding P1): either operand order, parenthesized or not, on
+#      either side of the ||/&&. The comparison utils bind only $X — the
+#      compared expression — so different expressions never unify into a
+#      chain; literals are recognized by kind, not captured (metavariable
+#      constraints don't backtrack through `any` alternatives in 0.45.2,
+#      so an $A-with-constraint encoding silently drops reversed
+#      operands). Longer chains match via their innermost pair.
 #
 # A single `x == "sentinel"` comparison is deliberately NOT matched — one
 # comparison is not dispatch, and gating it would ban legitimate sentinel
 # checks (review territory, like the rest of C6's semantic remainder).
+# Paren-stripping is one level deep by design: a comparison nested in a
+# call (`f(x == "a") || ...`) is not a chain member, and the doubled form
+# `((x == "a"))` cannot reach this gate — clippy::double_parens is deny
+# via clippy::all, so it dies at L0.
 #
 # The legitimate hit this heuristic anticipates is a parse boundary that
 # converts input to the enum exactly once (C6 allows it). That site takes a
@@ -24,6 +33,73 @@ severity: error
 message: "C6: string-literal dispatch — a closed set of meanings is an enum; parse boundaries converting exactly once take a reasoned ast-grep-ignore"
 files:
   - "crates/**/*.rs"
+utils:
+  eq-lit:
+    kind: binary_expression
+    any:
+      - all:
+          - has:
+              field: operator
+              regex: "^==$"
+          - has:
+              field: left
+              any:
+                - kind: string_literal
+                - kind: raw_string_literal
+          - has:
+              field: right
+              pattern: $X
+      - all:
+          - has:
+              field: operator
+              regex: "^==$"
+          - has:
+              field: right
+              any:
+                - kind: string_literal
+                - kind: raw_string_literal
+          - has:
+              field: left
+              pattern: $X
+  eq-lit-stripped:
+    any:
+      - matches: eq-lit
+      - kind: parenthesized_expression
+        has:
+          matches: eq-lit
+  ne-lit:
+    kind: binary_expression
+    any:
+      - all:
+          - has:
+              field: operator
+              regex: "^!=$"
+          - has:
+              field: left
+              any:
+                - kind: string_literal
+                - kind: raw_string_literal
+          - has:
+              field: right
+              pattern: $X
+      - all:
+          - has:
+              field: operator
+              regex: "^!=$"
+          - has:
+              field: right
+              any:
+                - kind: string_literal
+                - kind: raw_string_literal
+          - has:
+              field: left
+              pattern: $X
+  ne-lit-stripped:
+    any:
+      - matches: ne-lit
+      - kind: parenthesized_expression
+        has:
+          matches: ne-lit
 rule:
   any:
     - kind: string_literal
@@ -34,18 +110,25 @@ rule:
       inside:
         stopBy: end
         kind: match_pattern
-    - pattern:
-        context: "fn f() { $X == $A || $X == $B; }"
-        selector: binary_expression
-    - pattern:
-        context: "fn f() { $X != $A && $X != $B; }"
-        selector: binary_expression
-constraints:
-  A:
-    any:
-      - kind: string_literal
-      - kind: raw_string_literal
-  B:
-    any:
-      - kind: string_literal
-      - kind: raw_string_literal
+    - kind: binary_expression
+      all:
+        - has:
+            field: operator
+            regex: "^\\|\\|$"
+        - has:
+            field: left
+            matches: eq-lit-stripped
+        - has:
+            field: right
+            matches: eq-lit-stripped
+    - kind: binary_expression
+      all:
+        - has:
+            field: operator
+            regex: "^&&$"
+        - has:
+            field: left
+            matches: ne-lit-stripped
+        - has:
+            field: right
+            matches: ne-lit-stripped

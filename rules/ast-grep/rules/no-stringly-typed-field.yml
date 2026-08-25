@@ -23,4 +23,4 @@ rule:
         regex: "^(r#)?([a-zA-Z0-9_]*_id|kind|status|state|[a-zA-Z0-9_]*_type)$"
     - has:
         field: type
-        regex: "^(std::string::)?String$"
+        regex: "^(::)?((std|alloc)::string::)?String$"

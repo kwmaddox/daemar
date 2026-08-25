@@ -1,6 +1,33 @@
 id: no-box-dyn-error
 snapshots:
   ? |
+    fn absolute_path() -> ::std::boxed::Box<dyn std::error::Error + Send + Sync + 'static> { todo!() }
+  : labels:
+    - source: dyn std::error::Error
+      style: primary
+      start: 40
+      end: 61
+    - source: ::std::boxed::Box
+      style: secondary
+      start: 22
+      end: 39
+    - source: ::std::boxed::Box<dyn std::error::Error + Send + Sync + 'static>
+      style: secondary
+      start: 22
+      end: 86
+    - source: <dyn std::error::Error + Send + Sync + 'static>
+      style: secondary
+      start: 39
+      end: 86
+    - source: Error
+      style: secondary
+      start: 56
+      end: 61
+    - source: std::error::Error
+      style: secondary
+      start: 44
+      end: 61
+  ? |
     fn bare() -> Box<dyn Error> { todo!() }
   : labels:
     - source: dyn Error

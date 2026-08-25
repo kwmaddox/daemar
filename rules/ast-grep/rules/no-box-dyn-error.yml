@@ -40,4 +40,4 @@ rule:
       kind: generic_type
       has:
         field: type
-        regex: "^((std|alloc)::boxed::)?Box$"
+        regex: "^(::)?((std|alloc)::boxed::)?Box$"

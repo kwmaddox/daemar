@@ -30,3 +30,5 @@ invalid:
     fn raw_spelled() -> Box<dyn r#Error> { todo!() }
   - |
     struct Holder { failure: Box<dyn Error> }
+  - |
+    fn absolute_path() -> ::std::boxed::Box<dyn std::error::Error + Send + Sync + 'static> { todo!() }

@@ -6,6 +6,14 @@
 # in line and block comments. Comment kinds keep string literals that
 # merely mention the token out of scope.
 #
+# The reason's first character may not be `*` (or whitespace): in a block
+# comment the closing */ sits inside the node text, and with `\S` alone an
+# empty reason (`/* ast-grep-ignore: rule -- */`) reads the delimiter's `*`
+# as its reason (PER-68 adversarial pass, finding P2) — Rust's regex crate
+# has no lookahead to exclude the terminator, so the class excludes `*`
+# outright. A reason legitimately starting with `*` is priced-in lexical
+# strictness: reword it.
+#
 # Self-suppression hole and its closure: a *trailing* bare ignore
 # (`code(); // ast-grep-ignore`) suppresses every finding on its own line —
 # including this rule's — so `ast-grep scan` alone can never flag it. The
@@ -26,4 +34,4 @@ rule:
     - kind: block_comment
   regex: "(ast-grep-ignore|AST-GREP-IGNORE-TOKEN)"
   not:
-    regex: "(ast-grep-ignore|AST-GREP-IGNORE-TOKEN): [a-z0-9][a-z0-9-]* -- \\S"
+    regex: "(ast-grep-ignore|AST-GREP-IGNORE-TOKEN): [a-z0-9][a-z0-9-]* -- [^\\s*]"
