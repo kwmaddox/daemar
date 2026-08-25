@@ -17,6 +17,40 @@ use crate::driver;
 use crate::error::{DriverStage, Error};
 use crate::{DEFAULT_IMAGE, TESTED_CONTAINER_VERSION};
 
+/// A container image reference, passed verbatim to `container run`. The
+/// image is a toolset, not a boundary (C7's type distinction is the
+/// point); the container CLI validates the reference at run time, and a
+/// bad one surfaces as a [`DriverStage::Container`] failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRef(String);
+
+impl ImageRef {
+    /// The reference exactly as it will be passed to `container run`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for ImageRef {
+    fn from(reference: String) -> Self {
+        ImageRef(reference)
+    }
+}
+
+impl Default for ImageRef {
+    /// The digest-pinned default image ([`DEFAULT_IMAGE`]).
+    fn default() -> Self {
+        ImageRef(DEFAULT_IMAGE.to_string())
+    }
+}
+
+impl std::fmt::Display for ImageRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// What to run and where. `command` is argv — it is passed to the in-guest
 /// driver as script arguments, never spliced into shell text.
 #[derive(Debug, Clone)]
@@ -28,32 +62,26 @@ pub struct RunSpec {
     pub worktree: PathBuf,
     /// Guest image. The image is a toolset, not a boundary; default is
     /// digest-pinned ubuntu ([`DEFAULT_IMAGE`]).
-    pub image: String,
+    pub image: ImageRef,
     /// Wall-clock limit; the container is killed and reaped on expiry (B8).
     pub timeout: Duration,
-    /// CPU cap for the guest VM, when set.
-    pub cpus: Option<u32>,
-    /// Memory cap for the guest VM, e.g. "2048M", "4G".
-    pub memory: Option<String>,
 }
 
-/// Default wall-clock limit for a run ([`RunSpec::timeout`]). The one
-/// defaults-const here; if a second accretes, fold them into a config
-/// struct instead.
-const DEFAULT_TIMEOUT: Duration = Duration::from_mins(5);
+/// Default wall-clock limit for a run ([`RunSpec::timeout`]); pub so the
+/// CLI's `--timeout` default derives from it and the value exists exactly
+/// once (C14). The one defaults-const here; if a second accretes, fold
+/// them into a config struct instead.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(5);
 
 impl RunSpec {
-    /// A spec with the defaults: pinned image, default timeout, no
-    /// resource caps.
+    /// A spec with the defaults: pinned image, default timeout.
     #[must_use]
     pub fn new(command: Vec<String>, worktree: impl Into<PathBuf>) -> Self {
         RunSpec {
             command,
             worktree: worktree.into(),
-            image: DEFAULT_IMAGE.to_string(),
+            image: ImageRef::default(),
             timeout: DEFAULT_TIMEOUT,
-            cpus: None,
-            memory: None,
         }
     }
 }
@@ -116,7 +144,7 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
         })?;
     }
     // From here on, the guard owns cleanup on every path (B9).
-    let guard = SessionGuard(session.clone());
+    let guard = SessionGuard(session);
     fs::write(
         bin_dir.join(driver::DRIVER_FILENAME),
         driver::driver_script(),
@@ -196,18 +224,12 @@ fn container_command(
         .arg("--name")
         .arg(name)
         .arg("--mount")
-        .arg(mount_arg(worktree, driver::GUEST_LOWER, true))
+        .arg(mount_arg(worktree, driver::GUEST_LOWER, Mount::ReadOnly))
         .arg("--mount")
-        .arg(mount_arg(out_dir, driver::GUEST_OUT, false))
+        .arg(mount_arg(out_dir, driver::GUEST_OUT, Mount::ReadWrite))
         .arg("--mount")
-        .arg(mount_arg(bin_dir, driver::GUEST_BIN, true));
-    if let Some(cpus) = spec.cpus {
-        cmd.arg("--cpus").arg(cpus.to_string());
-    }
-    if let Some(memory) = &spec.memory {
-        cmd.arg("--memory").arg(memory);
-    }
-    cmd.arg(&spec.image)
+        .arg(mount_arg(bin_dir, driver::GUEST_BIN, Mount::ReadOnly));
+    cmd.arg(spec.image.as_str())
         .arg("sh")
         .arg(format!("{}/{}", driver::GUEST_BIN, driver::DRIVER_FILENAME))
         .args(&spec.command)
@@ -229,7 +251,11 @@ fn driver_failure(status: std::process::ExitStatus, stderr: &[u8]) -> Error {
         _ => DriverStage::Container,
     };
     let tail = String::from_utf8_lossy(stderr);
-    let mut last_lines = tail.lines().rev().take(5).collect::<Vec<_>>();
+    let mut last_lines = tail
+        .lines()
+        .rev()
+        .take(STDERR_TAIL_LINES)
+        .collect::<Vec<_>>();
     last_lines.reverse();
     eprintln!(
         "daemar-sandbox: driver failed at {stage}: {}",
@@ -248,9 +274,19 @@ fn join_drained(handle: Option<std::thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
     handle.map_or_else(Vec::new, |h| h.join().unwrap_or_default())
 }
 
-fn mount_arg(source: &std::path::Path, target: &str, readonly: bool) -> String {
+/// Guest mount posture. The read-only lower mount is a security property
+/// (B3), so call sites must say which posture they mean (C15) — a
+/// transposed bare `true` would compile; `Mount::ReadWrite` in the lower
+/// slot cannot pass review silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mount {
+    ReadOnly,
+    ReadWrite,
+}
+
+fn mount_arg(source: &std::path::Path, target: &str, posture: Mount) -> String {
     let mut arg = format!("type=bind,source={},target={}", source.display(), target);
-    if readonly {
+    if posture == Mount::ReadOnly {
         arg.push_str(",readonly");
     }
     arg
@@ -264,6 +300,15 @@ fn drain(mut stream: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<
     })
 }
 
+/// Child-poll cadence in [`wait_with_timeout`]: coarse enough to stay
+/// cheap, fine enough that timeout overshoot is invisible next to
+/// multi-second run timeouts.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Stderr lines quoted in the driver-failure diagnostic: enough for the
+/// failing command and its error, without flooding the terminal.
+const STDERR_TAIL_LINES: usize = 5;
+
 fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
     let start = Instant::now();
     loop {
@@ -273,7 +318,7 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<std::proces
         if start.elapsed() >= timeout {
             return None;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(POLL_INTERVAL);
     }
 }
 
@@ -317,9 +362,17 @@ mod tests {
 
     #[test]
     fn mount_args_render() {
-        let arg = mount_arg(std::path::Path::new("/x/y"), "/daemar/lower", true);
+        let arg = mount_arg(
+            std::path::Path::new("/x/y"),
+            "/daemar/lower",
+            Mount::ReadOnly,
+        );
         assert_eq!(arg, "type=bind,source=/x/y,target=/daemar/lower,readonly");
-        let rw = mount_arg(std::path::Path::new("/x/out"), "/daemar/out", false);
+        let rw = mount_arg(
+            std::path::Path::new("/x/out"),
+            "/daemar/out",
+            Mount::ReadWrite,
+        );
         assert!(!rw.contains("readonly"));
     }
 

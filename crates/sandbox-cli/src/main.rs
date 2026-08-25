@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use daemar_sandbox::{Change, RunSpec};
+use daemar_sandbox::{Change, RunSpec, DEFAULT_TIMEOUT};
 
 /// Run one command inside the daemar sandbox (specs/sandbox.md).
 #[derive(Parser)]
@@ -23,7 +23,7 @@ enum Cli {
         #[arg(long)]
         image: Option<String>,
         /// Timeout in seconds.
-        #[arg(long, default_value_t = 300)]
+        #[arg(long, default_value_t = DEFAULT_TIMEOUT.as_secs())]
         timeout: u64,
         /// Promote the changes back into the worktree after the run.
         #[arg(long, conflicts_with = "apply_to")]
@@ -60,7 +60,7 @@ fn main() -> ExitCode {
 
     let mut spec = RunSpec::new(command, &worktree);
     if let Some(image) = image {
-        spec.image = image;
+        spec.image = image.into();
     }
     spec.timeout = Duration::from_secs(timeout);
 

@@ -24,13 +24,13 @@ mod runner;
 
 pub use changeset::{ApplyReport, Change, ChangeSet, RejectReason, UnsupportedKind};
 pub use error::{DriverStage, Error};
-pub use runner::{run, RunOutcome, RunSpec};
+pub use runner::{run, ImageRef, RunOutcome, RunSpec, DEFAULT_TIMEOUT};
 
 /// The `container` CLI version this crate was built and battery-tested
 /// against. `run()` warns on stderr when the installed version differs —
 /// the central egress primitive (`--network none`) is undocumented upstream,
 /// so version drift is a security-relevant event, guarded by behavior B2.
-pub const TESTED_CONTAINER_VERSION: &str = "1.2.2";
+pub(crate) const TESTED_CONTAINER_VERSION: &str = "1.2.2";
 
 /// Default guest image, pinned by digest (resolved 2026-08-23 from
 /// `docker.io/library/ubuntu:latest`, image created 2026-07-24). The image is

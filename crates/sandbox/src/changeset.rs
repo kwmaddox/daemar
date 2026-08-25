@@ -20,6 +20,10 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::Error;
 
+/// Mode bits used when a tar header carries none. Security path (B6):
+/// conservative rw-r--r-- — never executable, setuid-impossible.
+const FALLBACK_MODE: u32 = 0o644;
+
 /// One reported change, relative to the worktree root (B5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -60,7 +64,7 @@ pub enum Change {
 impl Change {
     /// The changed path, relative to the worktree root.
     #[must_use]
-    pub fn path(&self) -> &Path {
+    fn path(&self) -> &Path {
         match self {
             Change::Added { path, .. }
             | Change::Modified { path, .. }
@@ -236,7 +240,7 @@ impl ChangeSet {
             let Some(rel) = rel else { continue }; // "." / empty
 
             let header = entry.header();
-            let mode = header.mode().unwrap_or(0o644);
+            let mode = header.mode().unwrap_or(FALLBACK_MODE);
             #[expect(
                 clippy::wildcard_enum_match_arm,
                 reason = "tar::EntryType hides a #[doc(hidden)] __Nonexhaustive variant \
