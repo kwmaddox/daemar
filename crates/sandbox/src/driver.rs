@@ -48,7 +48,7 @@ pub const EXIT_EXITCODE: i32 = 123;
 /// already written in that case so the workload's code is preserved.
 /// Because the driver exits 0 on success instead of mirroring the
 /// workload's exit code, this status is unambiguous: a workload exiting
-/// 127 yields container status 0, so 124–127 can only originate from
+/// 127 yields container status 0, so 123–127 can only originate from
 /// `fail()`.
 pub const EXIT_EXPORT: i32 = 127;
 
@@ -139,7 +139,7 @@ mod tests {
 
     /// PER-80: the container exit status is the success signal — the
     /// driver exits 0 on full success and never mirrors the workload's
-    /// exit code, so a nonzero status always means failure and 124–127
+    /// exit code, so a nonzero status always means failure and 123–127
     /// can only originate from `fail()`.
     #[test]
     fn success_exits_zero_never_mirroring_workload_rc() {

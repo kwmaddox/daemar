@@ -34,6 +34,14 @@ use daemar_sandbox::{Change, RunSpec, CONTAINER_PREFIX, SESSION_ROOT};
 /// assertion goes vacuous if the two spellings ever drift (C14).
 const SECRET_MARKER: &str = "S3CRET-MARKER";
 
+/// Guest-side out-mount paths the export-integrity probes reference from
+/// inside the workload. One definition each (C14): these are the driver's
+/// chosen values (`GUEST_OUT`/`CHANGES_TAR`/`EXIT_CODE_FILE`), not
+/// re-exported to this crate, so a battery-local const keeps the probes
+/// from drifting vacuously green if the driver ever renames them.
+const GUEST_OUT_CHANGES_TAR: &str = "/daemar/out/changes.tar";
+const GUEST_OUT_EXIT_CODE: &str = "/daemar/out/exit_code";
+
 /// One VM at a time: guest memory is never returned to macOS, and serial
 /// runs keep failures attributable.
 fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -488,8 +496,10 @@ fn forged_archive_cannot_mask_export_failure() {
     // Export failure.
     let err = daemar_sandbox::run(&sh(
         &wt,
-        "tar -cf /daemar/out/changes.tar -T /dev/null; \
-         echo seed > churn; (while true; do echo grow >> churn; done) >/dev/null 2>&1 &",
+        &format!(
+            "tar -cf {GUEST_OUT_CHANGES_TAR} -T /dev/null; \
+             echo seed > churn; (while true; do echo grow >> churn; done) >/dev/null 2>&1 &"
+        ),
     ))
     .unwrap_err();
     let daemar_sandbox::Error::Driver {
@@ -519,10 +529,11 @@ fn workload_argv_cannot_hijack_the_driver_shell() {
             "exec".into(),
             "sh".into(),
             "-c".into(),
-            "cd /tmp; echo forged > forged.txt; \
-             tar -cf /daemar/out/changes.tar forged.txt; \
-             echo 0 > /daemar/out/exit_code; exit 0"
-                .into(),
+            format!(
+                "cd /tmp; echo forged > forged.txt; \
+                 tar -cf {GUEST_OUT_CHANGES_TAR} forged.txt; \
+                 echo 0 > {GUEST_OUT_EXIT_CODE}; exit 0"
+            ),
         ],
         &wt,
     ))
@@ -554,7 +565,7 @@ fn workload_cannot_sabotage_exit_code_recording() {
     // a genuine change with a real exit code is reported faithfully.
     let outcome = daemar_sandbox::run(&sh(
         &wt,
-        "mkdir -p /daemar/out/exit_code; echo hi > added.txt; exit 5",
+        &format!("mkdir -p {GUEST_OUT_EXIT_CODE}; echo hi > added.txt; exit 5"),
     ))
     .unwrap();
     assert_eq!(outcome.exit_code, 5, "real workload exit code not recorded");
