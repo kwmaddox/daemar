@@ -24,6 +24,10 @@ use crate::error::Error;
 /// conservative rw-r--r-- — never executable, setuid-impossible.
 const FALLBACK_MODE: u32 = 0o644;
 
+/// Chunk size for the byte-compare in `same_content_and_mode`. The two
+/// buffers must stay the same size for the `get(..n)` pairing to hold.
+const COMPARE_CHUNK: usize = 8192;
+
 /// One reported change, relative to the worktree root (B5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -542,8 +546,8 @@ fn same_content_and_mode(
         return Ok(false);
     }
     let mut host_file = fs::File::open(host).map_err(|e| Error::Io("compare", e))?;
-    let mut archive_buf = [0u8; 8192];
-    let mut host_buf = [0u8; 8192];
+    let mut archive_buf = [0u8; COMPARE_CHUNK];
+    let mut host_buf = [0u8; COMPARE_CHUNK];
     loop {
         let n = entry
             .read(&mut archive_buf)

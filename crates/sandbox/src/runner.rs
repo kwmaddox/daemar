@@ -6,7 +6,7 @@
 //! stays outside it. See `docs/research/substrate-refutation.md`.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
@@ -42,12 +42,6 @@ impl Default for ImageRef {
     /// The digest-pinned default image ([`DEFAULT_IMAGE`]).
     fn default() -> Self {
         ImageRef(DEFAULT_IMAGE.to_string())
-    }
-}
-
-impl std::fmt::Display for ImageRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
     }
 }
 
@@ -257,10 +251,17 @@ fn driver_failure(status: std::process::ExitStatus, stderr: &[u8]) -> Error {
         .take(STDERR_TAIL_LINES)
         .collect::<Vec<_>>();
     last_lines.reverse();
-    eprintln!(
-        "daemar-sandbox: driver failed at {stage}: {}",
-        last_lines.join(" | ")
-    );
+    // Stream straight to a locked stderr (C13): the Vec exists only for
+    // the inherent reversal; best-effort, like every diagnostic write.
+    let mut out = std::io::stderr().lock();
+    let _ = write!(out, "daemar-sandbox: driver failed at {stage}: ");
+    for (i, line) in last_lines.iter().enumerate() {
+        if i > 0 {
+            let _ = out.write_all(b" | ");
+        }
+        let _ = out.write_all(line.as_bytes());
+    }
+    let _ = out.write_all(b"\n");
     Error::Driver {
         stage,
         code: status.code(),

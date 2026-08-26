@@ -37,6 +37,12 @@ enum Cli {
     },
 }
 
+/// Exit code for harness failures — the run or the promotion could not
+/// complete. Distinct from the workload's own exit code, which dsbx
+/// mirrors (B10), and from `ExitCode::FAILURE` (1), the fallback for
+/// workload codes that don't fit a u8.
+const EXIT_HARNESS_FAILURE: u8 = 2;
+
 /// Print an error and its full `source()` chain. Messages describe the
 /// failure; causes live in the chain (conventions.md C2).
 fn report(context: &str, e: &daemar_sandbox::Error) {
@@ -68,7 +74,7 @@ fn main() -> ExitCode {
         Ok(outcome) => outcome,
         Err(e) => {
             report("", &e);
-            return ExitCode::from(2);
+            return ExitCode::from(EXIT_HARNESS_FAILURE);
         }
     };
 
@@ -122,7 +128,7 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 report("apply failed: ", &e);
-                return ExitCode::from(2);
+                return ExitCode::from(EXIT_HARNESS_FAILURE);
             }
         }
     }

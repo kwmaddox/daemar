@@ -56,7 +56,11 @@ leaks implementation and cannot grow variants without breaking callers.
 
 `anyhow`, `eyre`, and `thiserror` are banned everywhere, including binaries.
 Error enums derive `Debug` only; `Display` and `std::error::Error`
-(including `source()`) are written by hand.
+(including `source()`) are written by hand. An *error enum* here is a type
+that implements `std::error::Error`. Domain payload enums carried by error
+variants (a stage, a reason kind) are C6 territory: their `Display` is
+still hand-written, but they derive what their consumers need (`Clone`,
+`Copy`, `PartialEq`).
 *Enforcement: gate (cargo-deny bans, `deny.toml`; clippy disallowed
 types/macros, `clippy.toml` — both live via `scripts/check.sh`).*
 
@@ -318,7 +322,12 @@ fully see.
 A literal whose value carries meaning — a default, a limit, a poll
 interval, a fallback mode — is a named `const` with a comment stating why
 that value; the same meaningful value never appears as an unnamed literal
-in more than one place.
+in more than one place. The rule names values this design *chose*: a value
+fixed by an external definition (a POSIX mode mask like `0o777`, the
+setuid bits) is self-describing and needs no const, and repetition inside
+a single expression is one place. A chosen value is named even when built
+from such masks (a fallback mode is a choice; the mask it is written in is
+not).
 *Enforcement: review.*
 
 ```rust
