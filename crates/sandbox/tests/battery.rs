@@ -503,6 +503,72 @@ fn forged_archive_cannot_mask_export_failure() {
     assert_no_leaked_containers();
 }
 
+#[test]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
+fn workload_argv_cannot_hijack_the_driver_shell() {
+    let _guard = serial();
+    let wt = fixture_worktree("argv-hijack");
+    // PER-80: argv[0]="exec" makes a bare `"$@"` run the driver shell's
+    // exec builtin, replacing the driver (guest PID 1) with a shell that
+    // forges a change-set and `exit 0` — silent success. The driver runs
+    // the workload as `env -- "$@"`, so `exec` resolves as an external
+    // program (not found → 127) and this payload never executes. If it
+    // ever did, `forged.txt` would surface in the change-set.
+    let outcome = daemar_sandbox::run(&RunSpec::new(
+        vec![
+            "exec".into(),
+            "sh".into(),
+            "-c".into(),
+            "cd /tmp; echo forged > forged.txt; \
+             tar -cf /daemar/out/changes.tar forged.txt; \
+             echo 0 > /daemar/out/exit_code; exit 0"
+                .into(),
+        ],
+        &wt,
+    ))
+    .unwrap();
+    assert_eq!(
+        outcome.exit_code, 127,
+        "env should fail to resolve `exec` as a program (hijack neutralized)"
+    );
+    assert!(
+        !outcome
+            .changes
+            .entries()
+            .iter()
+            .any(|c| matches!(c, Change::Added { path, .. } if path.ends_with("forged.txt"))),
+        "forged change-set surfaced — argv hijacked the driver shell (PER-80)"
+    );
+    assert_no_leaked_containers();
+}
+
+#[test]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
+fn workload_cannot_sabotage_exit_code_recording() {
+    let _guard = serial();
+    let wt = fixture_worktree("exitcode-dir");
+    // PER-80: a workload that pre-creates the exit_code name as a directory
+    // makes the driver's unchecked `echo > exit_code` fail. Before the fix
+    // the driver silently continued and the run misclassified as a driver
+    // failure; the driver now clears the name and records the real code, so
+    // a genuine change with a real exit code is reported faithfully.
+    let outcome = daemar_sandbox::run(&sh(
+        &wt,
+        "mkdir -p /daemar/out/exit_code; echo hi > added.txt; exit 5",
+    ))
+    .unwrap();
+    assert_eq!(outcome.exit_code, 5, "real workload exit code not recorded");
+    assert!(
+        outcome
+            .changes
+            .entries()
+            .iter()
+            .any(|c| matches!(c, Change::Added { path, .. } if path.ends_with("added.txt"))),
+        "real change-set not reported through the sabotage attempt"
+    );
+    assert_no_leaked_containers();
+}
+
 // ── B10 ──────────────────────────────────────────────────────────────────
 
 #[test]

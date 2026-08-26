@@ -267,6 +267,11 @@ fn driver_failure(
             Some(workload_exit) => DriverStage::Export { workload_exit },
             None => DriverStage::Container,
         },
+        // Everything else is the timing-unknown Container bucket. This
+        // includes EXIT_EXITCODE (PER-80): the workload ran but sabotaged
+        // its own exit-code recording, so there is no workload_exit to
+        // carry — a dedicated typed stage would be the precise form, but
+        // Container is the honest conservative floor.
         _ => DriverStage::Container,
     };
     emit_stderr_tail(stage, stderr, out);
@@ -427,7 +432,7 @@ mod tests {
     /// protocol, land in the timing-unknown Container bucket.
     #[test]
     fn nonzero_statuses_classify_by_the_driver_protocol() {
-        let cases: [(i32, Option<i32>, DriverStage); 6] = [
+        let cases: [(i32, Option<i32>, DriverStage); 7] = [
             (driver::EXIT_MKDIR, None, DriverStage::Mkdir),
             (driver::EXIT_OVERLAY, None, DriverStage::OverlayMount),
             (driver::EXIT_CD, None, DriverStage::Cd),
@@ -437,6 +442,7 @@ mod tests {
                 DriverStage::Export { workload_exit: 3 },
             ),
             (driver::EXIT_EXPORT, None, DriverStage::Container),
+            (driver::EXIT_EXITCODE, None, DriverStage::Container),
             (1, Some(1), DriverStage::Container),
         ];
         for (code, workload_exit, want) in cases {
