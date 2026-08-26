@@ -327,7 +327,9 @@ fixed by an external definition (a POSIX mode mask like `0o777`, the
 setuid bits) is self-describing and needs no const, and repetition inside
 a single expression is one place. A chosen value is named even when built
 from such masks (a fallback mode is a choice; the mask it is written in is
-not).
+not). Single-occurrence test-fixture inputs (a fixture timeout, an
+asserted exit code) are out of scope — they are the test's data, not the
+design's values; the never-appears-twice clause still applies to them.
 *Enforcement: review.*
 
 ```rust

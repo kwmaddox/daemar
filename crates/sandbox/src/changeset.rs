@@ -28,6 +28,12 @@ const FALLBACK_MODE: u32 = 0o644;
 /// buffers must stay the same size for the `get(..n)` pairing to hold.
 const COMPARE_CHUNK: usize = 8192;
 
+/// Device number assumed when a char-device header carries none: any
+/// nonzero value classifies the entry as a real device (unsupported),
+/// never as a whiteout deletion — the conservative direction for
+/// adversarial archive input (B6).
+const NON_WHITEOUT_DEVICE: u32 = 1;
+
 /// One reported change, relative to the worktree root (B5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -254,8 +260,16 @@ impl ChangeSet {
             )]
             match header.entry_type() {
                 tar::EntryType::Char => {
-                    let major = header.device_major().ok().flatten().unwrap_or(1);
-                    let minor = header.device_minor().ok().flatten().unwrap_or(1);
+                    let major = header
+                        .device_major()
+                        .ok()
+                        .flatten()
+                        .unwrap_or(NON_WHITEOUT_DEVICE);
+                    let minor = header
+                        .device_minor()
+                        .ok()
+                        .flatten()
+                        .unwrap_or(NON_WHITEOUT_DEVICE);
                     if major == 0 && minor == 0 {
                         entries.push(Change::Deleted { path: rel });
                     } else {
@@ -340,8 +354,9 @@ impl ChangeSet {
 
         // Deletions and directory creations don't need archive content.
         // Files and symlinks are re-streamed from the archive below; collect
-        // the sanitized target set first.
-        let mut want: BTreeMap<PathBuf, &Change> = BTreeMap::new();
+        // the sanitized target set first, keyed by borrows from `entries`
+        // (no independent copy is needed — C11).
+        let mut want: BTreeMap<&Path, &Change> = BTreeMap::new();
         for change in &self.entries {
             let rel = change.path();
             if let Err(why) = validate_dest_path(dest, rel) {
@@ -377,10 +392,10 @@ impl ChangeSet {
                         report.rejected.push((path.clone(), why));
                         continue;
                     }
-                    want.insert(path.clone(), change);
+                    want.insert(path.as_path(), change);
                 }
                 Change::Added { path, .. } | Change::Modified { path, .. } => {
-                    want.insert(path.clone(), change);
+                    want.insert(path.as_path(), change);
                 }
             }
         }
@@ -393,7 +408,7 @@ impl ChangeSet {
             let Some(rel) = normalize_entry_path(&entry.path().map_err(Error::Archive)?) else {
                 continue;
             };
-            let Some(change) = want.get(&rel) else {
+            let Some(change) = want.get(rel.as_path()) else {
                 continue;
             };
             let target = dest.join(&rel);

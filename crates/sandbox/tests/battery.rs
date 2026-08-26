@@ -139,10 +139,15 @@ fn nat_gateway_ip() -> String {
     octets.join(".")
 }
 
+/// Seconds each egress probe waits before giving up: long enough for a
+/// real connect on an open network (the control run), short enough that
+/// the closed-network probes don't stall the battery.
+const PROBE_TIMEOUT_SECS: u32 = 5;
+
 /// A raw-IP TCP probe: bash's /dev/tcp performs a real connect(2); exit 0
 /// iff the connection succeeded.
 fn tcp_probe(ip: &str, port: u16) -> String {
-    format!("timeout 5 bash -c 'echo probe > /dev/tcp/{ip}/{port}'")
+    format!("timeout {PROBE_TIMEOUT_SECS} bash -c 'echo probe > /dev/tcp/{ip}/{port}'")
 }
 
 #[test]
@@ -212,7 +217,7 @@ fn b2_no_network_path_raw_ip_fails() {
         &wt,
         &format!(
             "{pub_probe}; tcp=$?; \
-             timeout 5 bash -c 'echo x > /dev/udp/8.8.8.8/53'; udp=$?; \
+             timeout {PROBE_TIMEOUT_SECS} bash -c 'echo x > /dev/udp/8.8.8.8/53'; udp=$?; \
              {gw_probe}; gw=$?; \
              echo tcp=$tcp udp=$udp gw=$gw; \
              test $tcp -ne 0 -a $udp -ne 0 -a $gw -ne 0",
@@ -378,7 +383,7 @@ fn b6_promotion_sanitizes_setuid_and_symlink_escapes() {
     assert_eq!(mode & 0o7000, 0, "setuid survived promotion (B6)");
 
     // escaping symlinks rejected, in-tree symlink allowed (B6)
-    let rejected: Vec<_> = report.rejected.iter().map(|(p, _)| p.clone()).collect();
+    let rejected: Vec<_> = report.rejected.iter().map(|(p, _)| p).collect();
     assert!(rejected.iter().any(|p| p.ends_with("abs-link")));
     assert!(rejected.iter().any(|p| p.ends_with("rel-escape-link")));
     assert!(dest.join("abs-link").symlink_metadata().is_err());
