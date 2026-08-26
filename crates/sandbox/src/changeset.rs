@@ -117,8 +117,10 @@ pub enum UnsupportedKind {
     CharDevice,
     /// Symlink entry with no target recorded.
     SymlinkWithoutTarget,
-    /// Any other entry type; carries the tar type's debug name (the
-    /// foreign `tar::EntryType` stays out of the pub API).
+    /// Any other entry type; carries the tar type's debug name as a
+    /// diagnostic label only — display data, not a branchable contract
+    /// (the foreign `tar::EntryType` stays out of the pub API; a typed
+    /// kind gets added the day a consumer needs to branch on it).
     EntryType(String),
 }
 
