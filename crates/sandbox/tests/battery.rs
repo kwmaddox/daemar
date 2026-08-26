@@ -27,7 +27,12 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use daemar_sandbox::{Change, RunSpec};
+use daemar_sandbox::{Change, RunSpec, CONTAINER_PREFIX, SESSION_ROOT};
+
+/// The sentinel the B7 secrecy test plants outside the worktree and then
+/// asserts is NOT readable from the guest. One definition: the negative
+/// assertion goes vacuous if the two spellings ever drift (C14).
+const SECRET_MARKER: &str = "S3CRET-MARKER";
 
 /// One VM at a time: guest memory is never returned to macOS, and serial
 /// runs keep failures attributable.
@@ -60,7 +65,7 @@ fn assert_no_leaked_containers() {
         .unwrap();
     let listing = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !listing.contains("daemar-"),
+        !listing.contains(CONTAINER_PREFIX),
         "leaked containers (B9):\n{listing}"
     );
 }
@@ -286,7 +291,7 @@ fn b7_nothing_outside_worktree_mount_is_readable() {
     // Host secret in a SIBLING of the worktree — outside the mounted subtree.
     let secret_dir = wt.parent().unwrap().join("b7-secret-sibling");
     fs::create_dir_all(&secret_dir).unwrap();
-    fs::write(secret_dir.join("secret.txt"), "S3CRET-MARKER\n").unwrap();
+    fs::write(secret_dir.join("secret.txt"), format!("{SECRET_MARKER}\n")).unwrap();
     let host_secret = secret_dir.join("secret.txt");
 
     // The proof-doc vectors: parent traversal, absolute host path,
@@ -304,7 +309,7 @@ fn b7_nothing_outside_worktree_mount_is_readable() {
     let outcome = daemar_sandbox::run(&sh(&wt, &script)).unwrap();
     assert_eq!(outcome.exit_code, 0);
     assert!(
-        !String::from_utf8_lossy(&outcome.stdout).contains("S3CRET-MARKER"),
+        !String::from_utf8_lossy(&outcome.stdout).contains(SECRET_MARKER),
         "host secret readable from guest (B7)"
     );
     assert_no_leaked_containers();
@@ -434,7 +439,7 @@ fn b8_b9_timeout_kills_and_leaves_nothing_behind() {
     std::thread::sleep(Duration::from_secs(2));
     assert_no_leaked_containers();
     // Session temp state is gone too (B9).
-    let sessions = std::env::temp_dir().join("daemar-sandbox");
+    let sessions = std::env::temp_dir().join(SESSION_ROOT);
     let leftovers = fs::read_dir(&sessions).map_or(0, Iterator::count);
     assert_eq!(leftovers, 0, "session dirs left behind (B9)");
 }

@@ -32,6 +32,16 @@ pub use runner::{run, ImageRef, RunOutcome, RunSpec, DEFAULT_TIMEOUT};
 /// so version drift is a security-relevant event, guarded by behavior B2.
 pub(crate) const TESTED_CONTAINER_VERSION: &str = "1.2.2";
 
+/// Prefix of every container name this crate creates (`daemar-<run-id>`).
+/// Pub as the leak-check contract: behavior B9's battery asserts no
+/// container with this prefix survives a run.
+pub const CONTAINER_PREFIX: &str = "daemar-";
+
+/// Directory under the host temp dir holding per-run session state.
+/// Pub as the cleanup contract: behavior B9's battery asserts it is
+/// empty after every run.
+pub const SESSION_ROOT: &str = "daemar-sandbox";
+
 /// Default guest image, pinned by digest (resolved 2026-08-23 from
 /// `docker.io/library/ubuntu:latest`, image created 2026-07-24). The image is
 /// a toolset, not a boundary: the VM wall and `--network none` are the

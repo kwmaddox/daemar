@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use crate::changeset::{ChangeSet, SessionGuard};
 use crate::driver;
 use crate::error::{DriverStage, Error};
-use crate::{DEFAULT_IMAGE, TESTED_CONTAINER_VERSION};
+use crate::{CONTAINER_PREFIX, DEFAULT_IMAGE, SESSION_ROOT, TESTED_CONTAINER_VERSION};
 
 /// A container image reference, passed verbatim to `container run`. The
 /// image is a toolset, not a boundary (C7's type distinction is the
@@ -128,7 +128,7 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
     warn_on_version_drift();
 
     let run_id = uuid::Uuid::new_v4().to_string();
-    let session = std::env::temp_dir().join("daemar-sandbox").join(&run_id);
+    let session = std::env::temp_dir().join(SESSION_ROOT).join(&run_id);
     let bin_dir = session.join("bin");
     let out_dir = session.join("out");
     for d in [&bin_dir, &out_dir] {
@@ -148,7 +148,7 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
         source: e,
     })?;
 
-    let name = format!("daemar-{run_id}");
+    let name = format!("{CONTAINER_PREFIX}{run_id}");
     let mut cmd = container_command(spec, &worktree, &name, &bin_dir, &out_dir);
     let mut child = cmd.spawn().map_err(Error::Spawn)?;
     let stdout_reader = child.stdout.take().map(drain);
