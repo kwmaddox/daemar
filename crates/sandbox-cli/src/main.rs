@@ -11,6 +11,10 @@ use clap::Parser;
 use daemar_sandbox::{Change, RunSpec, DEFAULT_TIMEOUT};
 
 /// Run one command inside the daemar sandbox (specs/sandbox.md).
+///
+/// `Run` deliberately re-models [`RunSpec`]'s fields (C10): it is the
+/// clap parse-boundary form — primitives converted to a `RunSpec` exactly
+/// once in `main` — plus the CLI-only promotion flags.
 #[derive(Parser)]
 #[command(name = "dsbx", version)]
 enum Cli {
