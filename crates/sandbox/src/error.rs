@@ -21,8 +21,8 @@ pub enum DriverStage {
     /// Export of the change tar failed — *after* the workload ran; its
     /// exit code was already recorded and is carried here.
     Export {
-        /// The workload's own exit code, read back before the missing
-        /// tar was discovered.
+        /// The workload's own exit code, read back before the export
+        /// failure was discovered.
         workload_exit: i32,
     },
     /// Container-level failure (bad image, runtime error); whether the

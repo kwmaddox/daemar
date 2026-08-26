@@ -444,6 +444,36 @@ fn b8_b9_timeout_kills_and_leaves_nothing_behind() {
     assert_eq!(leftovers, 0, "session dirs left behind (B9)");
 }
 
+// ── Export integrity (PER-79) ────────────────────────────────────────────
+
+#[test]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
+fn export_failure_is_classified_never_silent_success() {
+    let _guard = serial();
+    let wt = fixture_worktree("export-fail");
+    // A backgrounded descendant keeps appending to an upper-layer file
+    // after the workload exits, so the driver's tar hits "file changed as
+    // we read it" mid-export. Returning a truncated change-set as Ok would
+    // violate B5 (the change-set is exactly the changes); the run must
+    // classify as an Export driver failure carrying the workload's real
+    // exit code. Typed assertions only — the stderr diagnostic is display
+    // data, not a contract.
+    let err = daemar_sandbox::run(&sh(
+        &wt,
+        "echo seed > churn; (while true; do echo grow >> churn; done) >/dev/null 2>&1 &",
+    ))
+    .unwrap_err();
+    let daemar_sandbox::Error::Driver {
+        stage: daemar_sandbox::DriverStage::Export { workload_exit },
+        ..
+    } = err
+    else {
+        panic!("expected export classification (PER-79), got: {err}");
+    };
+    assert_eq!(workload_exit, 0, "workload exit code not preserved");
+    assert_no_leaked_containers();
+}
+
 // ── B10 ──────────────────────────────────────────────────────────────────
 
 #[test]

@@ -178,12 +178,18 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
         // carries nothing beyond it.
         Err(_) => return Err(Error::ExitCode { raw }),
     };
+    // The driver renames the archive into place only after tar succeeds
+    // (PER-79), so absence at the final name — never mere tar failure
+    // codes, which collide with workload exit 127 — is the export-failure
+    // signal, and presence is positive evidence of a completed export.
     if !tar_path.is_file() {
         reap(&name);
+        let stage = DriverStage::Export {
+            workload_exit: exit_code,
+        };
+        emit_stderr_tail(stage, &stderr);
         return Err(Error::Driver {
-            stage: DriverStage::Export {
-                workload_exit: exit_code,
-            },
+            stage,
             code: status.code(),
         });
     }
@@ -244,6 +250,17 @@ fn driver_failure(status: std::process::ExitStatus, stderr: &[u8]) -> Error {
         Some(driver::EXIT_CD) => DriverStage::Cd,
         _ => DriverStage::Container,
     };
+    emit_stderr_tail(stage, stderr);
+    Error::Driver {
+        stage,
+        code: status.code(),
+    }
+}
+
+/// Operator diagnostic for any failed driver stage: quote a bounded tail
+/// of the container's stderr, where the driver's `daemar-driver: <stage>`
+/// line and the failing tool's own error live.
+fn emit_stderr_tail(stage: DriverStage, stderr: &[u8]) {
     let tail = String::from_utf8_lossy(stderr);
     let mut last_lines = tail
         .lines()
@@ -262,10 +279,6 @@ fn driver_failure(status: std::process::ExitStatus, stderr: &[u8]) -> Error {
         let _ = out.write_all(line.as_bytes());
     }
     let _ = out.write_all(b"\n");
-    Error::Driver {
-        stage,
-        code: status.code(),
-    }
 }
 
 /// Collect a drained stream. `None` means the pipe was never there (the
