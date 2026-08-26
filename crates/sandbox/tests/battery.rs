@@ -444,7 +444,7 @@ fn b8_b9_timeout_kills_and_leaves_nothing_behind() {
     assert_eq!(leftovers, 0, "session dirs left behind (B9)");
 }
 
-// ── Export integrity (PER-79) ────────────────────────────────────────────
+// ── Export integrity (PER-79, PER-80) ────────────────────────────────────
 
 #[test]
 #[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
@@ -469,6 +469,35 @@ fn export_failure_is_classified_never_silent_success() {
     } = err
     else {
         panic!("expected export classification (PER-79), got: {err}");
+    };
+    assert_eq!(workload_exit, 0, "workload exit code not preserved");
+    assert_no_leaked_containers();
+}
+
+#[test]
+#[ignore = "boots a real VM via the container CLI; run explicitly with --ignored"]
+fn forged_archive_cannot_mask_export_failure() {
+    let _guard = serial();
+    let wt = fixture_worktree("export-forge");
+    // The PER-80 probe: the workload pre-places a VALID archive at the
+    // final name in the guest-writable out-mount, then forces the driver's
+    // own tar to fail via a churning descendant. Under file-presence
+    // classification this returned Ok with the forged (empty) change-set;
+    // classification must instead come from the container exit status —
+    // the one channel the workload cannot write — and yield a typed
+    // Export failure.
+    let err = daemar_sandbox::run(&sh(
+        &wt,
+        "tar -cf /daemar/out/changes.tar -T /dev/null; \
+         echo seed > churn; (while true; do echo grow >> churn; done) >/dev/null 2>&1 &",
+    ))
+    .unwrap_err();
+    let daemar_sandbox::Error::Driver {
+        stage: daemar_sandbox::DriverStage::Export { workload_exit },
+        ..
+    } = err
+    else {
+        panic!("expected export classification despite forged archive (PER-80), got: {err}");
     };
     assert_eq!(workload_exit, 0, "workload exit code not preserved");
     assert_no_leaked_containers();

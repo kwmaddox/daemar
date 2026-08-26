@@ -164,13 +164,36 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
     let stdout = join_drained(stdout_reader);
     let stderr = join_drained(stderr_reader);
 
+    // Success is signaled by the container exit status alone (PER-80):
+    // the driver exits 0 only after the full chain succeeded and never
+    // mirrors the workload's exit code, so classification depends on no
+    // file the workload can write — everything in the rw out-mount is
+    // forgeable by a racing workload descendant.
     let exit_code_file = out_dir.join(driver::EXIT_CODE_FILE);
-    let tar_path = out_dir.join(driver::CHANGES_TAR);
-    let Ok(raw) = fs::read_to_string(&exit_code_file) else {
-        // No exit code recorded: a driver setup stage failed before the
-        // workload, or the container itself failed (timing unknown).
+    if status.code() != Some(0) {
         reap(&name);
-        return Err(driver_failure(status, &stderr));
+        // Export failure needs the workload's recorded code; for every
+        // other stage the file does not exist (or cannot be trusted).
+        let workload_exit = fs::read_to_string(&exit_code_file)
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok());
+        return Err(driver_failure(
+            status,
+            workload_exit,
+            &stderr,
+            &mut std::io::stderr().lock(),
+        ));
+    }
+    let Ok(raw) = fs::read_to_string(&exit_code_file) else {
+        // Status 0 guarantees the driver wrote this file; its absence
+        // means the protocol itself broke (or the guest was tampered
+        // with beyond what we can narrate) — the timing-unknown bucket.
+        let stage = DriverStage::Container;
+        emit_stderr_tail(stage, &stderr, &mut std::io::stderr().lock());
+        return Err(Error::Driver {
+            stage,
+            code: status.code(),
+        });
     };
     let exit_code: i32 = match raw.trim().parse() {
         Ok(code) => code,
@@ -178,22 +201,7 @@ pub fn run(spec: &RunSpec) -> Result<RunOutcome, Error> {
         // carries nothing beyond it.
         Err(_) => return Err(Error::ExitCode { raw }),
     };
-    // The driver renames the archive into place only after tar succeeds
-    // (PER-79), so absence at the final name — never mere tar failure
-    // codes, which collide with workload exit 127 — is the export-failure
-    // signal, and presence is positive evidence of a completed export.
-    if !tar_path.is_file() {
-        reap(&name);
-        let stage = DriverStage::Export {
-            workload_exit: exit_code,
-        };
-        emit_stderr_tail(stage, &stderr);
-        return Err(Error::Driver {
-            stage,
-            code: status.code(),
-        });
-    }
-    let changes = ChangeSet::from_tar(tar_path, &worktree, guard)?;
+    let changes = ChangeSet::from_tar(out_dir.join(driver::CHANGES_TAR), &worktree, guard)?;
     Ok(RunOutcome {
         exit_code,
         stdout,
@@ -239,18 +247,29 @@ fn container_command(
     cmd
 }
 
-/// Classify a container exit that produced no workload exit code: the
-/// driver failed. Stage from the driver's exit-code protocol; anything
-/// else is a container-level failure (bad image, runtime error) — stderr
-/// has the story.
-fn driver_failure(status: std::process::ExitStatus, stderr: &[u8]) -> Error {
+/// Classify a nonzero container exit: the driver failed (it exits 0 only
+/// on full success). Stage from the driver's exit-code protocol —
+/// [`driver::EXIT_EXPORT`] carries the workload's recorded exit code when
+/// one was readable, and falls to the timing-unknown bucket when not;
+/// anything outside the protocol is a container-level failure (bad image,
+/// runtime error, signal death) — stderr has the story.
+fn driver_failure(
+    status: std::process::ExitStatus,
+    workload_exit: Option<i32>,
+    stderr: &[u8],
+    out: &mut impl Write,
+) -> Error {
     let stage = match status.code() {
         Some(driver::EXIT_MKDIR) => DriverStage::Mkdir,
         Some(driver::EXIT_OVERLAY) => DriverStage::OverlayMount,
         Some(driver::EXIT_CD) => DriverStage::Cd,
+        Some(driver::EXIT_EXPORT) => match workload_exit {
+            Some(workload_exit) => DriverStage::Export { workload_exit },
+            None => DriverStage::Container,
+        },
         _ => DriverStage::Container,
     };
-    emit_stderr_tail(stage, stderr);
+    emit_stderr_tail(stage, stderr, out);
     Error::Driver {
         stage,
         code: status.code(),
@@ -259,8 +278,9 @@ fn driver_failure(status: std::process::ExitStatus, stderr: &[u8]) -> Error {
 
 /// Operator diagnostic for any failed driver stage: quote a bounded tail
 /// of the container's stderr, where the driver's `daemar-driver: <stage>`
-/// line and the failing tool's own error live.
-fn emit_stderr_tail(stage: DriverStage, stderr: &[u8]) {
+/// line and the failing tool's own error live. Production callers pass a
+/// locked stderr; tests pass a `Vec` and assert the emission semantics.
+fn emit_stderr_tail(stage: DriverStage, stderr: &[u8], out: &mut impl Write) {
     let tail = String::from_utf8_lossy(stderr);
     let mut last_lines = tail
         .lines()
@@ -268,9 +288,8 @@ fn emit_stderr_tail(stage: DriverStage, stderr: &[u8]) {
         .take(STDERR_TAIL_LINES)
         .collect::<Vec<_>>();
     last_lines.reverse();
-    // Stream straight to a locked stderr (C13): the Vec exists only for
-    // the inherent reversal; best-effort, like every diagnostic write.
-    let mut out = std::io::stderr().lock();
+    // Stream straight to the sink (C13): the Vec exists only for the
+    // inherent reversal; best-effort, like every diagnostic write.
     let _ = write!(out, "daemar-sandbox: driver failed at {stage}: ");
     for (i, line) in last_lines.iter().enumerate() {
         if i > 0 {
@@ -394,6 +413,67 @@ mod tests {
     fn empty_command_is_rejected() {
         let spec = RunSpec::new(vec![], "/tmp");
         assert!(matches!(run(&spec), Err(Error::EmptyCommand)));
+    }
+
+    /// A real wait(2) status for a normally-exited child with this code.
+    fn exited(code: i32) -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code << 8)
+    }
+
+    /// PER-80: status-first classification. Stage codes map to their
+    /// stages; export carries the recorded workload exit; an export
+    /// status without a readable workload code, and anything outside the
+    /// protocol, land in the timing-unknown Container bucket.
+    #[test]
+    fn nonzero_statuses_classify_by_the_driver_protocol() {
+        let cases: [(i32, Option<i32>, DriverStage); 6] = [
+            (driver::EXIT_MKDIR, None, DriverStage::Mkdir),
+            (driver::EXIT_OVERLAY, None, DriverStage::OverlayMount),
+            (driver::EXIT_CD, None, DriverStage::Cd),
+            (
+                driver::EXIT_EXPORT,
+                Some(3),
+                DriverStage::Export { workload_exit: 3 },
+            ),
+            (driver::EXIT_EXPORT, None, DriverStage::Container),
+            (1, Some(1), DriverStage::Container),
+        ];
+        for (code, workload_exit, want) in cases {
+            let mut sink = Vec::new();
+            let err = driver_failure(exited(code), workload_exit, b"boom\n", &mut sink);
+            let Error::Driver { stage, code: got } = err else {
+                panic!("expected Driver error, got: {err}");
+            };
+            assert_eq!(stage, want);
+            assert_eq!(got, Some(code));
+            assert!(!sink.is_empty(), "classification must emit a diagnostic");
+        }
+    }
+
+    /// PER-80 (folded Low): the diagnostic quotes a bounded *tail* — with
+    /// more stderr lines than the bound, the last line is present and the
+    /// first is not. Semantic assertions only; exact wording is not a
+    /// contract (the Display-lock test in error.rs owns wording).
+    #[test]
+    fn stderr_tail_is_emitted_and_bounded() {
+        use std::fmt::Write as _;
+        let mut stderr = String::new();
+        for i in 1..=STDERR_TAIL_LINES * 2 {
+            let _ = writeln!(stderr, "line-{i}");
+        }
+        let mut sink = Vec::new();
+        emit_stderr_tail(DriverStage::Cd, stderr.as_bytes(), &mut sink);
+        let out = String::from_utf8(sink).unwrap();
+        assert!(out.contains(&format!("line-{}", STDERR_TAIL_LINES * 2)));
+        assert!(out.contains(&format!("line-{}", STDERR_TAIL_LINES + 1)));
+        assert!(!out.contains("line-1 "));
+        assert!(!out.contains(&format!("line-{STDERR_TAIL_LINES} ")));
+
+        // Emission happens even with nothing to quote.
+        let mut empty_sink = Vec::new();
+        emit_stderr_tail(DriverStage::Cd, b"", &mut empty_sink);
+        assert!(!empty_sink.is_empty());
     }
 
     #[test]
