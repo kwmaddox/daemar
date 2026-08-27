@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/sandbox", "crates/sandbox-cli"]
+# Empty since the sandbox-era tear-out (archive/sandbox-era). The lint
+# tables below are live policy: factory crates added here inherit them
+# via [lints] workspace = true.
+members = []
 
 [workspace.package]
 edition = "2021"
@@ -44,9 +47,3 @@ as_conversions = "deny"
 missing_docs = "warn"
 # The workspace has zero unsafe; keep that a contract, not an accident.
 unsafe_code = "deny"
-
-[workspace.dependencies]
-daemar-sandbox = { path = "crates/sandbox" }
-tar = "0.4"
-uuid = { version = "1", features = ["v4"] }
-clap = { version = "4", features = ["derive"] }

@@ -1,9 +1,11 @@
 # Working in this repository
 
 Operational guidance for coding agents and ticket authors. daemar is a
-Rust workspace building a software factory: a harness that runs sandboxed
-coding agents against small, spec-reviewed tickets. Current phase: sandbox
-v1 (one-shot Apple Container runs, overlay promotion).
+Rust workspace building a software factory: a harness that runs coding
+agents against small, spec-reviewed tickets. Current phase: re-founding —
+the factory loop itself. The sandbox era is archived on
+`archive/sandbox-era`; sandboxing is a future spun-off service (Nar'baha)
+that stays dormant until the factory's real needs pull it into existence.
 
 ## Commands
 

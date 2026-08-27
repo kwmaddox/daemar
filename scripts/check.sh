@@ -7,8 +7,7 @@
 # the workspace lint table and clippy.toml), cargo-deny (L1), tests.
 set -eu
 
-# Pinned tool versions. Bumps are deliberate, tested events — same policy
-# as the container CLI pin (specs/sandbox.md operating rules).
+# Pinned tool versions. Bumps are deliberate, tested events.
 CARGO_DENY_VERSION="0.20.2"
 AST_GREP_VERSION="0.45.2"
 
@@ -31,9 +30,19 @@ require_pinned cargo-deny "$CARGO_DENY_VERSION" \
 require_pinned ast-grep "$AST_GREP_VERSION" \
     "$(ast-grep --version 2>/dev/null | awk '{print $2}')" ast-grep
 
-cargo fmt --all --check
 ast-grep test
 ast-grep scan
+
+# The sandbox-era tear-out (archive/sandbox-era) left the workspace
+# memberless, and the cargo gates cannot run with zero targets. This
+# guard is self-healing: the moment the first factory crate lands in
+# crates/, every cargo gate re-engages with no script change.
+if ! ls crates/*/Cargo.toml >/dev/null 2>&1; then
+    echo "check: no crates yet — cargo gates (fmt, clippy, deny, test) skipped" >&2
+    exit 0
+fi
+
+cargo fmt --all --check
 
 # Second ignore-discipline pass, over a token-renamed copy. A *trailing*
 # bare `// ast-grep-ignore` suppresses every finding on its own line —
