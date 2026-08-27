@@ -1,10 +1,19 @@
 # Open-source agent sandboxes that could replace Daemar's sandbox
 
+> **Status: discovery report, not the adoption recommendation.** The initial
+> ranking below was superseded after reconciling it with Daemar's existing
+> hands-on Microsandbox trial. That trial found a raw-IP egress bypass whenever
+> a hostname allow rule was enabled, while the project's published secret-leak
+> advisory remained unpatched. Microsandbox is therefore rejected as a security
+> upstream for Daemar, and Wreckroom is transitively rejected because it builds
+> on Microsandbox. See
+> [`oss-sandbox-options-synthesis.md`](./oss-sandbox-options-synthesis.md).
+
 **Research date:** 2026-08-26. **Question:** is there a current open-source,
 local/self-hostable product that can replace Daemar's sandbox, rather than
 continuing to grow a security-sensitive implementation in this repository?
 
-## Bottom line
+## Discovery result (superseded)
 
 **No current candidate is a drop-in, end-to-end replacement for Daemar's B1-B10
 contract.** The market has credible VM runtimes and several agent-sandbox

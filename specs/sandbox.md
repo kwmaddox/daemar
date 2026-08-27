@@ -1,5 +1,10 @@
 # Sandbox — desired behaviors
 
+This file specifies the current one-shot sandbox slice. It is one explored
+mechanism for the broader product outcome in
+[`secure-agentic-coding-environments.md`](secure-agentic-coding-environments.md),
+not the permanent definition of a Daemar coding environment.
+
 The intended outcome of the sandbox slice, stated as plain, falsifiable
 assertions. Every battery test cites the behavior ID(s) it proves — in the
 test name or a comment. A behavior with no citing test is unproven. Future
