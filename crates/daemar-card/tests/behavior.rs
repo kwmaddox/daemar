@@ -116,6 +116,7 @@ struct CardWorld {
     kill_statuses: Vec<std::process::ExitStatus>,
     flag_db: Option<(TempDir, String)>,
     dotenv_db: Option<(TempDir, String)>,
+    dotenv_second: Option<(TempDir, String)>,
     fake_home: Option<TempDir>,
     iso_cwd: Option<TempDir>,
 }
@@ -1314,6 +1315,69 @@ fn dotenv_database_holds_card(w: &mut CardWorld) {
         cards.len(),
         1,
         "the record must live in the dotenv-selected database"
+    );
+}
+
+#[when("a Card is created via a dotenv with duplicate database entries")]
+fn create_via_dotenv_duplicates(w: &mut CardWorld) {
+    let home = TempDir::new().expect("temp home");
+    let first = TempDir::new().expect("first dir");
+    let second = TempDir::new().expect("second dir");
+    let factory = home.path().join(".daemar");
+    std::fs::create_dir_all(&factory).expect("factory home");
+    let first_db = first
+        .path()
+        .join("daemar.db")
+        .to_str()
+        .expect("utf-8 path")
+        .to_owned();
+    let second_db = second
+        .path()
+        .join("daemar.db")
+        .to_str()
+        .expect("utf-8 path")
+        .to_owned();
+    std::fs::write(
+        factory.join(".env"),
+        format!("DAEMAR_DB={first_db}\nDAEMAR_DB={second_db}\n"),
+    )
+    .expect("write dotenv");
+    let run = run_card_command(|command| {
+        command
+            .env("HOME", home.path())
+            .env_remove("DAEMAR_DB")
+            .args([
+                "create",
+                "--title",
+                "Duplicate-key probe",
+                "--producer",
+                "test-operator",
+                "--producer-kind",
+                "operator",
+            ]);
+    });
+    run.success_json();
+    w.fake_home = Some(home);
+    w.dotenv_db = Some((first, first_db));
+    w.dotenv_second = Some((second, second_db));
+}
+
+#[then("the first declared database holds the Card and the second does not exist")]
+fn first_declaration_wins(w: &mut CardWorld) {
+    let first_db = w.dotenv_db.as_ref().expect("a first declaration").1.clone();
+    let cards = run_card(&first_db, &["list"]).success_json()["cards"]
+        .as_array()
+        .expect("cards")
+        .clone();
+    assert_eq!(
+        cards.len(),
+        1,
+        "the first declared database must hold the Card"
+    );
+    let second_db = &w.dotenv_second.as_ref().expect("a second declaration").1;
+    assert!(
+        !Path::new(second_db).exists(),
+        "a later duplicate must not silently redirect the record to {second_db}"
     );
 }
 

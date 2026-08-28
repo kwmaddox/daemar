@@ -43,6 +43,12 @@ Feature: The record survives the process
     Then the external directory keeps its permissions
     And the dotenv database holds exactly one Card
 
+  Scenario: Duplicate dotenv keys keep the first declaration
+    # dotenvy's from_path is first-declaration-wins; a stray later line
+    # must not silently redirect an existing installation's record.
+    When a Card is created via a dotenv with duplicate database entries
+    Then the first declared database holds the Card and the second does not exist
+
   Scenario: A broken dotenv file fails loudly instead of splitting the record
     # Deep review: silently falling back to the default database would
     # split the durable Card record across two stores.

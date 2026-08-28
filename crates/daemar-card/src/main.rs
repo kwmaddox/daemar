@@ -279,7 +279,9 @@ fn resolve_config(flag: Option<PathBuf>) -> Result<Config, Failure> {
 /// finding: dotenv env mutation). The file is parsed in full so a
 /// present-but-broken dotenv fails loudly — silent fallback would split
 /// the durable record across two stores; only genuine absence is
-/// ignorable. Duplicate keys keep dotenv's last-wins convention.
+/// ignorable. Duplicate keys keep `dotenvy::from_path`'s documented
+/// first-declaration-wins convention, so a stray later line cannot
+/// silently redirect an existing installation's record.
 fn dotenv_db_path(factory_home: &std::path::Path) -> Result<Option<PathBuf>, Failure> {
     let env_file = factory_home.join(ENV_FILE);
     let entries = match dotenvy::from_path_iter(&env_file) {
@@ -298,7 +300,9 @@ fn dotenv_db_path(factory_home: &std::path::Path) -> Result<Option<PathBuf>, Fai
             path: env_file.clone(),
             source,
         })?;
-        if key == DB_ENV_VAR {
+        // First declaration wins; the loop still consumes every entry so
+        // a parse error after the match stays loud.
+        if key == DB_ENV_VAR && selected.is_none() {
             selected = Some(PathBuf::from(value));
         }
     }
