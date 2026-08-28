@@ -169,7 +169,8 @@ impl Payload {
     /// # Errors
     ///
     /// [`Error::UnknownSchemaVersion`] for a version this build cannot
-    /// validate; [`Error::MalformedPayload`] when the JSON does not parse
+    /// validate; [`Error::BlankField`] when required text is empty or
+    /// whitespace-only; [`Error::MalformedPayload`] when the JSON does not parse
     /// as the claimed type.
     pub fn from_raw(
         entry_type: EntryType,
@@ -177,17 +178,33 @@ impl Payload {
         raw: &str,
     ) -> Result<Payload, Error> {
         let malformed = |source| Error::MalformedPayload { entry_type, source };
-        match (entry_type, schema_version) {
-            (EntryType::CardCreated, CURRENT_SCHEMA_VERSION) => Ok(Payload::CardCreatedV1(
-                serde_json::from_str(raw).map_err(malformed)?,
-            )),
-            (EntryType::Decision, CURRENT_SCHEMA_VERSION) => Ok(Payload::DecisionV1(
-                serde_json::from_str(raw).map_err(malformed)?,
-            )),
-            (_, requested) => Err(Error::UnknownSchemaVersion {
-                entry_type,
-                requested,
-            }),
+        let payload = match (entry_type, schema_version) {
+            (EntryType::CardCreated, CURRENT_SCHEMA_VERSION) => {
+                Payload::CardCreatedV1(serde_json::from_str(raw).map_err(malformed)?)
+            }
+            (EntryType::Decision, CURRENT_SCHEMA_VERSION) => {
+                Payload::DecisionV1(serde_json::from_str(raw).map_err(malformed)?)
+            }
+            (_, requested) => {
+                return Err(Error::UnknownSchemaVersion {
+                    entry_type,
+                    requested,
+                })
+            }
+        };
+        payload.validate()?;
+        Ok(payload)
+    }
+
+    /// Required workflow content must not be blank (deep-review finding 2).
+    /// Optional external references stay exempt.
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        match self {
+            Payload::CardCreatedV1(created) => require_text(&created.title, "title"),
+            Payload::DecisionV1(decision) => {
+                require_text(&decision.summary, "decision summary")?;
+                require_text(&decision.reason, "decision reason")
+            }
         }
     }
 
@@ -224,6 +241,15 @@ impl Payload {
             entry_type: self.entry_type(),
             source,
         })
+    }
+}
+
+/// Rejects empty or whitespace-only required text (S1 blank-field rule).
+pub(crate) fn require_text(value: &str, field: &'static str) -> Result<(), Error> {
+    if value.trim().is_empty() {
+        Err(Error::BlankField { field })
+    } else {
+        Ok(())
     }
 }
 
@@ -370,6 +396,16 @@ mod tests {
             ),
             (Error::MissingProducer, ErrorCategory::Validation),
             (
+                Error::BlankField { field: "title" },
+                ErrorCategory::Validation,
+            ),
+            (
+                Error::NotAppendable {
+                    entry_type: EntryType::CardCreated,
+                },
+                ErrorCategory::Validation,
+            ),
+            (
                 Error::IdempotencyConflict {
                     key: "k".to_owned(),
                 },
@@ -468,6 +504,35 @@ mod tests {
                 entry_type: EntryType::Decision,
                 requested: 999
             })
+        ));
+    }
+
+    /// Deep review: required workflow content cannot be empty or
+    /// whitespace-only; optional references stay exempt.
+    #[test]
+    fn from_raw_rejects_blank_required_fields() {
+        let blank_decisions = [
+            r#"{"summary":"","reason":"r"}"#,
+            r#"{"summary":"   ","reason":"r"}"#,
+            r#"{"summary":"s","reason":""}"#,
+            r#"{"summary":"s","reason":"\t "}"#,
+        ];
+        for raw in blank_decisions {
+            assert!(
+                matches!(
+                    Payload::from_raw(EntryType::Decision, CURRENT_SCHEMA_VERSION, raw),
+                    Err(Error::BlankField { .. })
+                ),
+                "expected BlankField for {raw}"
+            );
+        }
+        assert!(matches!(
+            Payload::from_raw(
+                EntryType::CardCreated,
+                CURRENT_SCHEMA_VERSION,
+                r#"{"title":"  ","task_key":null,"workspace":null}"#,
+            ),
+            Err(Error::BlankField { field: "title" })
         ));
     }
 

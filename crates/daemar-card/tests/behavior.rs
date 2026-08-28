@@ -83,12 +83,10 @@ impl Run {
     }
 }
 
-fn run_card(db: &str, args: &[&str]) -> Run {
-    let output = Command::new(CARD_BIN)
-        .args(args)
-        .env("DAEMAR_DB", db)
-        .output()
-        .expect("failed to spawn the card binary");
+fn run_card_command(configure: impl FnOnce(&mut Command)) -> Run {
+    let mut command = Command::new(CARD_BIN);
+    configure(&mut command);
+    let output = command.output().expect("failed to spawn the card binary");
     let stdout_json = serde_json::from_slice(&output.stdout).ok();
     let stderr_json = serde_json::from_slice(&output.stderr).ok();
     Run {
@@ -96,6 +94,12 @@ fn run_card(db: &str, args: &[&str]) -> Run {
         stdout_json,
         stderr_json,
     }
+}
+
+fn run_card(db: &str, args: &[&str]) -> Run {
+    run_card_command(|command| {
+        command.args(args).env("DAEMAR_DB", db);
+    })
 }
 
 #[derive(Debug, Default, cucumber::World)]
@@ -107,6 +111,10 @@ struct CardWorld {
     first_entry: Option<(String, u64)>,
     retry_args: Option<Vec<String>>,
     concurrent: Vec<Run>,
+    reads: Vec<Value>,
+    flag_db: Option<(TempDir, String)>,
+    fake_home: Option<TempDir>,
+    iso_cwd: Option<TempDir>,
 }
 
 impl CardWorld {
@@ -186,6 +194,10 @@ impl CardWorld {
             .as_array()
             .expect("cards array")
             .clone()
+    }
+
+    fn flag_db_path(&self) -> String {
+        self.flag_db.as_ref().expect("a --db override").1.clone()
     }
 
     fn assert_entry_count(&mut self, count: usize) {
@@ -889,4 +901,226 @@ async fn main() {
         .fail_on_skipped()
         .run_and_exit("tests/features")
         .await;
+}
+
+// --- Deep-review additions: reserved types, blanks, syntax contract,
+// --- precedence, and the private factory home ---------------------------
+
+#[when("a producer submits an append that is of the reserved card-created type")]
+fn append_reserved_card_created(w: &mut CardWorld) {
+    let card = w.primary_card();
+    let payload = serde_json::json!({ "title": "a second creation fact" }).to_string();
+    let run = w.run(&[
+        "append",
+        &card,
+        "--entry-type",
+        "card-created",
+        "--payload",
+        &payload,
+        "--producer",
+        "claude",
+        "--producer-kind",
+        "agent",
+    ]);
+    w.last = Some(run);
+}
+
+#[when("a producer submits an append that is carrying a blank producer identity")]
+fn append_blank_producer(w: &mut CardWorld) {
+    let card = w.primary_card();
+    let payload = serde_json::json!({ "summary": "s", "reason": "r" }).to_string();
+    let run = w.run(&[
+        "append",
+        &card,
+        "--entry-type",
+        "decision",
+        "--payload",
+        &payload,
+        "--producer",
+        "   ",
+        "--producer-kind",
+        "agent",
+    ]);
+    w.last = Some(run);
+}
+
+#[then("no Card exists")]
+fn no_card_exists(w: &mut CardWorld) {
+    assert!(
+        w.list_cards().is_empty(),
+        "no Card should have been created"
+    );
+}
+
+#[when(expr = "the CLI is invoked with arguments {string}")]
+fn invoke_with_raw_arguments(w: &mut CardWorld, arguments: String) {
+    let split: Vec<&str> = arguments.split_whitespace().collect();
+    let run = w.run(&split);
+    w.last = Some(run);
+}
+
+#[when("the Card history is read twice in separate processes")]
+fn read_history_twice(w: &mut CardWorld) {
+    let card = w.primary_card();
+    let first = w.run(&["history", &card]).success_json().clone();
+    let second = w.run(&["history", &card]).success_json().clone();
+    w.reads = vec![first, second];
+}
+
+#[then(expr = "both reads return {int} identical entries in sequence order {int} through {int}")]
+fn reads_are_identical(w: &mut CardWorld, count: u64, from: u64, through: u64) {
+    let first = w.reads.first().expect("a first read");
+    let second = w.reads.get(1).expect("a second read");
+    assert_eq!(
+        first, second,
+        "a fresh process must reproduce the identical record — IDs, provenance, timestamps, payloads"
+    );
+    let entries = first["entries"].as_array().expect("entries").clone();
+    assert_eq!(
+        entries.len(),
+        usize::try_from(count).expect("count fits usize"),
+        "entry count"
+    );
+    assert_sequence_range(&entries, from, through);
+}
+
+#[when(expr = "a Card titled {string} is created with a --db override")]
+fn create_with_db_flag(w: &mut CardWorld, title: String) {
+    let dir = TempDir::new().expect("temp dir");
+    let flag_path = dir
+        .path()
+        .join("daemar.db")
+        .to_str()
+        .expect("utf-8 path")
+        .to_owned();
+    let env_db = w.db_path();
+    let run = run_card_command(|command| {
+        command.env("DAEMAR_DB", &env_db).args([
+            "create",
+            "--db",
+            &flag_path,
+            "--title",
+            &title,
+            "--producer",
+            "test-operator",
+            "--producer-kind",
+            "operator",
+        ]);
+    });
+    run.success_json();
+    w.flag_db = Some((dir, flag_path));
+}
+
+#[then(expr = "the override database holds exactly one Card titled {string}")]
+fn override_db_holds_card(w: &mut CardWorld, title: String) {
+    let flag_path = w.flag_db_path();
+    let env_db = w.db_path();
+    let run = run_card_command(|command| {
+        command
+            .env("DAEMAR_DB", &env_db)
+            .args(["list", "--db", &flag_path]);
+    });
+    let cards = run.success_json()["cards"]
+        .as_array()
+        .expect("cards")
+        .clone();
+    assert_eq!(
+        cards.len(),
+        1,
+        "the override database must hold exactly one Card"
+    );
+    assert_eq!(
+        cards.first().expect("one card")["title"].as_str(),
+        Some(title.as_str())
+    );
+}
+
+#[then("the environment database holds no Cards")]
+fn environment_db_empty(w: &mut CardWorld) {
+    assert!(
+        w.list_cards().is_empty(),
+        "the flag must have outranked DAEMAR_DB"
+    );
+}
+
+#[then(expr = "db-path with the override reports source {string}")]
+fn db_path_reports_flag(w: &mut CardWorld, source: String) {
+    let flag_path = w.flag_db_path();
+    let env_db = w.db_path();
+    let run = run_card_command(|command| {
+        command
+            .env("DAEMAR_DB", &env_db)
+            .args(["db-path", "--db", &flag_path]);
+    });
+    let json = run.success_json();
+    assert_eq!(json["db_path"].as_str(), Some(flag_path.as_str()));
+    assert_eq!(json["source"].as_str(), Some(source.as_str()));
+}
+
+#[when("a Card is created in an isolated factory home")]
+fn create_in_isolated_home(w: &mut CardWorld) {
+    let home = TempDir::new().expect("temp home");
+    let cwd = TempDir::new().expect("temp cwd");
+    let run = run_card_command(|command| {
+        command
+            .env("HOME", home.path())
+            .env_remove("DAEMAR_DB")
+            .current_dir(cwd.path())
+            .args([
+                "create",
+                "--title",
+                "Default home probe",
+                "--producer",
+                "test-operator",
+                "--producer-kind",
+                "operator",
+            ]);
+    });
+    run.success_json();
+    w.fake_home = Some(home);
+    w.iso_cwd = Some(cwd);
+}
+
+#[then("the database exists at .daemar/daemar.db inside that home")]
+fn database_in_factory_home(w: &mut CardWorld) {
+    let home = w.fake_home.as_ref().expect("an isolated home");
+    let db = home.path().join(".daemar").join("daemar.db");
+    assert!(
+        db.exists(),
+        "expected the default database at {}",
+        db.display()
+    );
+}
+
+#[then("the factory home and database are private to the operator")]
+fn factory_home_is_private(w: &mut CardWorld) {
+    let home = w.fake_home.as_ref().expect("an isolated home");
+    let factory = home.path().join(".daemar");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()))
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&factory), 0o700, "factory home must be owner-only");
+        assert_eq!(
+            mode(&factory.join("daemar.db")),
+            0o600,
+            "database must be owner-only"
+        );
+        for side in ["daemar.db-wal", "daemar.db-shm"] {
+            let path = factory.join(side);
+            if path.exists() {
+                assert_eq!(mode(&path), 0o600, "{side} must be owner-only");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _unused = factory;
+    }
 }

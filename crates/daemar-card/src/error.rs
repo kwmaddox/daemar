@@ -36,6 +36,19 @@ pub enum Error {
     /// The request carried no producer identity or kind; every accepted
     /// entry requires provenance (S1-B5).
     MissingProducer,
+    /// A required semantic field was empty or whitespace-only. Required
+    /// workflow content and provenance cannot be blank; optional external
+    /// references stay `Option` and are exempt.
+    BlankField {
+        /// Which required field was blank.
+        field: &'static str,
+    },
+    /// The entry type is written by the store itself and cannot be
+    /// appended by a producer (`card-created` exists only at sequence 1).
+    NotAppendable {
+        /// The reserved entry type the producer attempted to append.
+        entry_type: EntryType,
+    },
     /// An idempotency key was reused with different content (S1-B4).
     IdempotencyConflict {
         /// The reused key.
@@ -101,7 +114,9 @@ impl Error {
             | Error::UnknownProducerKind { .. }
             | Error::UnknownSchemaVersion { .. }
             | Error::MalformedPayload { .. }
-            | Error::MissingProducer => ErrorCategory::Validation,
+            | Error::MissingProducer
+            | Error::BlankField { .. }
+            | Error::NotAppendable { .. } => ErrorCategory::Validation,
             Error::IdempotencyConflict { .. } => ErrorCategory::Conflict,
             Error::CardNotFound { .. } => ErrorCategory::Missing,
             Error::Corrupt { .. } | Error::Storage { .. } => ErrorCategory::Storage,
@@ -136,6 +151,15 @@ impl std::fmt::Display for Error {
             Error::MissingProducer => {
                 write!(f, "producer identity and kind are required on every entry")
             }
+            Error::BlankField { field } => {
+                write!(f, "{field} must not be empty or whitespace-only")
+            }
+            Error::NotAppendable { entry_type } => {
+                write!(
+                    f,
+                    "entry type `{entry_type}` is written by the store and cannot be appended"
+                )
+            }
             Error::IdempotencyConflict { key } => {
                 write!(
                     f,
@@ -160,6 +184,8 @@ impl std::error::Error for Error {
             | Error::UnknownProducerKind { .. }
             | Error::UnknownSchemaVersion { .. }
             | Error::MissingProducer
+            | Error::BlankField { .. }
+            | Error::NotAppendable { .. }
             | Error::IdempotencyConflict { .. }
             | Error::CardNotFound { .. }
             | Error::Corrupt { .. } => None,

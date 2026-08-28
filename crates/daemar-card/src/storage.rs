@@ -58,6 +58,7 @@ impl Store {
                 context: StorageContext::Migrate,
                 source: sqlx::Error::from(source),
             })?;
+        restrict_database_permissions(path)?;
         Ok(Store { pool })
     }
 
@@ -68,10 +69,12 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::IdempotencyConflict`], [`Error::MalformedPayload`], or
-    /// [`Error::Storage`].
+    /// [`Error::BlankField`], [`Error::IdempotencyConflict`],
+    /// [`Error::MalformedPayload`], or [`Error::Storage`].
     pub async fn create_card(&self, request: CreateCard) -> Result<CardId, Error> {
         let context = StorageContext::CreateCard;
+        crate::domain::require_text(&request.producer.id, "producer identity")?;
+        crate::domain::require_text(&request.title, "title")?;
         let created = CardCreatedV1 {
             title: request.title,
             task_key: request.task_key,
@@ -127,11 +130,23 @@ impl Store {
     ///
     /// # Errors
     ///
+    /// [`Error::NotAppendable`], [`Error::BlankField`],
     /// [`Error::CardNotFound`], [`Error::IdempotencyConflict`],
     /// [`Error::MalformedPayload`], [`Error::Corrupt`], or
     /// [`Error::Storage`].
     pub async fn append(&self, request: AppendEntry) -> Result<Accepted, Error> {
         let context = StorageContext::AppendEntry;
+        // card-created exists only at sequence 1, written by create_card;
+        // a second creation fact would be a contradiction in the record
+        // (deep-review finding 1). Defended at this seam so every future
+        // frontend inherits the rule.
+        if matches!(request.payload, Payload::CardCreatedV1(_)) {
+            return Err(Error::NotAppendable {
+                entry_type: EntryType::CardCreated,
+            });
+        }
+        crate::domain::require_text(&request.producer.id, "producer identity")?;
+        request.payload.validate()?;
         self.require_card(&request.card_id, context).await?;
         let payload_value = request.payload.to_json()?;
         let payload_text = payload_value.to_string();
@@ -387,6 +402,46 @@ impl Store {
     }
 }
 
+/// Owner-only mode for the durable Card record and its `WAL`/`SHM`
+/// side files: M1 doesn't authenticate producers, but that grants
+/// nothing to unrelated local OS users (deep-review finding 4).
+#[cfg(unix)]
+const DB_FILE_MODE: u32 = 0o600;
+
+/// The Card log is factory-owned: whatever the operator's umask, the
+/// database and its side files end up owner-only. Applies on every open
+/// so pre-existing permissive artifacts are also repaired.
+#[cfg(unix)]
+fn restrict_database_permissions(path: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut side_files = std::path::PathBuf::from(path).into_os_string();
+    let wal = {
+        let mut name = side_files.clone();
+        name.push("-wal");
+        std::path::PathBuf::from(name)
+    };
+    side_files.push("-shm");
+    let shm = std::path::PathBuf::from(side_files);
+    for file in [path, wal.as_path(), shm.as_path()] {
+        if file.exists() {
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(DB_FILE_MODE)).map_err(
+                |source| Error::Storage {
+                    context: StorageContext::Open,
+                    source: sqlx::Error::Io(source),
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_database_permissions(_path: &Path) -> Result<(), Error> {
+    // Non-Unix targets have no mode bits to normalize; access control is
+    // the platform ACL's concern until a Windows slice takes it up.
+    Ok(())
+}
+
 /// The canonical JSON string used for idempotency comparison: identical
 /// requests replay, different ones conflict (S1-B4/B7).
 fn canonical_fingerprint(
@@ -440,7 +495,11 @@ fn entry_from_row(row: &SqliteRow, context: StorageContext) -> Result<Entry, Err
     let schema_version =
         u32::try_from(schema_version_raw).map_err(|_negative| Error::Corrupt { context })?;
     let payload_text: String = column(row, "payload", context)?;
-    let payload = Payload::from_raw(entry_type, schema_version, &payload_text)?;
+    // A stored payload that no longer parses is store corruption, not a
+    // producer mistake — an agent must never be told to repair its
+    // request over it (deep-review finding 5).
+    let payload = Payload::from_raw(entry_type, schema_version, &payload_text)
+        .map_err(|_unreadable| Error::Corrupt { context })?;
     let kind_text: String = column(row, "producer_kind", context)?;
     let kind = ProducerKind::from_str(&kind_text).map_err(|_unknown| Error::Corrupt { context })?;
     Ok(Entry {
@@ -512,6 +571,154 @@ mod tests {
         ];
         for variant in variants {
             assert_ne!(base, variant);
+        }
+    }
+}
+
+#[cfg(test)]
+mod store_seam_tests {
+    use super::*;
+    use crate::domain::DecisionV1;
+    use crate::error::ErrorCategory;
+
+    async fn open_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let store = Store::open(&dir.path().join("daemar.db"))
+            .await
+            .expect("open store");
+        (dir, store)
+    }
+
+    fn operator(id: &str) -> Producer {
+        Producer {
+            id: id.to_owned(),
+            kind: ProducerKind::Operator,
+        }
+    }
+
+    async fn open_card(store: &Store) -> CardId {
+        store
+            .create_card(CreateCard {
+                title: "Store-seam fixture".to_owned(),
+                task_key: None,
+                workspace: None,
+                producer: operator("test-operator"),
+                idempotency_key: None,
+            })
+            .await
+            .expect("create card")
+    }
+
+    fn decision_payload() -> Payload {
+        Payload::DecisionV1(DecisionV1 {
+            summary: "s".to_owned(),
+            reason: "r".to_owned(),
+        })
+    }
+
+    /// Deep-review finding 1, store seam: the reserved card-created type
+    /// is refused even by callers that bypass the CLI.
+    #[tokio::test]
+    async fn store_refuses_appending_card_created() {
+        let (_dir, store) = open_store().await;
+        let card_id = open_card(&store).await;
+        let refused = store
+            .append(AppendEntry {
+                card_id: card_id.clone(),
+                payload: Payload::CardCreatedV1(CardCreatedV1 {
+                    title: "a second creation fact".to_owned(),
+                    task_key: None,
+                    workspace: None,
+                }),
+                producer: operator("test-operator"),
+                idempotency_key: None,
+            })
+            .await;
+        assert!(matches!(
+            refused,
+            Err(Error::NotAppendable {
+                entry_type: EntryType::CardCreated
+            })
+        ));
+        let history = store.history(&card_id, None).await.expect("history");
+        assert_eq!(history.len(), 1, "the record must be untouched");
+    }
+
+    /// Deep-review finding 2, store seam: blank provenance and blank
+    /// required content are refused below the CLI.
+    #[tokio::test]
+    async fn store_refuses_blank_required_fields() {
+        let (_dir, store) = open_store().await;
+        let card_id = open_card(&store).await;
+        let blank_producer = store
+            .append(AppendEntry {
+                card_id: card_id.clone(),
+                payload: decision_payload(),
+                producer: operator("   "),
+                idempotency_key: None,
+            })
+            .await;
+        assert!(matches!(
+            blank_producer,
+            Err(Error::BlankField {
+                field: "producer identity"
+            })
+        ));
+        let blank_reason = store
+            .append(AppendEntry {
+                card_id: card_id.clone(),
+                payload: Payload::DecisionV1(DecisionV1 {
+                    summary: "s".to_owned(),
+                    reason: " ".to_owned(),
+                }),
+                producer: operator("test-operator"),
+                idempotency_key: None,
+            })
+            .await;
+        assert!(matches!(blank_reason, Err(Error::BlankField { .. })));
+        let blank_title = store
+            .create_card(CreateCard {
+                title: "\t".to_owned(),
+                task_key: None,
+                workspace: None,
+                producer: operator("test-operator"),
+                idempotency_key: None,
+            })
+            .await;
+        assert!(matches!(
+            blank_title,
+            Err(Error::BlankField { field: "title" })
+        ));
+    }
+
+    /// Deep-review finding 5: a stored payload that no longer parses is
+    /// store corruption (category storage), never producer validation.
+    #[tokio::test]
+    async fn corrupted_stored_payload_reads_as_corrupt() {
+        let (_dir, store) = open_store().await;
+        let card_id = open_card(&store).await;
+        store
+            .append(AppendEntry {
+                card_id: card_id.clone(),
+                payload: decision_payload(),
+                producer: operator("test-operator"),
+                idempotency_key: None,
+            })
+            .await
+            .expect("append");
+        // Simulated corruption: tests may write the pool directly; the
+        // unsupported-writer rule binds producers, not this simulation.
+        sqlx::query("UPDATE card_entries SET payload = '}{' WHERE sequence = 2")
+            .execute(&store.pool)
+            .await
+            .expect("corrupt the stored payload");
+        let read = store.history(&card_id, None).await;
+        match read {
+            Err(error) => {
+                assert!(matches!(error, Error::Corrupt { .. }), "got {error:?}");
+                assert_eq!(error.category(), ErrorCategory::Storage);
+            }
+            Ok(entries) => panic!("corruption must not read cleanly: {entries:?}"),
         }
     }
 }

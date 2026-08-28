@@ -35,12 +35,20 @@ Feature: Append workflow decisions with provenance
     And the Card still has exactly 3 entries
 
     Examples:
-      | defect                          | category   |
-      | missing the decision reason     | validation |
-      | missing producer identity       | validation |
-      | of an unknown entry type        | validation |
-      | of an unknown schema version    | validation |
-      | addressed to a nonexistent Card | missing    |
+      | defect                                    | category   |
+      | missing the decision reason               | validation |
+      | missing producer identity                 | validation |
+      | of an unknown entry type                  | validation |
+      | of an unknown schema version              | validation |
+      | addressed to a nonexistent Card           | missing    |
+      | of the reserved card-created type         | validation |
+      | carrying a blank producer identity        | validation |
+
+  Scenario: Blank required decision fields are rejected
+    # Deep review: required workflow content cannot be whitespace.
+    When producer "claude" of kind "agent" appends a decision with summary "ok" and reason "   "
+    Then the command fails with error category "validation"
+    And the Card still has exactly 1 entries
 
   Scenario: Concurrent producers get one durable order
     # S1-B9

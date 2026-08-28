@@ -61,10 +61,16 @@ impl ConfigSource {
 
 /// A CLI failure ready for rendering: a domain error, an invalid
 /// invocation, or a configuration problem the library never sees.
+/// `FactoryHome` keeps its typed io source (C3) instead of formatting it
+/// into prose at construction.
 enum Failure {
     Domain(Error),
     Invalid(String),
-    Config(String),
+    Config(&'static str),
+    FactoryHome {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl Failure {
@@ -72,7 +78,14 @@ impl Failure {
         let (category, message) = match self {
             Failure::Domain(error) => (error.category().to_string(), error.to_string()),
             Failure::Invalid(message) => ("validation".to_owned(), message.clone()),
-            Failure::Config(message) => ("storage".to_owned(), message.clone()),
+            Failure::Config(message) => ("storage".to_owned(), (*message).to_owned()),
+            Failure::FactoryHome { path, source } => (
+                "storage".to_owned(),
+                format!(
+                    "cannot prepare the factory home {}: {source}",
+                    path.display()
+                ),
+            ),
         };
         json!({ "error": { "category": category, "message": message } })
     }
@@ -86,7 +99,14 @@ impl From<Error> for Failure {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run().await {
+    // Clap must not exit with prose: syntax failures belong to the same
+    // JSON contract as every other failure (S1-B12, deep-review finding
+    // 3). Help and version remain human-facing text on stdout.
+    let matches = match cli().try_get_matches() {
+        Ok(matches) => matches,
+        Err(parse_error) => return render_parse_outcome(&parse_error),
+    };
+    match run(matches).await {
         Ok(value) => {
             println!("{value}");
             ExitCode::SUCCESS
@@ -98,8 +118,24 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run() -> Result<Value, Failure> {
-    let matches = cli().get_matches();
+fn render_parse_outcome(parse_error: &clap::Error) -> ExitCode {
+    let human_facing = matches!(
+        parse_error.kind(),
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+    );
+    if human_facing {
+        match parse_error.print() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_unwritable_stdout) => ExitCode::FAILURE,
+        }
+    } else {
+        let failure = Failure::Invalid(parse_error.to_string());
+        eprintln!("{}", failure.to_json());
+        ExitCode::FAILURE
+    }
+}
+
+async fn run(matches: clap::ArgMatches) -> Result<Value, Failure> {
     let config = resolve_config(matches.get_one::<PathBuf>("db").cloned())?;
     match matches.subcommand() {
         // ast-grep-ignore: no-string-literal-dispatch -- parse boundary: clap subcommand names, converted once
@@ -115,7 +151,7 @@ async fn run() -> Result<Value, Failure> {
         Some(("history", sub)) => history(sub, &config).await,
         // ast-grep-ignore: no-string-literal-dispatch -- parse boundary: clap subcommand names, converted once
         Some(("list", _)) => list(&config).await,
-        _ => Err(Failure::Config("unknown command".to_owned())),
+        _ => Err(Failure::Config("unknown command")),
     }
 }
 
@@ -208,9 +244,9 @@ fn resolve_config(flag: Option<PathBuf>) -> Result<Config, Failure> {
             source: ConfigSource::Env,
         });
     }
-    let home = std::env::var_os("HOME").ok_or_else(|| {
-        Failure::Config("cannot resolve the factory home: HOME is not set".to_owned())
-    })?;
+    let home = std::env::var_os("HOME").ok_or(Failure::Config(
+        "cannot resolve the factory home: HOME is not set",
+    ))?;
     let factory_home = PathBuf::from(home).join(FACTORY_HOME);
     let _loaded = dotenvy::from_path(factory_home.join(ENV_FILE));
     if let Some(db_path) = std::env::var_os(DB_ENV_VAR) {
@@ -225,18 +261,35 @@ fn resolve_config(flag: Option<PathBuf>) -> Result<Config, Failure> {
     })
 }
 
+/// Owner-only mode for the factory home: the durable Card log must not
+/// be readable by unrelated local OS users (deep-review finding 4).
+#[cfg(unix)]
+const FACTORY_HOME_MODE: u32 = 0o700;
+
 async fn open_store(config: &Config) -> Result<Store, Failure> {
-    if matches!(config.source, ConfigSource::Default) {
+    if matches!(config.source, ConfigSource::Default | ConfigSource::DotEnv) {
         if let Some(parent) = config.db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                Failure::Config(format!(
-                    "cannot create the factory home {}: {error}",
-                    parent.display()
-                ))
+            prepare_factory_home(parent).map_err(|source| Failure::FactoryHome {
+                path: parent.to_path_buf(),
+                source,
             })?;
         }
     }
     Ok(Store::open(&config.db_path).await?)
+}
+
+/// Creates the factory home if absent and pins it owner-only, whatever
+/// the umask. Explicit `--db`/`DAEMAR_DB` locations are operator-chosen;
+/// their parent directories belong to the operator, so only the database
+/// files themselves (handled in the store) are tightened there.
+fn prepare_factory_home(parent: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(FACTORY_HOME_MODE))?;
+    }
+    Ok(())
 }
 
 /// Clap enforces required arguments; this refuses explicitly instead of
@@ -277,6 +330,11 @@ async fn create(sub: &ArgMatches, config: &Config) -> Result<Value, Failure> {
 async fn append(sub: &ArgMatches, config: &Config) -> Result<Value, Failure> {
     let producer = require_producer(sub)?;
     let entry_type = EntryType::from_str(&require_arg(sub, "entry-type")?)?;
+    // Rejected again in Store::append; refused here too so the CLI seam
+    // reports it before any payload parsing (deep-review finding 1).
+    if matches!(entry_type, EntryType::CardCreated) {
+        return Err(Failure::Domain(Error::NotAppendable { entry_type }));
+    }
     let schema_version = match sub.get_one::<String>("schema-version") {
         Some(text) => text.parse::<u32>().map_err(|_unparsed| {
             Failure::Invalid(format!(

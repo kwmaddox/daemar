@@ -16,6 +16,12 @@ Feature: Open a Card for a real task
     Then the command succeeds and returns a Card ID
     And the listed Card's task key and workspace read as absent
 
+  Scenario: A blank title is rejected
+    # Deep review: required workflow content cannot be whitespace.
+    When a producer creates a Card titled "   "
+    Then the command fails with error category "validation"
+    And no Card exists
+
   Scenario: Retrying a create after a lost response
     # S1-B3
     Given a Card was created with idempotency key "create-k1" and title "Once only"
