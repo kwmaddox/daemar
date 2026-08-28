@@ -28,8 +28,10 @@ const DB_ENV_VAR: &str = "DAEMAR_DB";
 const FACTORY_HOME: &str = ".daemar";
 /// Database filename inside the factory home.
 const DB_FILE: &str = "daemar.db";
-/// Optional dotenv file inside the factory home — loaded from the factory
-/// home only, never from the caller's working directory.
+/// Optional dotenv file inside the factory home — read from the factory
+/// home only, never from the caller's working directory, and parsed
+/// without touching the process environment (only `DAEMAR_DB` is
+/// honored from it).
 const ENV_FILE: &str = ".env";
 
 /// Resolved runtime configuration. Precedence: `--db` flag > process env
@@ -259,23 +261,9 @@ fn resolve_config(flag: Option<PathBuf>) -> Result<Config, Failure> {
         "cannot resolve the factory home: HOME is not set",
     ))?;
     let factory_home = PathBuf::from(home).join(FACTORY_HOME);
-    let env_file = factory_home.join(ENV_FILE);
-    // A present-but-broken dotenv must fail loudly: silently falling back
-    // to the default database would split the durable record across two
-    // stores (deep-review finding 2). Only genuine absence is ignorable.
-    match dotenvy::from_path(&env_file) {
-        Ok(()) => {}
-        Err(error) if error.not_found() => {}
-        Err(source) => {
-            return Err(Failure::DotEnvFile {
-                path: env_file,
-                source,
-            })
-        }
-    }
-    if let Some(db_path) = std::env::var_os(DB_ENV_VAR) {
+    if let Some(db_path) = dotenv_db_path(&factory_home)? {
         return Ok(Config {
-            db_path: PathBuf::from(db_path),
+            db_path,
             source: ConfigSource::DotEnv,
         });
     }
@@ -283,6 +271,38 @@ fn resolve_config(flag: Option<PathBuf>) -> Result<Config, Failure> {
         db_path: factory_home.join(DB_FILE),
         source: ConfigSource::Default,
     })
+}
+
+/// Reads `DAEMAR_DB` from the factory-home dotenv **without mutating the
+/// process environment**: Tokio's worker threads are already running, and
+/// `std::env::set_var` is unsound in a multithreaded program (deep-review
+/// finding: dotenv env mutation). The file is parsed in full so a
+/// present-but-broken dotenv fails loudly — silent fallback would split
+/// the durable record across two stores; only genuine absence is
+/// ignorable. Duplicate keys keep dotenv's last-wins convention.
+fn dotenv_db_path(factory_home: &std::path::Path) -> Result<Option<PathBuf>, Failure> {
+    let env_file = factory_home.join(ENV_FILE);
+    let entries = match dotenvy::from_path_iter(&env_file) {
+        Ok(entries) => entries,
+        Err(error) if error.not_found() => return Ok(None),
+        Err(source) => {
+            return Err(Failure::DotEnvFile {
+                path: env_file,
+                source,
+            })
+        }
+    };
+    let mut selected = None;
+    for entry in entries {
+        let (key, value) = entry.map_err(|source| Failure::DotEnvFile {
+            path: env_file.clone(),
+            source,
+        })?;
+        if key == DB_ENV_VAR {
+            selected = Some(PathBuf::from(value));
+        }
+    }
+    Ok(selected)
 }
 
 /// Owner-only mode for the factory home: the durable Card log must not

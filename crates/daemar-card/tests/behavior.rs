@@ -113,6 +113,7 @@ struct CardWorld {
     concurrent: Vec<Run>,
     reads: Vec<Value>,
     acks: Vec<Value>,
+    kill_statuses: Vec<std::process::ExitStatus>,
     flag_db: Option<(TempDir, String)>,
     dotenv_db: Option<(TempDir, String)>,
     fake_home: Option<TempDir>,
@@ -1168,13 +1169,43 @@ fn appends_acknowledged_then_killed(w: &mut CardWorld, count: u64) {
             .read_line(&mut ack_line)
             .expect("read acknowledgement");
         // SIGKILL as soon as the acknowledgement is readable: no orderly
-        // shutdown, no connection close, no final checkpoint.
+        // shutdown, no connection close, no final checkpoint. `kill` can
+        // report Ok for an already-exited child, so the exit statuses are
+        // retained and asserted separately.
         child.kill().ok();
-        child.wait().expect("reap writer");
+        let status = child.wait().expect("reap writer");
+        w.kill_statuses.push(status);
         let ack: Value = serde_json::from_str(ack_line.trim()).expect("acknowledgement JSON");
         acks.push(ack);
     }
     w.acks = acks;
+}
+
+#[then("at least one writer was terminated by SIGKILL")]
+fn at_least_one_writer_signal_killed(w: &mut CardWorld) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        // Fixed by POSIX.
+        const SIGKILL: i32 = 9;
+        let killed = w
+            .kill_statuses
+            .iter()
+            .filter(|status| status.signal() == Some(SIGKILL))
+            .count();
+        assert!(
+            killed >= 1,
+            "every writer won the exit race ({:?}); the scenario proved nothing about forced termination",
+            w.kill_statuses
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        assert!(
+            !w.kill_statuses.is_empty(),
+            "writers must have been spawned and reaped"
+        );
+    }
 }
 
 #[then(expr = "history holds exactly those acknowledged entries at sequences {int} through {int}")]

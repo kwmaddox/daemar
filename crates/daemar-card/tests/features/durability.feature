@@ -12,13 +12,15 @@ Feature: The record survives the process
   Scenario: Entries acknowledged by killed writers survive
     # S1-B13, forced termination: each writer is SIGKILLed the moment its
     # acknowledgement is readable, denying it an orderly shutdown,
-    # connection close, or final checkpoint. (A writer may occasionally
-    # win the race and exit first; the acknowledged-entry claim must hold
-    # on either side of that race.) Reopening must show every
+    # connection close, or final checkpoint. An individual writer may win
+    # the race and exit first, but the scenario fails unless at least one
+    # was verifiably terminated by the signal — otherwise it would prove
+    # nothing about forced termination. Reopening must show every
     # acknowledged entry exactly as acknowledged.
     Given an open Card
     When 5 appends are acknowledged and their writers killed immediately
-    Then history holds exactly those acknowledged entries at sequences 2 through 6
+    Then at least one writer was terminated by SIGKILL
+    And history holds exactly those acknowledged entries at sequences 2 through 6
 
   Scenario: The database path is discoverable and selectable
     # S1-B14
