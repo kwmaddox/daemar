@@ -26,7 +26,7 @@ deny = [
     { crate = "anyhow", reason = "C2: no error-helper crates — native error handling only (conventions.md)", wrappers = ["cucumber"] },
     { crate = "eyre", reason = "C2: no error-helper crates — native error handling only (conventions.md)" },
     { crate = "color-eyre", reason = "C2: no error-helper crates — native error handling only (conventions.md)" },
-    { crate = "thiserror", reason = "C2: no error-helper crates — hand-written Display/Error impls (conventions.md)", wrappers = ["gherkin", "sqlx-core", "sqlx-sqlite"] },
+    { crate = "thiserror", reason = "C2: no error-helper crates — hand-written Display/Error impls (conventions.md)", wrappers = ["gherkin", "sqlx-core", "sqlx-macros-core", "sqlx-sqlite"] },
 ]
 
 [sources]

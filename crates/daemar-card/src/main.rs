@@ -71,6 +71,10 @@ enum Failure {
         path: PathBuf,
         source: std::io::Error,
     },
+    DotEnvFile {
+        path: PathBuf,
+        source: dotenvy::Error,
+    },
 }
 
 impl Failure {
@@ -83,6 +87,13 @@ impl Failure {
                 "storage".to_owned(),
                 format!(
                     "cannot prepare the factory home {}: {source}",
+                    path.display()
+                ),
+            ),
+            Failure::DotEnvFile { path, source } => (
+                "storage".to_owned(),
+                format!(
+                    "cannot load the factory dotenv {}: {source}",
                     path.display()
                 ),
             ),
@@ -248,7 +259,20 @@ fn resolve_config(flag: Option<PathBuf>) -> Result<Config, Failure> {
         "cannot resolve the factory home: HOME is not set",
     ))?;
     let factory_home = PathBuf::from(home).join(FACTORY_HOME);
-    let _loaded = dotenvy::from_path(factory_home.join(ENV_FILE));
+    let env_file = factory_home.join(ENV_FILE);
+    // A present-but-broken dotenv must fail loudly: silently falling back
+    // to the default database would split the durable record across two
+    // stores (deep-review finding 2). Only genuine absence is ignorable.
+    match dotenvy::from_path(&env_file) {
+        Ok(()) => {}
+        Err(error) if error.not_found() => {}
+        Err(source) => {
+            return Err(Failure::DotEnvFile {
+                path: env_file,
+                source,
+            })
+        }
+    }
     if let Some(db_path) = std::env::var_os(DB_ENV_VAR) {
         return Ok(Config {
             db_path: PathBuf::from(db_path),
@@ -267,7 +291,12 @@ fn resolve_config(flag: Option<PathBuf>) -> Result<Config, Failure> {
 const FACTORY_HOME_MODE: u32 = 0o700;
 
 async fn open_store(config: &Config) -> Result<Store, Failure> {
-    if matches!(config.source, ConfigSource::Default | ConfigSource::DotEnv) {
+    // Only the Default path lives in the factory home. A dotenv-selected
+    // database is operator-selected exactly like Env/Flag: its parent
+    // directory is not the factory's to create or tighten (deep-review
+    // finding 2); the database files themselves are tightened in the
+    // store regardless of location.
+    if matches!(config.source, ConfigSource::Default) {
         if let Some(parent) = config.db_path.parent() {
             prepare_factory_home(parent).map_err(|source| Failure::FactoryHome {
                 path: parent.to_path_buf(),

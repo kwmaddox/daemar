@@ -1,9 +1,4 @@
 # S1-B13…S1-B14 — The record survives the process (PER-82).
-# Every CLI invocation is its own OS process: the process that
-# acknowledged each write has already exited by the time a later process
-# reads. That exit-then-read seam is this architecture's honest
-# process-termination proof; a resident-daemon slice will owe a stronger
-# kill-based one.
 Feature: The record survives the process
 
   Scenario: Acknowledged entries survive restart, byte for byte
@@ -13,6 +8,17 @@ Feature: The record survives the process
     And 3 appended decisions
     When the Card history is read twice in separate processes
     Then both reads return 4 identical entries in sequence order 1 through 4
+
+  Scenario: Entries acknowledged by killed writers survive
+    # S1-B13, forced termination: each writer is SIGKILLed the moment its
+    # acknowledgement is readable, denying it an orderly shutdown,
+    # connection close, or final checkpoint. (A writer may occasionally
+    # win the race and exit first; the acknowledged-entry claim must hold
+    # on either side of that race.) Reopening must show every
+    # acknowledged entry exactly as acknowledged.
+    Given an open Card
+    When 5 appends are acknowledged and their writers killed immediately
+    Then history holds exactly those acknowledged entries at sequences 2 through 6
 
   Scenario: The database path is discoverable and selectable
     # S1-B14
@@ -26,6 +32,21 @@ Feature: The record survives the process
     Then the override database holds exactly one Card titled "Flag target"
     And the environment database holds no Cards
     And db-path with the override reports source "flag"
+
+  Scenario: A dotenv-selected database keeps its directory untouched
+    # Deep review: a dotenv-selected path is operator-selected exactly
+    # like Env/Flag — the factory must not create or tighten an external
+    # parent directory it does not own.
+    When a Card is created via a factory-home dotenv pointing at an external directory
+    Then the external directory keeps its permissions
+    And the dotenv database holds exactly one Card
+
+  Scenario: A broken dotenv file fails loudly instead of splitting the record
+    # Deep review: silently falling back to the default database would
+    # split the durable Card record across two stores.
+    When a Card creation is attempted with a malformed factory-home dotenv
+    Then the command fails with error category "storage"
+    And no default database was created in that factory home
 
   Scenario: Without configuration the record lands in a private factory home
     # S1-B14 default location + deep-review finding 4: isolated HOME, no

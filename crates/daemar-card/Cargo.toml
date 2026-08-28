@@ -24,7 +24,7 @@ clap = { version = "4", default-features = false, features = ["std", "help", "us
 dotenvy = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.8", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite", "time"] }
+sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite", "time"] }
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v7"] }

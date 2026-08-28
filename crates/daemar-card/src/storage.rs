@@ -199,22 +199,28 @@ impl Store {
     ) -> Result<Vec<Entry>, Error> {
         let context = StorageContext::ReadHistory;
         self.require_card(card_id, context).await?;
-        let base = "SELECT entry_id, card_id, sequence, entry_type, schema_version, \
-                    producer_id, producer_kind, recorded_at, payload \
-                    FROM card_entries WHERE card_id = ?1";
         let rows = match filter {
             Some(entry_type) => {
-                sqlx::query(&format!("{base} AND entry_type = ?2 ORDER BY sequence"))
-                    .bind(card_id.as_str())
-                    .bind(entry_type.to_string())
-                    .fetch_all(&self.pool)
-                    .await
+                sqlx::query(
+                    "SELECT entry_id, card_id, sequence, entry_type, schema_version, \
+                     producer_id, producer_kind, recorded_at, payload \
+                     FROM card_entries WHERE card_id = ?1 AND entry_type = ?2 \
+                     ORDER BY sequence",
+                )
+                .bind(card_id.as_str())
+                .bind(entry_type.to_string())
+                .fetch_all(&self.pool)
+                .await
             }
             None => {
-                sqlx::query(&format!("{base} ORDER BY sequence"))
-                    .bind(card_id.as_str())
-                    .fetch_all(&self.pool)
-                    .await
+                sqlx::query(
+                    "SELECT entry_id, card_id, sequence, entry_type, schema_version, \
+                     producer_id, producer_kind, recorded_at, payload \
+                     FROM card_entries WHERE card_id = ?1 ORDER BY sequence",
+                )
+                .bind(card_id.as_str())
+                .fetch_all(&self.pool)
+                .await
             }
         }
         .map_err(|source| Error::Storage { context, source })?;

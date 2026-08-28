@@ -112,7 +112,9 @@ struct CardWorld {
     retry_args: Option<Vec<String>>,
     concurrent: Vec<Run>,
     reads: Vec<Value>,
+    acks: Vec<Value>,
     flag_db: Option<(TempDir, String)>,
+    dotenv_db: Option<(TempDir, String)>,
     fake_home: Option<TempDir>,
     iso_cwd: Option<TempDir>,
 }
@@ -1092,30 +1094,36 @@ fn database_in_factory_home(w: &mut CardWorld) {
     );
 }
 
+#[cfg(unix)]
+fn unix_mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()))
+        .permissions()
+        .mode()
+        & 0o777
+}
+
 #[then("the factory home and database are private to the operator")]
 fn factory_home_is_private(w: &mut CardWorld) {
     let home = w.fake_home.as_ref().expect("an isolated home");
     let factory = home.path().join(".daemar");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = |path: &Path| {
-            std::fs::metadata(path)
-                .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()))
-                .permissions()
-                .mode()
-                & 0o777
-        };
-        assert_eq!(mode(&factory), 0o700, "factory home must be owner-only");
         assert_eq!(
-            mode(&factory.join("daemar.db")),
+            unix_mode(&factory),
+            0o700,
+            "factory home must be owner-only"
+        );
+        assert_eq!(
+            unix_mode(&factory.join("daemar.db")),
             0o600,
             "database must be owner-only"
         );
         for side in ["daemar.db-wal", "daemar.db-shm"] {
             let path = factory.join(side);
             if path.exists() {
-                assert_eq!(mode(&path), 0o600, "{side} must be owner-only");
+                assert_eq!(unix_mode(&path), 0o600, "{side} must be owner-only");
             }
         }
     }
@@ -1123,4 +1131,197 @@ fn factory_home_is_private(w: &mut CardWorld) {
     {
         let _unused = factory;
     }
+}
+
+#[when(expr = "{int} appends are acknowledged and their writers killed immediately")]
+fn appends_acknowledged_then_killed(w: &mut CardWorld, count: u64) {
+    use std::io::BufRead;
+    let card = w.primary_card();
+    let db = w.db_path();
+    let mut acks = Vec::new();
+    for n in 0..count {
+        let payload = serde_json::json!({
+            "summary": format!("killed writer {n}"),
+            "reason": "termination durability",
+        })
+        .to_string();
+        let mut child = Command::new(CARD_BIN)
+            .args([
+                "append",
+                &card,
+                "--entry-type",
+                "decision",
+                "--payload",
+                &payload,
+                "--producer",
+                "claude",
+                "--producer-kind",
+                "agent",
+            ])
+            .env("DAEMAR_DB", &db)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn writer");
+        let mut ack_line = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("piped stdout"))
+            .read_line(&mut ack_line)
+            .expect("read acknowledgement");
+        // SIGKILL as soon as the acknowledgement is readable: no orderly
+        // shutdown, no connection close, no final checkpoint.
+        child.kill().ok();
+        child.wait().expect("reap writer");
+        let ack: Value = serde_json::from_str(ack_line.trim()).expect("acknowledgement JSON");
+        acks.push(ack);
+    }
+    w.acks = acks;
+}
+
+#[then(expr = "history holds exactly those acknowledged entries at sequences {int} through {int}")]
+fn killed_acknowledgements_survive(w: &mut CardWorld, from: u64, through: u64) {
+    let card = w.primary_card();
+    let entries = w.history(&card);
+    assert_sequence_range(&entries, 1, through);
+    let mut acked_sequences: Vec<u64> = Vec::new();
+    for ack in &w.acks {
+        let entry_id = ack["entry_id"].as_str().expect("acknowledged entry_id");
+        let sequence = ack["sequence"].as_u64().expect("acknowledged sequence");
+        let stored = entries
+            .iter()
+            .find(|entry| entry["entry_id"].as_str() == Some(entry_id))
+            .unwrap_or_else(|| panic!("acknowledged entry {entry_id} lost after SIGKILL"));
+        assert_eq!(
+            stored["sequence"].as_u64(),
+            Some(sequence),
+            "sequence changed after SIGKILL"
+        );
+        assert_eq!(
+            stored["card_id"], ack["card_id"],
+            "card changed after SIGKILL"
+        );
+        acked_sequences.push(sequence);
+    }
+    acked_sequences.sort_unstable();
+    let expected: Vec<u64> = (from..=through).collect();
+    assert_eq!(
+        acked_sequences, expected,
+        "acknowledged sequences must cover the range exactly"
+    );
+}
+
+#[when("a Card is created via a factory-home dotenv pointing at an external directory")]
+fn create_via_dotenv_external(w: &mut CardWorld) {
+    let home = TempDir::new().expect("temp home");
+    let external = TempDir::new().expect("external dir");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(external.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("widen external dir");
+    }
+    let factory = home.path().join(".daemar");
+    std::fs::create_dir_all(&factory).expect("factory home");
+    let db = external
+        .path()
+        .join("daemar.db")
+        .to_str()
+        .expect("utf-8 path")
+        .to_owned();
+    std::fs::write(
+        factory.join(".env"),
+        format!(
+            "DAEMAR_DB={db}
+"
+        ),
+    )
+    .expect("write dotenv");
+    let run = run_card_command(|command| {
+        command
+            .env("HOME", home.path())
+            .env_remove("DAEMAR_DB")
+            .args([
+                "create",
+                "--title",
+                "Dotenv probe",
+                "--producer",
+                "test-operator",
+                "--producer-kind",
+                "operator",
+            ]);
+    });
+    run.success_json();
+    w.fake_home = Some(home);
+    w.dotenv_db = Some((external, db));
+}
+
+#[then("the external directory keeps its permissions")]
+fn external_directory_untouched(w: &mut CardWorld) {
+    let (external, _db) = w.dotenv_db.as_ref().expect("a dotenv-selected database");
+    #[cfg(unix)]
+    assert_eq!(
+        unix_mode(external.path()),
+        0o755,
+        "the factory must not tighten an operator-selected directory"
+    );
+    #[cfg(not(unix))]
+    let _unused = external;
+}
+
+#[then("the dotenv database holds exactly one Card")]
+fn dotenv_database_holds_card(w: &mut CardWorld) {
+    let db = w
+        .dotenv_db
+        .as_ref()
+        .expect("a dotenv-selected database")
+        .1
+        .clone();
+    let cards = run_card(&db, &["list"]).success_json()["cards"]
+        .as_array()
+        .expect("cards")
+        .clone();
+    assert_eq!(
+        cards.len(),
+        1,
+        "the record must live in the dotenv-selected database"
+    );
+}
+
+#[when("a Card creation is attempted with a malformed factory-home dotenv")]
+fn create_with_malformed_dotenv(w: &mut CardWorld) {
+    let home = TempDir::new().expect("temp home");
+    let factory = home.path().join(".daemar");
+    std::fs::create_dir_all(&factory).expect("factory home");
+    std::fs::write(
+        factory.join(".env"),
+        "not a valid dotenv line
+",
+    )
+    .expect("write dotenv");
+    let run = run_card_command(|command| {
+        command
+            .env("HOME", home.path())
+            .env_remove("DAEMAR_DB")
+            .args([
+                "create",
+                "--title",
+                "Should fail loudly",
+                "--producer",
+                "test-operator",
+                "--producer-kind",
+                "operator",
+            ]);
+    });
+    w.last = Some(run);
+    w.fake_home = Some(home);
+}
+
+#[then("no default database was created in that factory home")]
+fn no_default_database_created(w: &mut CardWorld) {
+    let home = w.fake_home.as_ref().expect("an isolated home");
+    let default_db = home.path().join(".daemar").join("daemar.db");
+    assert!(
+        !default_db.exists(),
+        "a broken dotenv must not silently create {}",
+        default_db.display()
+    );
 }
