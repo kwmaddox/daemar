@@ -1,9 +1,8 @@
 [workspace]
 resolver = "2"
-# Empty since the sandbox-era tear-out (archive/sandbox-era). The lint
-# tables below are live policy: factory crates added here inherit them
-# via [lints] workspace = true.
-members = []
+# The lint tables below are live policy: factory crates added here
+# inherit them via [lints] workspace = true.
+members = ["crates/daemar-card"]
 
 [workspace.package]
 edition = "2021"

@@ -12,14 +12,21 @@ allow = [
     "Apache-2.0",
     "MIT",
     "Unicode-3.0",
+    # 2026-08-28: foldhash (via hashbrown ← sqlx) — permissive, OSI-approved.
+    "Zlib",
 ]
 
 [bans]
+# The C2 bans target daemar's own error handling: no workspace crate may
+# depend on an error-helper crate. `wrappers` exempts named third-party
+# crates whose *internals* use one — that is their business, not a C2
+# violation (2026-08-28: cucumber uses anyhow in its World contract,
+# cucumber's gherkin parser uses thiserror; both dev-only).
 deny = [
-    { crate = "anyhow", reason = "C2: no error-helper crates — native error handling only (conventions.md)" },
+    { crate = "anyhow", reason = "C2: no error-helper crates — native error handling only (conventions.md)", wrappers = ["cucumber"] },
     { crate = "eyre", reason = "C2: no error-helper crates — native error handling only (conventions.md)" },
     { crate = "color-eyre", reason = "C2: no error-helper crates — native error handling only (conventions.md)" },
-    { crate = "thiserror", reason = "C2: no error-helper crates — hand-written Display/Error impls (conventions.md)" },
+    { crate = "thiserror", reason = "C2: no error-helper crates — hand-written Display/Error impls (conventions.md)", wrappers = ["gherkin", "sqlx-core", "sqlx-sqlite"] },
 ]
 
 [sources]
