@@ -2,9 +2,10 @@
 
 Clean slate, again. Two prior iterations live in the archive:
 
-- [`archive/daemar-v1`](https://github.com/kwmaddox/daemar/tree/archive/daemar-v1)
+- [`archive/false-start`](https://github.com/kwmaddox/daemar/tree/archive/false-start)
   — torn out after a core security invariant turned out not to hold,
-  invalidating the design work built on top of it.
+  invalidating the design work built on top of it. It holds no version
+  number.
 - [`archive/sandbox-era`](https://github.com/kwmaddox/daemar/tree/archive/sandbox-era)
   — the sandbox v1 slice (Apple Container one-shot runs, overlay
   promotion) plus its research record. Torn out not because it was wrong
