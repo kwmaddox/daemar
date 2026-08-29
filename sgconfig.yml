@@ -1,0 +1,7 @@
+# ast-grep project config: the L2 structural rule gate (PER-75 landed the
+# harness with the suppression rule; PER-68 owns the structural rule pack).
+# Run via `scripts/check.sh` — never point CI at ast-grep directly.
+ruleDirs:
+  - rules/ast-grep/rules
+testConfigs:
+  - testDir: rules/ast-grep/rule-tests

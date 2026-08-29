@@ -1,8 +1,20 @@
 # daemar
 
-This is daemar v1, being built spec-first. A scrapped false start — torn out
-after a core security invariant turned out not to hold, invalidating the
-design work built on top of it — is preserved on
-[`archive/false-start`](https://github.com/kwmaddox/daemar/tree/archive/false-start).
-It holds no version number, and nothing here inherits from it without being
-re-earned.
+Clean slate, again. Two prior iterations live in the archive:
+
+- [`archive/false-start`](https://github.com/kwmaddox/daemar/tree/archive/false-start)
+  — torn out after a core security invariant turned out not to hold,
+  invalidating the design work built on top of it. It holds no version
+  number.
+- [`archive/sandbox-era`](https://github.com/kwmaddox/daemar/tree/archive/sandbox-era)
+  — the sandbox v1 slice (Apple Container one-shot runs, overlay
+  promotion) plus its research record. Torn out not because it was wrong
+  but because it was the wrong project: a fool box built before the
+  factory that would use it. Sandboxing returns later as its own service
+  (Nar'baha), sized by the factory's real needs.
+
+What survives is the quality machinery: `conventions.md` (C-IDs), the
+gate (`scripts/check.sh`, clippy/deny/ast-grep configs), and the
+versioned hooks. Nothing else inherits without being re-earned.
+
+Working here — agent or human — starts at [`AGENTS.md`](AGENTS.md).

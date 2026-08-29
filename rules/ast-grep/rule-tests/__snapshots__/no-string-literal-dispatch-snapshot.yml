@@ -1,0 +1,412 @@
+id: no-string-literal-dispatch
+snapshots:
+  ? |
+    fn eq_chain(kind: &str) -> bool {
+        kind == "deleted" || kind == "added"
+    }
+  : labels:
+    - source: kind == "deleted" || kind == "added"
+      style: primary
+      start: 38
+      end: 74
+    - source: '||'
+      style: secondary
+      start: 56
+      end: 58
+    - source: '"deleted"'
+      style: secondary
+      start: 46
+      end: 55
+    - source: kind
+      style: secondary
+      start: 38
+      end: 42
+    - source: ==
+      style: secondary
+      start: 43
+      end: 45
+    - source: kind == "deleted"
+      style: secondary
+      start: 38
+      end: 55
+    - source: '"added"'
+      style: secondary
+      start: 67
+      end: 74
+    - source: kind
+      style: secondary
+      start: 59
+      end: 63
+    - source: ==
+      style: secondary
+      start: 64
+      end: 66
+    - source: kind == "added"
+      style: secondary
+      start: 59
+      end: 74
+  ? |
+    fn longer_chain(kind: &str) -> bool {
+        kind == "a" || kind == "b" || kind == "c"
+    }
+  : labels:
+    - source: kind == "a" || kind == "b"
+      style: primary
+      start: 42
+      end: 68
+    - source: '||'
+      style: secondary
+      start: 54
+      end: 56
+    - source: '"a"'
+      style: secondary
+      start: 50
+      end: 53
+    - source: kind
+      style: secondary
+      start: 42
+      end: 46
+    - source: ==
+      style: secondary
+      start: 47
+      end: 49
+    - source: kind == "a"
+      style: secondary
+      start: 42
+      end: 53
+    - source: '"b"'
+      style: secondary
+      start: 65
+      end: 68
+    - source: kind
+      style: secondary
+      start: 57
+      end: 61
+    - source: ==
+      style: secondary
+      start: 62
+      end: 64
+    - source: kind == "b"
+      style: secondary
+      start: 57
+      end: 68
+  ? |
+    fn match_on_string(s: &str) {
+        match s { "add" => {}, "del" => {}, _ => {} }
+    }
+  : labels:
+    - source: '"add"'
+      style: primary
+      start: 44
+      end: 49
+    - source: '"add"'
+      style: secondary
+      start: 44
+      end: 49
+  ? |
+    fn mixed_parens_and_orientation(x: &str) -> bool {
+        ("a" == x) || (x == "b")
+    }
+  : labels:
+    - source: ("a" == x) || (x == "b")
+      style: primary
+      start: 55
+      end: 79
+    - source: '||'
+      style: secondary
+      start: 66
+      end: 68
+    - source: '"a"'
+      style: secondary
+      start: 56
+      end: 59
+    - source: x
+      style: secondary
+      start: 63
+      end: 64
+    - source: ==
+      style: secondary
+      start: 60
+      end: 62
+    - source: '"a" == x'
+      style: secondary
+      start: 56
+      end: 64
+    - source: ("a" == x)
+      style: secondary
+      start: 55
+      end: 65
+    - source: '"b"'
+      style: secondary
+      start: 75
+      end: 78
+    - source: x
+      style: secondary
+      start: 70
+      end: 71
+    - source: ==
+      style: secondary
+      start: 72
+      end: 74
+    - source: x == "b"
+      style: secondary
+      start: 70
+      end: 78
+    - source: (x == "b")
+      style: secondary
+      start: 69
+      end: 79
+  ? |
+    fn ne_chain(kind: &str) -> bool {
+        kind != "x" && kind != "y"
+    }
+  : labels:
+    - source: kind != "x" && kind != "y"
+      style: primary
+      start: 38
+      end: 64
+    - source: '&&'
+      style: secondary
+      start: 50
+      end: 52
+    - source: '"x"'
+      style: secondary
+      start: 46
+      end: 49
+    - source: kind
+      style: secondary
+      start: 38
+      end: 42
+    - source: '!='
+      style: secondary
+      start: 43
+      end: 45
+    - source: kind != "x"
+      style: secondary
+      start: 38
+      end: 49
+    - source: '"y"'
+      style: secondary
+      start: 61
+      end: 64
+    - source: kind
+      style: secondary
+      start: 53
+      end: 57
+    - source: '!='
+      style: secondary
+      start: 58
+      end: 60
+    - source: kind != "y"
+      style: secondary
+      start: 53
+      end: 64
+  ? |
+    fn or_pattern_with_raw_string(s: &str) {
+        match s { r"raw" | "cooked" => {}, _ => {} }
+    }
+  : labels:
+    - source: r"raw"
+      style: primary
+      start: 55
+      end: 61
+    - source: r"raw" | "cooked"
+      style: secondary
+      start: 55
+      end: 72
+  ? |
+    fn parenthesized_chain(x: &str) -> bool {
+        (x == "a") || (x == "b")
+    }
+  : labels:
+    - source: (x == "a") || (x == "b")
+      style: primary
+      start: 46
+      end: 70
+    - source: '||'
+      style: secondary
+      start: 57
+      end: 59
+    - source: '"a"'
+      style: secondary
+      start: 52
+      end: 55
+    - source: x
+      style: secondary
+      start: 47
+      end: 48
+    - source: ==
+      style: secondary
+      start: 49
+      end: 51
+    - source: x == "a"
+      style: secondary
+      start: 47
+      end: 55
+    - source: (x == "a")
+      style: secondary
+      start: 46
+      end: 56
+    - source: '"b"'
+      style: secondary
+      start: 66
+      end: 69
+    - source: x
+      style: secondary
+      start: 61
+      end: 62
+    - source: ==
+      style: secondary
+      start: 63
+      end: 65
+    - source: x == "b"
+      style: secondary
+      start: 61
+      end: 69
+    - source: (x == "b")
+      style: secondary
+      start: 60
+      end: 70
+  ? |
+    fn parenthesized_ne_chain(x: &str) -> bool {
+        ("a" != x) && (x != "b")
+    }
+  : labels:
+    - source: ("a" != x) && (x != "b")
+      style: primary
+      start: 49
+      end: 73
+    - source: '&&'
+      style: secondary
+      start: 60
+      end: 62
+    - source: '"a"'
+      style: secondary
+      start: 50
+      end: 53
+    - source: x
+      style: secondary
+      start: 57
+      end: 58
+    - source: '!='
+      style: secondary
+      start: 54
+      end: 56
+    - source: '"a" != x'
+      style: secondary
+      start: 50
+      end: 58
+    - source: ("a" != x)
+      style: secondary
+      start: 49
+      end: 59
+    - source: '"b"'
+      style: secondary
+      start: 69
+      end: 72
+    - source: x
+      style: secondary
+      start: 64
+      end: 65
+    - source: '!='
+      style: secondary
+      start: 66
+      end: 68
+    - source: x != "b"
+      style: secondary
+      start: 64
+      end: 72
+    - source: (x != "b")
+      style: secondary
+      start: 63
+      end: 73
+  ? |
+    fn raw_string_in_chain(x: &str) -> bool {
+        x == r"raw" || x == "b"
+    }
+  : labels:
+    - source: x == r"raw" || x == "b"
+      style: primary
+      start: 46
+      end: 69
+    - source: '||'
+      style: secondary
+      start: 58
+      end: 60
+    - source: r"raw"
+      style: secondary
+      start: 51
+      end: 57
+    - source: x
+      style: secondary
+      start: 46
+      end: 47
+    - source: ==
+      style: secondary
+      start: 48
+      end: 50
+    - source: x == r"raw"
+      style: secondary
+      start: 46
+      end: 57
+    - source: '"b"'
+      style: secondary
+      start: 66
+      end: 69
+    - source: x
+      style: secondary
+      start: 61
+      end: 62
+    - source: ==
+      style: secondary
+      start: 63
+      end: 65
+    - source: x == "b"
+      style: secondary
+      start: 61
+      end: 69
+  ? |
+    fn reversed_operands(x: &str) -> bool {
+        "a" == x || "b" == x
+    }
+  : labels:
+    - source: '"a" == x || "b" == x'
+      style: primary
+      start: 44
+      end: 64
+    - source: '||'
+      style: secondary
+      start: 53
+      end: 55
+    - source: '"a"'
+      style: secondary
+      start: 44
+      end: 47
+    - source: x
+      style: secondary
+      start: 51
+      end: 52
+    - source: ==
+      style: secondary
+      start: 48
+      end: 50
+    - source: '"a" == x'
+      style: secondary
+      start: 44
+      end: 52
+    - source: '"b"'
+      style: secondary
+      start: 56
+      end: 59
+    - source: x
+      style: secondary
+      start: 63
+      end: 64
+    - source: ==
+      style: secondary
+      start: 60
+      end: 62
+    - source: '"b" == x'
+      style: secondary
+      start: 56
+      end: 64

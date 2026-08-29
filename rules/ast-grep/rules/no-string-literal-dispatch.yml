@@ -1,0 +1,115 @@
+# C6: domain states are enums — string-literal dispatch is the smell this
+# rule gates. Two triggers, both near-FP-free by construction:
+#
+#   1. A string (or raw-string) literal used as a match-arm pattern, at any
+#      depth inside the pattern (or-patterns, struct patterns). Matching on
+#      a string is dispatch over a closed set that never became an enum.
+#   2. Two-plus ==/!= comparisons of the same expression against string
+#      literals ($X == "a" || $X == "b") — the closed-set dispatch shape in
+#      C6's own wrong-example. Covered structurally (PER-68 adversarial
+#      pass, finding P1): either operand order, parenthesized or not, on
+#      either side of the ||/&&. The comparison utils bind only $X — the
+#      compared expression — so different expressions never unify into a
+#      chain; literals are recognized by kind, not captured (metavariable
+#      constraints don't backtrack through `any` alternatives in 0.45.2,
+#      so an $A-with-constraint encoding silently drops reversed
+#      operands). Longer chains match via their innermost pair.
+#
+# A single `x == "sentinel"` comparison is deliberately NOT matched — one
+# comparison is not dispatch, and gating it would ban legitimate sentinel
+# checks (review territory, like the rest of C6's semantic remainder).
+# Paren-stripping is one level deep by design: a comparison nested in a
+# call (`f(x == "a") || ...`) is not a chain member, and the doubled form
+# `((x == "a"))` cannot reach this gate — clippy::double_parens is deny
+# via clippy::all, so it dies at L0.
+#
+# The legitimate hit this heuristic anticipates is a parse boundary that
+# converts input to the enum exactly once (C6 allows it). That site takes a
+# reasoned suppression on the line above the match:
+#   // ast-grep-ignore: no-string-literal-dispatch -- parse boundary, converts once
+id: no-string-literal-dispatch
+language: rust
+severity: error
+message: "C6: string-literal dispatch — a closed set of meanings is an enum; parse boundaries converting exactly once take a reasoned ast-grep-ignore"
+files:
+  - "crates/**/*.rs"
+# Orientation and literal-kind logic lives once in lit-cmp; eq-lit/ne-lit
+# are thin operator filters over it (PER-68 rereview, finding S1).
+utils:
+  lit-cmp:
+    kind: binary_expression
+    any:
+      - all:
+          - has:
+              field: left
+              any:
+                - kind: string_literal
+                - kind: raw_string_literal
+          - has:
+              field: right
+              pattern: $X
+      - all:
+          - has:
+              field: right
+              any:
+                - kind: string_literal
+                - kind: raw_string_literal
+          - has:
+              field: left
+              pattern: $X
+  eq-lit:
+    all:
+      - matches: lit-cmp
+      - has:
+          field: operator
+          regex: "^==$"
+  ne-lit:
+    all:
+      - matches: lit-cmp
+      - has:
+          field: operator
+          regex: "^!=$"
+  eq-lit-stripped:
+    any:
+      - matches: eq-lit
+      - kind: parenthesized_expression
+        has:
+          matches: eq-lit
+  ne-lit-stripped:
+    any:
+      - matches: ne-lit
+      - kind: parenthesized_expression
+        has:
+          matches: ne-lit
+rule:
+  any:
+    - kind: string_literal
+      inside:
+        stopBy: end
+        kind: match_pattern
+    - kind: raw_string_literal
+      inside:
+        stopBy: end
+        kind: match_pattern
+    - kind: binary_expression
+      all:
+        - has:
+            field: operator
+            regex: "^\\|\\|$"
+        - has:
+            field: left
+            matches: eq-lit-stripped
+        - has:
+            field: right
+            matches: eq-lit-stripped
+    - kind: binary_expression
+      all:
+        - has:
+            field: operator
+            regex: "^&&$"
+        - has:
+            field: left
+            matches: ne-lit-stripped
+        - has:
+            field: right
+            matches: ne-lit-stripped

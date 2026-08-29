@@ -1,0 +1,282 @@
+id: no-allow-attributes
+snapshots:
+  ? |
+    #![allow(clippy::unwrap_used, reason = "reasoned inner is still banned")]
+  : labels:
+    - source: '#![allow(clippy::unwrap_used, reason = "reasoned inner is still banned")]'
+      style: primary
+      start: 0
+      end: 73
+  ? |
+    #![r#allow(dead_code)]
+  : labels:
+    - source: '#![r#allow(dead_code)]'
+      style: primary
+      start: 0
+      end: 22
+  ? |
+    #[allow(dead_code)]
+    fn bare_outer() {}
+  : labels:
+    - source: '#[allow(dead_code)]'
+      style: primary
+      start: 0
+      end: 19
+  ? |
+    #[allow(dead_code, reason = "reasoned outer is still banned")]
+    fn reasoned_outer() {}
+  : labels:
+    - source: '#[allow(dead_code, reason = "reasoned outer is still banned")]'
+      style: primary
+      start: 0
+      end: 62
+  ? |
+    #[cfg_attr(test, allow(dead_code))]
+    fn smuggled() {}
+  : labels:
+    - source: allow
+      style: primary
+      start: 17
+      end: 22
+    - source: (dead_code)
+      style: secondary
+      start: 22
+      end: 33
+    - source: cfg_attr
+      style: secondary
+      start: 2
+      end: 10
+    - source: (test, allow(dead_code))
+      style: secondary
+      start: 10
+      end: 34
+    - source: '#[cfg_attr(test, allow(dead_code))]'
+      style: secondary
+      start: 0
+      end: 35
+  ? |
+    #[cfg_attr(test, cfg_attr(feature = "x", allow(dead_code)))]
+    fn smuggled_nested() {}
+  : labels:
+    - source: allow
+      style: primary
+      start: 41
+      end: 46
+    - source: (dead_code)
+      style: secondary
+      start: 46
+      end: 57
+    - source: cfg_attr
+      style: secondary
+      start: 17
+      end: 25
+    - source: (feature = "x", allow(dead_code))
+      style: secondary
+      start: 25
+      end: 58
+    - source: '#[cfg_attr(test, cfg_attr(feature = "x", allow(dead_code)))]'
+      style: secondary
+      start: 0
+      end: 60
+  ? |
+    #[cfg_attr(test, derive(Debug), allow(dead_code))]
+    fn smuggled_mid_list() {}
+  : labels:
+    - source: allow
+      style: primary
+      start: 32
+      end: 37
+    - source: (dead_code)
+      style: secondary
+      start: 37
+      end: 48
+    - source: cfg_attr
+      style: secondary
+      start: 2
+      end: 10
+    - source: (test, derive(Debug), allow(dead_code))
+      style: secondary
+      start: 10
+      end: 49
+    - source: '#[cfg_attr(test, derive(Debug), allow(dead_code))]'
+      style: secondary
+      start: 0
+      end: 50
+  ? |
+    #[cfg_attr(test, r#allow(dead_code))]
+    fn smuggled_raw() {}
+  : labels:
+    - source: r#allow
+      style: primary
+      start: 17
+      end: 24
+    - source: (dead_code)
+      style: secondary
+      start: 24
+      end: 35
+    - source: cfg_attr
+      style: secondary
+      start: 2
+      end: 10
+    - source: (test, r#allow(dead_code))
+      style: secondary
+      start: 10
+      end: 36
+    - source: '#[cfg_attr(test, r#allow(dead_code))]'
+      style: secondary
+      start: 0
+      end: 37
+  ? |
+    #[r#allow(dead_code)]
+    fn raw_outer() {}
+  : labels:
+    - source: '#[r#allow(dead_code)]'
+      style: primary
+      start: 0
+      end: 21
+  ? |
+    macro_rules! emits_cfg_attr_allow {
+        () => {
+            #[cfg_attr(test, allow(dead_code))]
+            fn inner() {}
+        };
+    }
+  : labels:
+    - source: allow
+      style: primary
+      start: 73
+      end: 78
+    - source: (dead_code)
+      style: secondary
+      start: 78
+      end: 89
+    - source: |-
+        macro_rules! emits_cfg_attr_allow {
+            () => {
+                #[cfg_attr(test, allow(dead_code))]
+                fn inner() {}
+            };
+        }
+      style: secondary
+      start: 0
+      end: 122
+    - source: cfg_attr
+      style: secondary
+      start: 58
+      end: 66
+    - source: (test, allow(dead_code))
+      style: secondary
+      start: 66
+      end: 90
+    - source: '#'
+      style: secondary
+      start: 56
+      end: 57
+    - source: '[cfg_attr(test, allow(dead_code))]'
+      style: secondary
+      start: 57
+      end: 91
+  ? |
+    macro_rules! emits_inner_allow {
+        () => {
+            #![allow(dead_code)]
+        };
+    }
+  : labels:
+    - source: allow
+      style: primary
+      start: 56
+      end: 61
+    - source: (dead_code)
+      style: secondary
+      start: 61
+      end: 72
+    - source: |-
+        macro_rules! emits_inner_allow {
+            () => {
+                #![allow(dead_code)]
+            };
+        }
+      style: secondary
+      start: 0
+      end: 82
+    - source: '#'
+      style: secondary
+      start: 53
+      end: 54
+    - source: '!'
+      style: secondary
+      start: 54
+      end: 55
+    - source: '[allow(dead_code)]'
+      style: secondary
+      start: 55
+      end: 73
+  ? |
+    macro_rules! emits_outer_allow {
+        () => {
+            #[allow(dead_code)]
+            fn inner() {}
+        };
+    }
+  : labels:
+    - source: allow
+      style: primary
+      start: 55
+      end: 60
+    - source: (dead_code)
+      style: secondary
+      start: 60
+      end: 71
+    - source: |-
+        macro_rules! emits_outer_allow {
+            () => {
+                #[allow(dead_code)]
+                fn inner() {}
+            };
+        }
+      style: secondary
+      start: 0
+      end: 103
+    - source: '#'
+      style: secondary
+      start: 53
+      end: 54
+    - source: '[allow(dead_code)]'
+      style: secondary
+      start: 54
+      end: 72
+  ? |
+    macro_rules! emits_raw_allow {
+        () => {
+            #[r#allow(dead_code)]
+            fn inner() {}
+        };
+    }
+  : labels:
+    - source: r#allow
+      style: primary
+      start: 53
+      end: 60
+    - source: (dead_code)
+      style: secondary
+      start: 60
+      end: 71
+    - source: |-
+        macro_rules! emits_raw_allow {
+            () => {
+                #[r#allow(dead_code)]
+                fn inner() {}
+            };
+        }
+      style: secondary
+      start: 0
+      end: 103
+    - source: '#'
+      style: secondary
+      start: 51
+      end: 52
+    - source: '[r#allow(dead_code)]'
+      style: secondary
+      start: 52
+      end: 72

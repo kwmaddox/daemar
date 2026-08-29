@@ -1,0 +1,111 @@
+id: no-allow-attributes
+valid:
+  - |
+    #![expect(clippy::unwrap_used, reason = "test exemption, rust-clippy#13981")]
+    fn uses_unwrap() {}
+  - |
+    #[expect(dead_code, reason = "consumer lands in the next slice")]
+    fn pending() {}
+  - |
+    fn text_mentions_are_not_attributes() {
+        // a comment naming #[allow(dead_code)] must not match
+        let s = "#![allow(everything)]";
+        let _ = s;
+    }
+  - |
+    #[some_macro(allow)]
+    fn custom_attribute_payload() {}
+  - |
+    #[access(allow)]
+    fn derive_helper_payload() {}
+  - |
+    #[arg(value_parser = allow)]
+    fn clap_style_payload() {}
+  - |
+    #[cfg_attr(test, some_macro(allow))]
+    fn cfg_wrapped_custom_payload() {}
+  - |
+    macro_rules! calls_a_function_named_allow {
+        () => {
+            let x = allow(1);
+        };
+    }
+  - |
+    macro_rules! builds_an_array {
+        () => {
+            let _ = [allow(0)];
+        };
+    }
+  - |
+    macro_rules! nested_macro_invocation_not_an_inner_attribute {
+        () => {
+            consume![allow(0)]
+        };
+    }
+  - |
+    fn ordinary_calls_in_macro_arguments() {
+        let v = vec![allow(0)];
+        assert!(allow(true));
+    }
+  # The two cases below are macro-SYNTHESIZED suppressions: deciding them
+  # requires expansion semantics, which this surface rule deliberately does
+  # not claim (see the rule's boundary comment). They are listed as valid
+  # to pin the current behavior; the macro-suppression follow-up story owns
+  # closing them and carries the full adversarial battery.
+  - |
+    with_attr!(allow(dead_code));
+  - |
+    with_attr!(allow, dead_code);
+invalid:
+  - |
+    #[allow(dead_code)]
+    fn bare_outer() {}
+  - |
+    #[allow(dead_code, reason = "reasoned outer is still banned")]
+    fn reasoned_outer() {}
+  - |
+    #![allow(clippy::unwrap_used, reason = "reasoned inner is still banned")]
+  - |
+    #[r#allow(dead_code)]
+    fn raw_outer() {}
+  - |
+    #![r#allow(dead_code)]
+  - |
+    #[cfg_attr(test, allow(dead_code))]
+    fn smuggled() {}
+  - |
+    #[cfg_attr(test, derive(Debug), allow(dead_code))]
+    fn smuggled_mid_list() {}
+  - |
+    #[cfg_attr(test, cfg_attr(feature = "x", allow(dead_code)))]
+    fn smuggled_nested() {}
+  - |
+    #[cfg_attr(test, r#allow(dead_code))]
+    fn smuggled_raw() {}
+  - |
+    macro_rules! emits_outer_allow {
+        () => {
+            #[allow(dead_code)]
+            fn inner() {}
+        };
+    }
+  - |
+    macro_rules! emits_inner_allow {
+        () => {
+            #![allow(dead_code)]
+        };
+    }
+  - |
+    macro_rules! emits_cfg_attr_allow {
+        () => {
+            #[cfg_attr(test, allow(dead_code))]
+            fn inner() {}
+        };
+    }
+  - |
+    macro_rules! emits_raw_allow {
+        () => {
+            #[r#allow(dead_code)]
+            fn inner() {}
+        };
+    }

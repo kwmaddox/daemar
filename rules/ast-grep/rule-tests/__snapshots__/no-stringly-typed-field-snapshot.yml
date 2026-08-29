@@ -1,0 +1,182 @@
+id: no-stringly-typed-field
+snapshots:
+  ? |
+    enum Event { Node { node_id: String } }
+  : labels:
+    - source: 'node_id: String'
+      style: primary
+      start: 20
+      end: 35
+    - source: node_id
+      style: secondary
+      start: 20
+      end: 27
+    - source: String
+      style: secondary
+      start: 29
+      end: 35
+  ? |
+    struct Absolute { status: ::std::string::String }
+  : labels:
+    - source: 'status: ::std::string::String'
+      style: primary
+      start: 18
+      end: 47
+    - source: status
+      style: secondary
+      start: 18
+      end: 24
+    - source: ::std::string::String
+      style: secondary
+      start: 26
+      end: 47
+  ? |
+    struct AllocPath { state: alloc::string::String }
+  : labels:
+    - source: 'state: alloc::string::String'
+      style: primary
+      start: 19
+      end: 47
+    - source: state
+      style: secondary
+      start: 19
+      end: 24
+    - source: alloc::string::String
+      style: secondary
+      start: 26
+      end: 47
+  ? |
+    struct Change { kind: String }
+  : labels:
+    - source: 'kind: String'
+      style: primary
+      start: 16
+      end: 28
+    - source: kind
+      style: secondary
+      start: 16
+      end: 20
+    - source: String
+      style: secondary
+      start: 22
+      end: 28
+  ? |
+    struct Entry { entry_type: String }
+  : labels:
+    - source: 'entry_type: String'
+      style: primary
+      start: 15
+      end: 33
+    - source: entry_type
+      style: secondary
+      start: 15
+      end: 25
+    - source: String
+      style: secondary
+      start: 27
+      end: 33
+  ? |
+    struct Qualified { run_id: std::string::String }
+  : labels:
+    - source: 'run_id: std::string::String'
+      style: primary
+      start: 19
+      end: 46
+    - source: run_id
+      style: secondary
+      start: 19
+      end: 25
+    - source: std::string::String
+      style: secondary
+      start: 27
+      end: 46
+  ? |
+    struct RawAllocTail { status: alloc::string::r#String }
+  : labels:
+    - source: 'status: alloc::string::r#String'
+      style: primary
+      start: 22
+      end: 53
+    - source: status
+      style: secondary
+      start: 22
+      end: 28
+    - source: alloc::string::r#String
+      style: secondary
+      start: 30
+      end: 53
+  ? |
+    struct RawEverySegment { status: ::r#std::r#string::r#String }
+  : labels:
+    - source: 'status: ::r#std::r#string::r#String'
+      style: primary
+      start: 25
+      end: 60
+    - source: status
+      style: secondary
+      start: 25
+      end: 31
+    - source: ::r#std::r#string::r#String
+      style: secondary
+      start: 33
+      end: 60
+  ? |
+    struct RawTail { status: std::string::r#String }
+  : labels:
+    - source: 'status: std::string::r#String'
+      style: primary
+      start: 17
+      end: 46
+    - source: status
+      style: secondary
+      start: 17
+      end: 23
+    - source: std::string::r#String
+      style: secondary
+      start: 25
+      end: 46
+  ? |
+    struct RawType { status: r#String }
+  : labels:
+    - source: 'status: r#String'
+      style: primary
+      start: 17
+      end: 33
+    - source: status
+      style: secondary
+      start: 17
+      end: 23
+    - source: r#String
+      style: secondary
+      start: 25
+      end: 33
+  ? |
+    struct Run { run_id: String }
+  : labels:
+    - source: 'run_id: String'
+      style: primary
+      start: 13
+      end: 27
+    - source: run_id
+      style: secondary
+      start: 13
+      end: 19
+    - source: String
+      style: secondary
+      start: 21
+      end: 27
+  ? |
+    struct Session { status: String, state: String }
+  : labels:
+    - source: 'status: String'
+      style: primary
+      start: 17
+      end: 31
+    - source: status
+      style: secondary
+      start: 17
+      end: 23
+    - source: String
+      style: secondary
+      start: 25
+      end: 31

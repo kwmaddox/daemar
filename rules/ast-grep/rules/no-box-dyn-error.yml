@@ -1,0 +1,86 @@
+# C1: errors are crate-native — no Box<dyn Error> anywhere, tests included
+# (C4's test exemptions already license unwrap/expect, so tests never need
+# the boxed-error `?` idiom; AC amended 2026-08-25 to drop the tests
+# carve-out).
+#
+# Two branches, sharing utils (PER-68 rereview, finding P1: trait-object
+# bound order is free in Rust's grammar, so Error may not be the first
+# bound):
+#
+#   1. Error at the dynamic_type's `trait` field — the principal-first
+#      spelling. The trait-field anchor keeps near-misses clean:
+#      `Box<dyn Fn() -> Result<(), Error>>` has a function_type in the
+#      trait field, so a boxed closure returning an error never matches.
+#   2. Error as a later bound: a direct child of the bounded_type chain
+#      (`dyn Send + Error + Sync` nests one bounded_type per `+`), with
+#      dyn-evidence required in the same chain — either a dynamic_type,
+#      or the ERROR node tree-sitter 0.45.2 emits when the chain starts
+#      with a lifetime (`dyn 'static + Error`: the grammar swallows `dyn`
+#      as an ERROR and produces no dynamic_type at all). The evidence
+#      requirement keeps `Box<impl Error + Send>` (abstract_type, no dyn)
+#      outside this rule's claim.
+#
+# The Box path regex accepts leading `::` and r#-raw spellings on every
+# segment (rereview P2: `r#` is not part of the identifier, so
+# `r#std::boxed::r#Box` resolves to std's Box). `Rc<dyn Error>` — even
+# nested inside a Box's generic args — stays out of this rule's claim:
+# other erased-error containers are review territory.
+#
+# Alias-blind by design: `type BoxErr = Box<dyn Error>` is caught at the
+# definition; uses of the alias are not (see README — Dylint/PER-69 is the
+# semantic escalation).
+id: no-box-dyn-error
+language: rust
+severity: error
+message: "C1: Box<dyn Error> erases the failure contract — return the crate-native error enum instead"
+files:
+  - "crates/**/*.rs"
+utils:
+  error-name:
+    any:
+      - kind: type_identifier
+        regex: "^(r#)?Error$"
+      - kind: scoped_type_identifier
+        has:
+          field: name
+          regex: "^(r#)?Error$"
+  in-box-args:
+    inside:
+      kind: type_arguments
+      stopBy:
+        not:
+          kind: bounded_type
+      inside:
+        kind: generic_type
+        has:
+          field: type
+          regex: "^(::)?((r#)?(std|alloc)::(r#)?boxed::)?(r#)?Box$"
+rule:
+  any:
+    - kind: dynamic_type
+      has:
+        field: trait
+        matches: error-name
+      matches: in-box-args
+    - all:
+        - matches: error-name
+        - inside:
+            kind: bounded_type
+        - matches: in-box-args
+        - any:
+            - inside:
+                kind: bounded_type
+                stopBy:
+                  not:
+                    kind: bounded_type
+                has:
+                  stopBy: end
+                  kind: dynamic_type
+            - inside:
+                kind: type_arguments
+                stopBy:
+                  not:
+                    kind: bounded_type
+                has:
+                  kind: ERROR
+                  regex: "^dyn"

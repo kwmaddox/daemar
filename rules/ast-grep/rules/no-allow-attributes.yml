@@ -1,0 +1,99 @@
+# C5: the only lint suppression is #[expect(lint, reason = "...")].
+#
+# Enforcement boundary (deliberate, PER-75 third adversarial pass): this
+# rule bans LITERAL suppression syntax — token sequences that are allow
+# attributes by Rust's grammar, independent of any macro's semantics:
+#   1. real attribute nodes, canonical and raw spelling, outer and inner
+#      (clippy sees only the canonical outer forms: it is blind to inner
+#      attributes and to #[r#allow], both live bypasses on 1.95.0);
+#   2. allow at attribute position inside cfg_attr, at any nesting depth
+#      (cfg_attr always expands its tail to attribute position — this is
+#      grammar, not macro inference);
+#   3. literal #[allow(...)]/#![allow(...)] sequences inside macro_rules
+#      transcribers, verified by the full attribute sigil (`#` or `#!`)
+#      before the bracket — a bare `!` is a macro invocation, not a sigil.
+#
+# NOT covered, by design: suppressions a macro SYNTHESIZES from non-literal
+# tokens — caller-supplied meta (m!(allow(dead_code))), split-token
+# assembly (m!(allow, dead_code) into #[$name($lint)]). Deciding those
+# requires expansion semantics; surface matching provably cannot (every
+# complete surface rule collapses to banning the identifier `allow` in
+# macro arguments, rejecting ordinary calls like vec![allow(0)]). That
+# class is owned by the macro-suppression follow-up story, which carries
+# the adversarial battery.
+#
+# Deliberately scans test code: tests are exempt from C4 (panics), never
+# from C5 — battery.rs suppresses via a reasoned #![expect] preamble.
+id: no-allow-attributes
+language: rust
+severity: error
+message: "C5: literal #[allow]/#![allow] syntax is banned (reasoned, raw-spelled, cfg_attr-wrapped, or in a macro transcriber) — the only lint suppression is #[expect(lint, reason = \"...\")]"
+files:
+  - "crates/**/*.rs"
+rule:
+  any:
+    # 1. Canonical and raw-identifier spellings, outer and inner.
+    - pattern: "#[allow($$$A)]"
+    - pattern: "#![allow($$$A)]"
+    - pattern: "#[r#allow($$$A)]"
+    - pattern: "#![r#allow($$$A)]"
+    # 2. allow(...) at attribute position inside cfg_attr, at any nesting
+    # depth: the identifier heads a `(...)` group and sits in an argument
+    # list that directly follows a cfg_attr path.
+    - all:
+        - kind: identifier
+        - regex: "^(r#)?allow$"
+        - precedes:
+            kind: token_tree
+        - inside:
+            kind: token_tree
+            follows:
+              kind: identifier
+              regex: "^(r#)?cfg_attr$"
+        - inside:
+            stopBy: end
+            any:
+              - kind: attribute_item
+              - kind: inner_attribute_item
+    # 3. Literal attribute syntax in macro_rules transcribers, where
+    # attributes are raw token trees. The bracket group must follow the
+    # complete attribute sigil — `#` (outer) or `#` then `!` (inner); the
+    # sigils are unnamed tokens, so adjacency is expressed by text.
+    # Within a sigil-verified bracket, allow may head the group directly
+    # or sit at cfg_attr attribute position.
+    - all:
+        - kind: identifier
+        - regex: "^(r#)?allow$"
+        - precedes:
+            kind: token_tree
+        - inside:
+            stopBy: end
+            kind: macro_definition
+        - any:
+            - inside:
+                kind: token_tree
+                regex: "^\\["
+                any:
+                  - follows:
+                      regex: "^#$"
+                  - follows:
+                      regex: "^!$"
+                      follows:
+                        regex: "^#$"
+            - all:
+                - inside:
+                    kind: token_tree
+                    follows:
+                      kind: identifier
+                      regex: "^(r#)?cfg_attr$"
+                - inside:
+                    stopBy: end
+                    kind: token_tree
+                    regex: "^\\["
+                    any:
+                      - follows:
+                          regex: "^#$"
+                      - follows:
+                          regex: "^!$"
+                          follows:
+                            regex: "^#$"

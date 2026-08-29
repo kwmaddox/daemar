@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+# The lint tables below are live policy: factory crates added here
+# inherit them via [lints] workspace = true.
+members = ["crates/daemar-card"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+
+# The Rust quality gate, layer 0 (PER-66). Rule rationale lives in
+# conventions.md — C2 (disallowed_*), C4 (unwrap/expect/panic/todo/
+# unimplemented/dbg/indexing/string_slice), C5 (allow_attributes_without_
+# reason), C13 (pedantic allocation/format lints); the rest trace to the
+# PER-66 acceptance criteria (wildcard_enum_match_arm, map_err_ignore,
+# as_conversions, missing_docs, unsafe_code — the latter three from the
+# 2026-08-23 independent-review control run). Disallowed-item reasons live
+# in clippy.toml. Warn-level entries are soft only for local `cargo build`
+# — the gate runs clippy with `-D warnings`, so every lint here fails
+# scripts/check.sh.
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+wildcard_enum_match_arm = "deny"
+map_err_ignore = "deny"
+allow_attributes_without_reason = "deny"
+# C5 (PER-75): rejects outer #[allow] even with a reason — #[expect] only.
+# Inner #![allow] is outside clippy's reach; the ast-grep rule
+# no-allow-attributes (rules/ast-grep) closes that half of the gate.
+allow_attributes = "deny"
+disallowed_types = "deny"
+disallowed_methods = "deny"
+disallowed_macros = "deny"
+as_conversions = "deny"
+
+[workspace.lints.rust]
+# Escalate to deny once the existing public surface is fully documented.
+missing_docs = "warn"
+# The workspace has zero unsafe; keep that a contract, not an accident.
+unsafe_code = "deny"

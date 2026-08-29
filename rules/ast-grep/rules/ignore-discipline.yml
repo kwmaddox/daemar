@@ -1,0 +1,45 @@
+# C5's principle applied to this pack's own escape hatch: every
+# ast-grep-ignore comment must name exactly one rule and carry a reason —
+#   // ast-grep-ignore: <rule-id> -- <why>
+# The bare form (`// ast-grep-ignore`) silently waives EVERY rule on the
+# next line; the rule-only form waives without explaining. Both are banned,
+# in line and block comments. Comment kinds keep string literals that
+# merely mention the token out of scope.
+#
+# The contract is lexical presence of reason text, not reason adequacy
+# (PER-68 rereview, finding P4): the gate requires a non-whitespace,
+# non-`*` character after `--`, and stops there. Semantically empty
+# "reasons" (`-- /**/`, `-- .`, `-- ()`) pass the gate — no character
+# class closes that class, and each exclusion is churn — and fail review
+# instead, the same jurisdiction that judges whether a suppressed site is
+# really a parse boundary.
+#
+# The reason's first character may not be `*` (or whitespace): in a block
+# comment the closing */ sits inside the node text, and with `\S` alone an
+# empty reason (`/* ast-grep-ignore: rule -- */`) reads the delimiter's `*`
+# as its reason (PER-68 adversarial pass, finding P2) — Rust's regex crate
+# has no lookahead to exclude the terminator, so the class excludes `*`
+# outright. A reason legitimately starting with `*` is priced-in lexical
+# strictness: reword it.
+#
+# Self-suppression hole and its closure: a *trailing* bare ignore
+# (`code(); // ast-grep-ignore`) suppresses every finding on its own line —
+# including this rule's — so `ast-grep scan` alone can never flag it. The
+# gate therefore runs this same rule a second time in scripts/check.sh over
+# a token-renamed copy (ast-grep-ignore → AST-GREP-IGNORE-TOKEN) piped via
+# --stdin: the renamed token no longer suppresses anything, so the trailing
+# form becomes visible. The regexes below accept both spellings so one rule
+# file serves both passes and the two channels cannot drift.
+id: ignore-discipline
+language: rust
+severity: error
+message: "C5 (principle): an ast-grep-ignore must name one rule and carry a reason — // ast-grep-ignore: <rule-id> -- <why>"
+files:
+  - "crates/**/*.rs"
+rule:
+  any:
+    - kind: line_comment
+    - kind: block_comment
+  regex: "(ast-grep-ignore|AST-GREP-IGNORE-TOKEN)"
+  not:
+    regex: "(ast-grep-ignore|AST-GREP-IGNORE-TOKEN): [a-z0-9][a-z0-9-]* -- [^\\s*]"
