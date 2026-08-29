@@ -51,7 +51,7 @@ cargo fmt --all --check
 # comment visible to the same rule file (its regexes accept both
 # spellings, so the two passes cannot drift). Fast path: no file mentions
 # the token, nothing is scanned.
-for f in $(grep -rl 'ast-grep-ignore' crates --include='*.rs' 2>/dev/null || true); do
+grep -rl 'ast-grep-ignore' crates --include='*.rs' 2>/dev/null | while IFS= read -r f; do
     if ! out=$(sed 's/ast-grep-ignore/AST-GREP-IGNORE-TOKEN/g' "$f" \
         | ast-grep scan --stdin --rule rules/ast-grep/rules/ignore-discipline.yml 2>&1); then
         echo "check: undisciplined ast-grep-ignore in $f (locations are STDIN-relative):" >&2
