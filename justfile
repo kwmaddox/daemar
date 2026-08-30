@@ -16,3 +16,7 @@ check:
 bootstrap:
     git config core.hooksPath scripts/hooks
     scripts/check.sh
+
+# Throwaway UI study for the Card console. Not production code.
+prototype-card-console:
+    cargo run --manifest-path prototypes/card-console/Cargo.toml

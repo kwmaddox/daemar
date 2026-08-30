@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Daemar Card Console Prototype</title>
+    <link rel="stylesheet" href="/assets/prototype.css">
+    <script src="/assets/htmx.min.js" defer></script>
+    <script src="/assets/prototype.js" defer></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div>
+          <p class="eyebrow">DAEMAR / LOCAL FACTORY</p>
+          <h1>Task control</h1>
+        </div>
+      </div>
+      <div class="scenario-control" aria-label="Fixture scenario">
+        <span>Fixture</span>
+        <button type="button" data-scenario-button="running" aria-pressed="true">Running</button>
+        <button type="button" data-scenario-button="accepted" aria-pressed="false">Accepted</button>
+        <button type="button" data-scenario-button="missing" aria-pressed="false">Missing trace</button>
+      </div>
+      <div class="system-state"><span></span> factory active</div>
+    </header>
+
+    <aside class="prototype-note">
+      <strong>Throwaway prototype</strong>
+      <span>Question: which hierarchy keeps workflow truth distinct from operational observation?</span>
+    </aside>
+
+    <main>
+      <!-- Three variants of the Card console, switchable via ?variant=, on the
+           new /prototype/card-console route. -->
+      <section class="variant variant-a" data-variant="A">
+        <nav class="task-queue" aria-label="Cards">
+          <div class="panel-heading">
+            <div><span class="kicker">IN FLIGHT</span><h2>Cards</h2></div>
+            <span class="count">4</span>
+          </div>
+          <button class="task-row selected" type="button">
+            <span class="state running"></span>
+            <span><b>PER-143</b><small>Build the first task console</small></span>
+            <em>03:41</em>
+          </button>
+          <button class="task-row" type="button">
+            <span class="state attention"></span>
+            <span><b>PER-142</b><small>Define stage contracts</small></span>
+            <em>review</em>
+          </button>
+          <button class="task-row" type="button">
+            <span class="state accepted"></span>
+            <span><b>PER-141</b><small>Record task frontmatter</small></span>
+            <em>done</em>
+          </button>
+          <div class="queue-section">RECENT</div>
+          <button class="task-row muted" type="button">
+            <span class="state failed"></span>
+            <span><b>PER-139</b><small>Reconcile stale claims</small></span>
+            <em>failed</em>
+          </button>
+          <footer class="queue-footer"><span>1 active</span><span>1 needs attention</span></footer>
+        </nav>
+
+        <article class="card-workspace">
+          <header class="card-titlebar">
+            <div>
+              <div class="identity"><span>PER-143</span><span>ATTEMPT 2 OF 2</span></div>
+              <h2>Build the first task console</h2>
+              <p>Give the operator a legible view of Card truth and live execution.</p>
+            </div>
+            <div class="title-actions">
+              <span class="live-state"><i></i><span data-scenario-copy>Live · retry recovered</span></span>
+              <button class="stop-button" type="button" data-running-only hx-post="/prototype/card-console/stop" hx-swap="outerHTML">
+                Stop
+              </button>
+            </div>
+          </header>
+
+          <ol class="stage-rail" aria-label="Stage progress">
+            <li class="complete"><button type="button" data-stage-button="frame"><span>1</span><div><b>Frame</b><small>accepted · 41s</small></div></button></li>
+            <li class="complete"><button type="button" data-stage-button="plan"><span>2</span><div><b>Plan</b><small>accepted · 1m 12s</small></div></button></li>
+            <li class="active" data-stage-state data-running-class="active" data-accepted-class="complete"><button class="selected-stage" type="button" data-stage-button="build"><span>3</span><div><b>Build</b><small data-running-only>running · 2m 08s</small><small data-accepted-only hidden>accepted · 3m 19s</small></div></button></li>
+            <li><button type="button" disabled><span>4</span><div><b>Verify</b><small>waiting</small></div></button></li>
+            <li><button type="button" disabled><span>5</span><div><b>Review</b><small>waiting</small></div></button></li>
+          </ol>
+
+          <div class="workspace-grid">
+            <section class="activity-panel">
+              <div class="section-title">
+                <div><span class="kicker trace">EXECUTION TRACE · OBSERVATION</span><h3 id="stage-activity-title">Build activity</h3></div>
+                <span class="sequence" id="stage-trace-sequence">trace seq 188 · live</span>
+              </div>
+
+              <div class="stage-pane historical-stage" data-stage-pane="frame" hidden>
+                <div class="stage-summary"><span class="success-mark">✓</span><div><b>Frame accepted</b><p>Task intent and acceptance boundaries were recorded to Card entries 4–7.</p></div><em>41s</em></div>
+                <article class="activity-event card-promotion-event">
+                  <div class="event-time">14:25:03</div><div class="event-icon card-icon">C</div><div class="event-body"><div class="event-heading"><b>Task boundary recorded</b><span>card seq 6</span></div><p>Operator-visible requirements and exclusions appended as workflow truth.</p></div>
+                </article>
+                <article class="activity-event model-event inspectable" role="button" data-inspect-event="model-frame" tabindex="0">
+                  <div class="event-time">14:25:19</div><div class="event-icon">A</div><div class="event-body"><div class="event-heading"><b>Framing agent conclusion</b><span>trace seq 32</span></div><p>Proposed a narrow first slice and identified the Card/Trace authority boundary.</p><span class="inspect-hint">Inspect event →</span></div>
+                </article>
+              </div>
+
+              <div class="stage-pane historical-stage" data-stage-pane="plan" hidden>
+                <div class="stage-summary"><span class="success-mark">✓</span><div><b>Plan accepted</b><p>Three implementation seams and six acceptance checks were recorded.</p></div><em>1m 12s</em></div>
+                <article class="activity-event model-event inspectable" role="button" data-inspect-event="model-plan" tabindex="0">
+                  <div class="event-time">14:27:10</div><div class="event-icon">A</div><div class="event-body"><div class="event-heading"><b>Planning response</b><span>trace seq 91</span></div><p>Mapped event ingestion, projections, and the operator console into ordered slices.</p><span class="inspect-hint">Inspect event →</span></div>
+                </article>
+                <article class="activity-event tool-event inspectable" role="button" data-inspect-event="tool-read" tabindex="0">
+                  <div class="event-time">14:27:22</div><div class="event-icon">›_</div><div class="event-body"><div class="event-heading"><b>Read conventions.md</b><span class="success">completed · 18ms</span></div><p class="mono">4.8 KB retained output · trace seq 94</p><span class="inspect-hint">Inspect event →</span></div>
+                </article>
+              </div>
+
+              <div class="stage-pane" data-stage-pane="build" data-live-trace>
+                <article class="activity-event model-event inspectable" role="button" data-inspect-event="model-build" tabindex="0">
+                  <div class="event-time">14:32:08</div>
+                  <div class="event-icon">A</div>
+                  <div class="event-body">
+                    <div class="event-heading"><b>Agent</b><span>visible message</span></div>
+                    <p>The state projection is correct. I’m narrowing the failing assertion to the terminal transition.</p>
+                    <span class="inspect-hint">Inspect model step →</span>
+                  </div>
+                </article>
+                <article class="activity-event tool-event failed-event inspectable selected-event" role="button" data-inspect-event="tool-failed" tabindex="0">
+                  <div class="event-time">14:32:17</div>
+                  <div class="event-icon">›_</div>
+                  <div class="event-body">
+                    <div class="event-heading"><b>cargo test --workspace</b><span class="failure">failed · 12.4s</span></div>
+                    <p class="mono">card_projection::tests::accepted_stage_is_terminal</p>
+                    <span class="inspect-hint">Inspect invocation and output →</span>
+                  </div>
+                </article>
+                <article class="activity-event retry-event inspectable" role="button" data-inspect-event="retry-build" tabindex="0">
+                  <div class="event-time">14:32:31</div>
+                  <div class="event-icon">↻</div>
+                  <div class="event-body">
+                    <div class="event-heading"><b>Retry 2 of 3</b><span>previous failure retained</span></div>
+                    <p>Agent corrected the terminal-state fixture and reran the focused check.</p>
+                    <span class="inspect-hint">Inspect retry lineage →</span>
+                  </div>
+                </article>
+                <article class="activity-event tool-event success-event inspectable" role="button" data-inspect-event="tool-passed" tabindex="0">
+                  <div class="event-time">14:33:02</div>
+                  <div class="event-icon">✓</div>
+                  <div class="event-body">
+                    <div class="event-heading"><b>cargo test card_projection</b><span class="success">passed · 4.1s</span></div>
+                    <p class="mono">8 passed · 0 failed</p>
+                    <span class="inspect-hint">Inspect invocation and output →</span>
+                  </div>
+                </article>
+                <div class="working"><i></i><span>Agent is editing <b>src/projection.rs</b></span><em>now</em></div>
+              </div>
+
+              <div class="missing-trace" data-missing-trace hidden>
+                <div class="missing-symbol">∅</div>
+                <h4>Execution Trace unavailable</h4>
+                <p>The retained diagnostic detail expired. Card outcomes and evidence remain authoritative.</p>
+                <span>trace_019fd… · unavailable after 7-day retention</span>
+              </div>
+            </section>
+
+            <aside class="detail-stack">
+              <section class="card-summary">
+                <div class="summary-heading"><div><span class="kicker card">CARD · WORKFLOW TRUTH</span><h3 id="card-stage-title">Build record</h3></div><span class="sequence" id="card-stage-sequence">card seq 27</span></div>
+                <div class="summary-grid">
+                  <div><span>Outcome</span><b class="in-progress" id="card-stage-outcome">in progress</b></div>
+                  <div><span>Input</span><b id="card-stage-input">card @ 22</b></div>
+                  <div><span>Changes</span><b id="card-stage-changes">3 paths</b></div>
+                  <div><span>Evidence</span><b id="card-stage-evidence">gate pending</b></div>
+                </div>
+                <p>Durable Stage facts remain visible while inspecting transient execution detail.</p>
+              </section>
+
+              <section class="trace-inspector" data-live-trace>
+                <div class="inspector-heading">
+                  <div><span class="kicker trace">SELECTED TRACE EVENT</span><h3>Event inspector</h3></div>
+                  <span class="sequence">click any activity</span>
+                </div>
+                <div id="event-inspector-content"></div>
+              </section>
+
+              <section class="inspector-unavailable" data-missing-trace hidden>
+                <span class="kicker trace">TRACE DETAIL</span><h3>Inspector unavailable</h3><p>The Trace expired. The Card summary above is still complete and usable.</p>
+              </section>
+            </aside>
+          </div>
+        </article>
+      </section>
+
+      <section class="variant variant-b" data-variant="B" hidden>
+        <header class="focus-header">
+          <div><span class="kicker">PER-143 · ATTEMPT 2</span><h2>Build the first task console</h2></div>
+          <div class="focus-stats"><span><b>BUILD</b> active Stage</span><span><b>03:41</b> elapsed</span><span><b>18.2k</b> reported tokens</span></div>
+          <button class="stop-button" type="button" data-running-only hx-post="/prototype/card-console/stop" hx-swap="outerHTML">Stop</button>
+        </header>
+        <div class="timeline-legend"><span class="card-key">CARD · authoritative workflow</span><span class="trace-key">TRACE · operational observation</span></div>
+        <div class="timeline-head"><span>TIME</span><span>WORKFLOW RECORD</span><span>EXECUTION DETAIL</span></div>
+        <div class="factory-log">
+          <article class="log-row">
+            <time>14:29:21</time>
+            <div class="log-card"><span class="log-seq">CARD 23</span><h3>Build Stage started</h3><p>Contract <b>build/v1</b> materialized from Card sequence 22.</p><small>controller · durable</small></div>
+            <div></div>
+          </article>
+          <article class="log-row trace-row" data-live-trace>
+            <time>14:31:44</time><div></div>
+            <div class="log-trace"><span class="log-seq">TRACE 179</span><h3>Agent reported progress</h3><p>Implementing the projection and preparing the first focused test.</p><small>model message · retained 7 days</small></div>
+          </article>
+          <article class="log-row trace-row failed" data-live-trace>
+            <time>14:32:17</time><div></div>
+            <div class="log-trace"><span class="log-seq">TRACE 184</span><h3>Check failed</h3><p><code>cargo test --workspace</code> exited 101 after 12.4s.</p><button class="disclosure" type="button" hx-get="/prototype/card-console/trace-detail" hx-target="#trace-detail-b">Inspect retained output</button><div id="trace-detail-b"></div></div>
+          </article>
+          <article class="log-row trace-row" data-live-trace>
+            <time>14:32:31</time><div></div>
+            <div class="log-trace retry"><span class="log-seq">TRACE 185</span><h3>Retry 2 of 3</h3><p>The previous failure remains visible while the focused correction runs.</p></div>
+          </article>
+          <article class="log-row trace-row" data-live-trace>
+            <time>14:33:02</time><div></div>
+            <div class="log-trace passed"><span class="log-seq">TRACE 188</span><h3>Focused check passed</h3><p>8 passed · 0 failed in 4.1s. This is observation—not Stage acceptance.</p></div>
+          </article>
+          <article class="log-row" data-accepted-only hidden>
+            <time>14:35:19</time>
+            <div class="log-card accepted-log"><span class="log-seq">CARD 31</span><h3>Build Stage accepted</h3><p>Three changed paths and full-gate evidence promoted to the Card.</p><small>controller · durable</small></div><div></div>
+          </article>
+          <article class="log-row missing-log" data-missing-trace hidden>
+            <time>—</time><div></div><div class="log-trace"><span class="log-seq">TRACE GAP</span><h3>Detailed observation unavailable</h3><p>The workflow record remains complete. Operational events cannot be inspected.</p></div>
+          </article>
+        </div>
+        <footer class="log-footer"><span><i class="card-dot"></i> 4 durable Card entries in this attempt</span><span><i class="trace-dot"></i> 188 retained Trace observations</span><span data-scenario-copy>Live · retry recovered</span></footer>
+      </section>
+
+      <section class="variant variant-c" data-variant="C" hidden>
+        <aside class="stage-spine">
+          <div class="spine-title"><span class="kicker">PER-143</span><h2>Attempt 2</h2><p>Build the first task console</p></div>
+          <ol>
+            <li class="done"><span>01</span><div><b>Frame</b><small>accepted</small></div></li>
+            <li class="done"><span>02</span><div><b>Plan</b><small>accepted</small></div></li>
+            <li class="now" data-stage-state data-running-class="now" data-accepted-class="done"><span>03</span><div><b>Build</b><small data-running-only>active · 02:08</small><small data-accepted-only hidden>accepted · 03:19</small></div></li>
+            <li><span>04</span><div><b>Verify</b><small>waiting</small></div></li>
+            <li><span>05</span><div><b>Review</b><small>waiting</small></div></li>
+          </ol>
+          <div class="attempt-history"><h3>Attempts</h3><p><span>1</span><b>interrupted</b><time>11m 08s</time></p><p class="current"><span>2</span><b data-running-only>running</b><b data-accepted-only hidden>accepted</b><time>03m 41s</time></p></div>
+        </aside>
+
+        <section class="trace-desk">
+          <header><div><span class="kicker trace">LIVE EXECUTION TRACE</span><h2>Build activity</h2></div><span class="live-state"><i></i><span data-scenario-copy>Live · retry recovered</span></span></header>
+          <div class="desk-stream" data-live-trace>
+            <article><time>14:32:08</time><div class="desk-agent">A</div><div><span>AGENT MESSAGE</span><p>The state projection is correct. I’m narrowing the failing assertion to the terminal transition.</p></div></article>
+            <article class="desk-tool"><time>14:32:17</time><div class="desk-command">›_</div><div><span>TOOL CALL · FAILED</span><p><b>cargo test --workspace</b><em>exit 101 · 12.4s</em></p><code>card_projection::tests::accepted_stage_is_terminal</code><button class="disclosure" type="button" hx-get="/prototype/card-console/trace-detail" hx-target="#trace-detail-c">View output</button><div id="trace-detail-c"></div></div></article>
+            <article><time>14:32:31</time><div class="desk-retry">↻</div><div><span>RETRY 2 OF 3</span><p>Correcting the terminal-state fixture. Previous failure retained.</p></div></article>
+            <article><time>14:33:02</time><div class="desk-pass">✓</div><div><span>TOOL CALL · PASSED</span><p><b>cargo test card_projection</b><em>8 passed · 4.1s</em></p></div></article>
+          </div>
+          <div class="missing-trace desk-missing" data-missing-trace hidden><div class="missing-symbol">∅</div><h4>Trace detail is no longer retained</h4><p>The evidence desk still shows the durable workflow outcome.</p></div>
+          <footer><span>trace_019fd…</span><span>seq 188</span><span>18.2k reported tokens</span><span>model 01:22 · tools 00:34</span></footer>
+        </section>
+
+        <aside class="evidence-desk">
+          <header><span class="kicker card">CARD · AUTHORITATIVE</span><h2>Evidence desk</h2><p>Card sequence 27</p></header>
+          <section><h3>Stage outcome</h3><div class="outcome" data-running-only><span class="pulse"></span><div><b>Build in progress</b><small>Started by controller at 14:29</small></div></div><div class="outcome accepted-outcome" data-accepted-only hidden><span>✓</span><div><b>Build accepted</b><small>Decision recorded at Card 31</small></div></div></section>
+          <section><h3>Produced changes <span>3</span></h3><ul class="change-list"><li><span class="modified">M</span><b>src/projection.rs</b><em>+84 −12</em></li><li><span class="added">A</span><b>tests/projection.rs</b><em>+121</em></li><li><span class="modified">M</span><b>Cargo.toml</b><em>+2</em></li></ul><button class="wide-action" type="button">Inspect unified diff</button></section>
+          <section><h3>Acceptance checks</h3><div class="check pass"><span>✓</span><div><b>Focused tests</b><small>8 passed · evidence retained</small></div></div><div class="check pending" data-running-only><span>○</span><div><b>Full quality gate</b><small>awaiting Stage conclusion</small></div></div><div class="check pass" data-accepted-only hidden><span>✓</span><div><b>Full quality gate</b><small>42 passed · Card entry 31</small></div></div></section>
+          <section class="authority-note"><span>WHY THIS IS HERE</span><p>Tool success is an observation. Acceptance exists only after a validated conclusion is appended to the Card.</p></section>
+          <button class="stop-button wide-stop" type="button" data-running-only hx-post="/prototype/card-console/stop" hx-swap="outerHTML">Stop attempt</button>
+        </aside>
+      </section>
+    </main>
+
+    <nav class="prototype-switcher" aria-label="Prototype variants">
+      <button id="variant-previous" type="button" aria-label="Previous variant">←</button>
+      <span><small>LAYOUT</small><b id="variant-label">A — Queue first</b></span>
+      <button id="variant-next" type="button" aria-label="Next variant">→</button>
+    </nav>
+  </body>
+</html>
