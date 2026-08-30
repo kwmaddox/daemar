@@ -1,11 +1,21 @@
+# What is daemar
+
+Daemar is a software factory for agentic software development.  The core thesis of
+daemar is inspired by two sources:  Air Traffic Control Slips and Factory Work Logs.  Each
+task that is worked in the factory will have a card that travels along with it.  The card will be an
+append-only log of all workflow-relevant facts, decisions, structured stage outputs, and evidence
+associated with the task.  Each stage will record to the card in a
+highly structured output.  The structure is intended to facilitate progressive disclosure of details.
+Stages will be able to get data from the card in three ways.  The card will have a narrow frontmatter
+that has key information every stage will need.  Each stage will have a contract of data that must be brought
+in from the card.  Finally, there will be a mechanism to query the card for additional information.
+
 # Working in this repository
 
 Operational guidance for coding agents and ticket authors. daemar is a
 Rust workspace building a software factory: a harness that runs coding
 agents against small, spec-reviewed tickets. Current phase: re-founding —
-the factory loop itself. The sandbox era is archived on
-`archive/sandbox-era`; sandboxing is a future spun-off service (Nar'baha)
-that stays dormant until the factory's real needs pull it into existence.
+the factory loop itself.
 
 ## Commands
 

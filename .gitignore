@@ -16,3 +16,6 @@
 # plaintext secrets must never exist in tree for long, and never in git
 *.dec.env
 /.env
+
+# prototype workspaces build into their own target dirs
+/prototypes/*/target/
