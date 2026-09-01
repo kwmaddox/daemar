@@ -219,12 +219,9 @@ fn cli() -> Command {
                         .required(true)
                         .value_name("TYPE"),
                 )
-                .arg(
-                    Arg::new("payload")
-                        .long("payload")
-                        .required(true)
-                        .value_name("JSON"),
-                )
+                .arg(Arg::new("payload").long("payload").value_name("JSON"))
+                .arg(Arg::new("stage").long("stage").value_name("TEXT"))
+                .arg(Arg::new("summary").long("summary").value_name("TEXT"))
                 .arg(
                     Arg::new("schema-version")
                         .long("schema-version")
@@ -380,6 +377,41 @@ async fn create(sub: &ArgMatches, config: &Config) -> Result<Value, Failure> {
     Ok(json!({ "card_id": card_id.to_string() }))
 }
 
+/// Extract payload from CLI arguments based on entry type (C16).
+/// Enforces per-type argument policies and delegates to domain constructors.
+fn payload_from_args(
+    sub: &ArgMatches,
+    entry_type: EntryType,
+    schema_version: u32,
+) -> Result<Payload, Failure> {
+    match entry_type {
+        EntryType::StageEvent => {
+            // stage-event requires --stage and --summary, --payload optional.
+            let stage = require_arg(sub, "stage")?;
+            let summary = require_arg(sub, "summary")?;
+            let raw_payload = sub.get_one::<String>("payload").map(String::as_str);
+            Payload::stage_event_from_parts(schema_version, stage, summary, raw_payload)
+                .map_err(Failure::Domain)
+        }
+        EntryType::Decision => {
+            // decision requires --payload, rejects --stage and --summary.
+            if sub.get_one::<String>("stage").is_some() {
+                return Err(Failure::Invalid(
+                    "entry type decision does not accept --stage".to_owned(),
+                ));
+            }
+            if sub.get_one::<String>("summary").is_some() {
+                return Err(Failure::Invalid(
+                    "entry type decision does not accept --summary".to_owned(),
+                ));
+            }
+            let raw = require_arg(sub, "payload")?;
+            Payload::from_raw(entry_type, schema_version, &raw).map_err(Failure::Domain)
+        }
+        EntryType::CardCreated => Err(Failure::Domain(Error::NotAppendable { entry_type })),
+    }
+}
+
 async fn append(sub: &ArgMatches, config: &Config) -> Result<Value, Failure> {
     let producer = require_producer(sub)?;
     let entry_type = EntryType::from_str(&require_arg(sub, "entry-type")?)?;
@@ -396,8 +428,9 @@ async fn append(sub: &ArgMatches, config: &Config) -> Result<Value, Failure> {
         })?,
         None => CURRENT_SCHEMA_VERSION,
     };
-    let raw = require_arg(sub, "payload")?;
-    let payload = Payload::from_raw(entry_type, schema_version, &raw)?;
+
+    let payload = payload_from_args(sub, entry_type, schema_version)?;
+
     let card_id = CardId::from(require_arg(sub, "card-id")?);
     let store = open_store(config).await?;
     let accepted = store
@@ -426,7 +459,7 @@ async fn history(sub: &ArgMatches, config: &Config) -> Result<Value, Failure> {
     let rendered = entries
         .iter()
         .map(|entry| {
-            Ok(json!({
+            let mut entry_json = json!({
                 "entry_id": entry.entry_id.to_string(),
                 "card_id": entry.card_id.to_string(),
                 "sequence": entry.sequence,
@@ -437,8 +470,15 @@ async fn history(sub: &ArgMatches, config: &Config) -> Result<Value, Failure> {
                     "kind": entry.producer.kind.to_string(),
                 },
                 "recorded_at": render_timestamp(entry.recorded_at),
-                "payload": entry.payload.to_json()?,
-            }))
+            });
+            // Merge the payload fields from the library's history_fields().
+            let fields = entry.payload.history_fields()?;
+            if let serde_json::Value::Object(ref mut map) = entry_json {
+                for (key, value) in fields {
+                    map.insert(key, value);
+                }
+            }
+            Ok(entry_json)
         })
         .collect::<Result<Vec<Value>, Error>>()?;
     Ok(json!({ "card_id": card_id.to_string(), "entries": rendered }))

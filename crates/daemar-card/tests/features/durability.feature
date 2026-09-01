@@ -22,6 +22,14 @@ Feature: The record survives the process
     Then at least one writer was terminated by SIGKILL
     And history holds exactly those acknowledged entries at sequences 2 through 6
 
+  Scenario: A stage event survives restart byte for byte
+    # S2-B1 (PER-83) — milestone durability now covers the stage-event
+    # type: identical envelope and verbatim payload across processes.
+    Given an open Card
+    And an appended stage event with a nested payload
+    When the Card history is read twice in separate processes
+    Then both reads return 2 identical entries in sequence order 1 through 2
+
   Scenario: The database path is discoverable and selectable
     # S1-B14
     Given an open Card
