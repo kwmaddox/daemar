@@ -219,9 +219,9 @@ impl Payload {
     /// [`Error::UnknownSchemaVersion`] if the version is not [`CURRENT_SCHEMA_VERSION`];
     /// [`Error::BlankField`] if stage or summary is empty/whitespace-only;
     /// [`Error::NotSingleLine`] if summary contains CR or LF;
-    /// [`Error::MalformedPayload`] if `raw_payload` is present but not a JSON object
-    /// or contains duplicate members; [`Error::DuplicateJsonMember`] if the payload
-    /// contains the same member name twice at any nesting depth.
+    /// [`Error::MalformedPayload`] if `raw_payload` is present but not a JSON object;
+    /// [`Error::DuplicateJsonMember`] if the payload contains the same member name twice
+    /// at any nesting depth.
     pub fn stage_event_from_parts(
         schema_version: u32,
         stage: String,

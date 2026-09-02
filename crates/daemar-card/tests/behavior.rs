@@ -1,5 +1,5 @@
 //! Executable behavior spec for PER-82 (S1-B1…S1-B14) and PER-83
-//! (S2-B1…S2-B14, in `behavior/slice2.rs`).
+//! (S2-B1…S2-B4, in `behavior/slice2.rs`).
 //!
 //! The Gherkin features in `tests/features/` are the citable spec; each
 //! step here drives the compiled `card` binary — the same boundary agents

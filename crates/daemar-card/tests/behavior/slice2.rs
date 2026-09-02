@@ -182,9 +182,12 @@ fn recorded_payload_exact(w: &mut CardWorld) {
 #[then("the recorded event carries no payload")]
 fn recorded_event_carries_no_payload(w: &mut CardWorld) {
     let entry = w.last_history_entry();
+    // Strict absence (Copilot review, Card seq 48): the gate rejects an
+    // explicit `payload: null`, and the history seam omits the key for a
+    // payload-less event — a null here would mean one of them regressed.
     assert!(
-        entry.get("payload").is_none_or(Value::is_null),
-        "expected no payload: {entry}"
+        entry.get("payload").is_none(),
+        "expected the payload key to be absent: {entry}"
     );
 }
 
