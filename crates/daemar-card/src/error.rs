@@ -72,6 +72,16 @@ pub enum Error {
         /// The underlying database error.
         source: sqlx::Error,
     },
+    /// A summary field contained a CR or LF; rejected whole, never normalized.
+    NotSingleLine {
+        /// Which field contained the line break.
+        field: &'static str,
+    },
+    /// A JSON object carried the same member name twice at any nesting depth.
+    DuplicateJsonMember {
+        /// The offending member name.
+        name: String,
+    },
 }
 
 /// Which store operation an error belongs to, typed so callers and
@@ -116,7 +126,9 @@ impl Error {
             | Error::MalformedPayload { .. }
             | Error::MissingProducer
             | Error::BlankField { .. }
-            | Error::NotAppendable { .. } => ErrorCategory::Validation,
+            | Error::NotAppendable { .. }
+            | Error::NotSingleLine { .. }
+            | Error::DuplicateJsonMember { .. } => ErrorCategory::Validation,
             Error::IdempotencyConflict { .. } => ErrorCategory::Conflict,
             Error::CardNotFound { .. } => ErrorCategory::Missing,
             Error::Corrupt { .. } | Error::Storage { .. } => ErrorCategory::Storage,
@@ -171,6 +183,15 @@ impl std::fmt::Display for Error {
                 write!(f, "stored data violated store invariants during {context}")
             }
             Error::Storage { context, .. } => write!(f, "storage failure during {context}"),
+            Error::NotSingleLine { field } => {
+                write!(f, "{field} contains a line break (CR or LF)")
+            }
+            Error::DuplicateJsonMember { name } => {
+                write!(
+                    f,
+                    "json object has duplicate member `{name}` at some nesting depth"
+                )
+            }
         }
     }
 }
@@ -188,7 +209,9 @@ impl std::error::Error for Error {
             | Error::NotAppendable { .. }
             | Error::IdempotencyConflict { .. }
             | Error::CardNotFound { .. }
-            | Error::Corrupt { .. } => None,
+            | Error::Corrupt { .. }
+            | Error::NotSingleLine { .. }
+            | Error::DuplicateJsonMember { .. } => None,
         }
     }
 }

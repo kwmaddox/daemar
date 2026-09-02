@@ -1,4 +1,5 @@
-//! Executable behavior spec for PER-82 (S1-B1…S1-B14).
+//! Executable behavior spec for PER-82 (S1-B1…S1-B14) and PER-83
+//! (S2-B1…S2-B4, in `behavior/slice2.rs`).
 //!
 //! The Gherkin features in `tests/features/` are the citable spec; each
 //! step here drives the compiled `card` binary — the same boundary agents
@@ -26,6 +27,11 @@ use std::process::{Command, Output};
 use cucumber::{given, then, when, World as _};
 use serde_json::Value;
 use tempfile::TempDir;
+
+// An explicit path keeps the module under `tests/behavior/`, where cargo
+// does not auto-discover it as a separate integration-test target.
+#[path = "behavior/slice2.rs"]
+mod slice2;
 
 /// Path to the compiled `card` binary under test, injected by Cargo.
 const CARD_BIN: &str = env!("CARGO_BIN_EXE_card");
@@ -102,6 +108,28 @@ fn run_card(db: &str, args: &[&str]) -> Run {
     })
 }
 
+/// A scenario-local database fixture: the owning temp directory and the
+/// `daemar.db` path inside it (C10 — the recurring `(TempDir, String)`
+/// shape, named).
+#[derive(Debug)]
+struct TempDb {
+    dir: TempDir,
+    db: String,
+}
+
+impl TempDb {
+    fn new() -> Self {
+        let dir = TempDir::new().expect("temp dir");
+        let db = dir
+            .path()
+            .join("daemar.db")
+            .to_str()
+            .expect("utf-8 path")
+            .to_owned();
+        Self { dir, db }
+    }
+}
+
 #[derive(Debug, Default, cucumber::World)]
 struct CardWorld {
     home: Option<TempDir>,
@@ -114,11 +142,17 @@ struct CardWorld {
     reads: Vec<Value>,
     acks: Vec<Value>,
     kill_statuses: Vec<std::process::ExitStatus>,
-    flag_db: Option<(TempDir, String)>,
-    dotenv_db: Option<(TempDir, String)>,
-    dotenv_second: Option<(TempDir, String)>,
+    flag_db: Option<TempDb>,
+    dotenv_db: Option<TempDb>,
+    dotenv_second: Option<TempDb>,
     fake_home: Option<TempDir>,
     iso_cwd: Option<TempDir>,
+    // --- S2 (PER-83): stage events through the CLI --------------------------
+    stage_retry: Option<slice2::StoredStageEvent>,
+    // Full-history snapshot taken by "the Card has {int} entries", so
+    // rejection steps can prove the record is unchanged, not merely the
+    // same size (review finding: cardinality is not immutability).
+    history_before: Option<Vec<Value>>,
 }
 
 impl CardWorld {
@@ -201,7 +235,7 @@ impl CardWorld {
     }
 
     fn flag_db_path(&self) -> String {
-        self.flag_db.as_ref().expect("a --db override").1.clone()
+        self.flag_db.as_ref().expect("a --db override").db.clone()
     }
 
     fn assert_entry_count(&mut self, count: usize) {
@@ -367,9 +401,31 @@ fn accepted_at_sequence(w: &mut CardWorld, sequence: u64) {
         Some(sequence),
         "unexpected sequence: {json}"
     );
-    assert!(
-        json["entry_id"].as_str().is_some_and(|id| !id.is_empty()),
-        "entry ID missing"
+    let entry_id = json["entry_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .expect("entry ID missing")
+        .to_owned();
+    // The acknowledgement must name a durable entry on the requested
+    // Card (review finding: an ack checked apart from history proves a
+    // plausible object, not identity): the durable entry with the
+    // acknowledged ID exists, carries the acknowledged sequence, and
+    // belongs to the Card the producer addressed.
+    let card = w.primary_card();
+    let entries = w.history(&card);
+    let durable = entries
+        .iter()
+        .find(|entry| entry["entry_id"].as_str() == Some(entry_id.as_str()))
+        .unwrap_or_else(|| panic!("no durable entry with acknowledged ID {entry_id}"));
+    assert_eq!(
+        durable["sequence"].as_u64(),
+        Some(sequence),
+        "durable sequence drifted from the acknowledgement: {durable}"
+    );
+    assert_eq!(
+        durable["card_id"].as_str(),
+        Some(card.as_str()),
+        "the acknowledged entry landed on a different Card: {durable}"
     );
 }
 
@@ -517,6 +573,7 @@ fn card_given_entries(w: &mut CardWorld, count: u64) {
         run.success_json();
     }
     w.assert_entry_count(target);
+    w.history_before = Some(w.history(&card));
 }
 
 #[when("a producer submits an append that is missing the decision reason")]
@@ -616,6 +673,18 @@ fn append_nonexistent_card(w: &mut CardWorld) {
 #[then(expr = "the Card still has exactly {int} entries")]
 fn card_still_has_entries(w: &mut CardWorld, count: u64) {
     w.assert_entry_count(usize::try_from(count).expect("count fits usize"));
+    // "Rejected whole" means the record is untouched, not merely the
+    // same size (review finding: an implementation that mutates or
+    // replaces an entry while preserving cardinality must fail). Where
+    // the fixture step took a snapshot, compare the histories exactly.
+    let card = w.primary_card();
+    let after = w.history(&card);
+    if let Some(before) = &w.history_before {
+        assert_eq!(
+            &after, before,
+            "a rejected command changed the durable record"
+        );
+    }
 }
 
 #[when("two producers append decisions concurrently")]
@@ -803,7 +872,10 @@ fn complete_envelopes(w: &mut CardWorld) {
     }
 }
 
-#[then(expr = "{int} entries return, all of type {string}, in sequence order")]
+// Regex instead of a cucumber expression so both the plural ("2 entries
+// return") and the singular ("1 entry returns") read grammatically in the
+// features.
+#[then(regex = r#"^(\d+) entr(?:ies return|y returns), all of type "([^"]*)", in sequence order$"#)]
 fn entries_of_type_in_order(w: &mut CardWorld, count: u64, entry_type: String) {
     let entries = w.last_run().success_json()["entries"]
         .as_array()
@@ -990,19 +1062,13 @@ fn reads_are_identical(w: &mut CardWorld, count: u64, from: u64, through: u64) {
 
 #[when(expr = "a Card titled {string} is created with a --db override")]
 fn create_with_db_flag(w: &mut CardWorld, title: String) {
-    let dir = TempDir::new().expect("temp dir");
-    let flag_path = dir
-        .path()
-        .join("daemar.db")
-        .to_str()
-        .expect("utf-8 path")
-        .to_owned();
+    let flag_db = TempDb::new();
     let env_db = w.db_path();
     let run = run_card_command(|command| {
         command.env("DAEMAR_DB", &env_db).args([
             "create",
             "--db",
-            &flag_path,
+            &flag_db.db,
             "--title",
             &title,
             "--producer",
@@ -1012,7 +1078,7 @@ fn create_with_db_flag(w: &mut CardWorld, title: String) {
         ]);
     });
     run.success_json();
-    w.flag_db = Some((dir, flag_path));
+    w.flag_db = Some(flag_db);
 }
 
 #[then(expr = "the override database holds exactly one Card titled {string}")]
@@ -1244,26 +1310,21 @@ fn killed_acknowledgements_survive(w: &mut CardWorld, from: u64, through: u64) {
 #[when("a Card is created via a factory-home dotenv pointing at an external directory")]
 fn create_via_dotenv_external(w: &mut CardWorld) {
     let home = TempDir::new().expect("temp home");
-    let external = TempDir::new().expect("external dir");
+    let external = TempDb::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(external.path(), std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(external.dir.path(), std::fs::Permissions::from_mode(0o755))
             .expect("widen external dir");
     }
     let factory = home.path().join(".daemar");
     std::fs::create_dir_all(&factory).expect("factory home");
-    let db = external
-        .path()
-        .join("daemar.db")
-        .to_str()
-        .expect("utf-8 path")
-        .to_owned();
     std::fs::write(
         factory.join(".env"),
         format!(
-            "DAEMAR_DB={db}
-"
+            "DAEMAR_DB={}
+",
+            external.db
         ),
     )
     .expect("write dotenv");
@@ -1283,15 +1344,15 @@ fn create_via_dotenv_external(w: &mut CardWorld) {
     });
     run.success_json();
     w.fake_home = Some(home);
-    w.dotenv_db = Some((external, db));
+    w.dotenv_db = Some(external);
 }
 
 #[then("the external directory keeps its permissions")]
 fn external_directory_untouched(w: &mut CardWorld) {
-    let (external, _db) = w.dotenv_db.as_ref().expect("a dotenv-selected database");
+    let external = w.dotenv_db.as_ref().expect("a dotenv-selected database");
     #[cfg(unix)]
     assert_eq!(
-        unix_mode(external.path()),
+        unix_mode(external.dir.path()),
         0o755,
         "the factory must not tighten an operator-selected directory"
     );
@@ -1301,13 +1362,8 @@ fn external_directory_untouched(w: &mut CardWorld) {
 
 #[then("the dotenv database holds exactly one Card")]
 fn dotenv_database_holds_card(w: &mut CardWorld) {
-    let db = w
-        .dotenv_db
-        .as_ref()
-        .expect("a dotenv-selected database")
-        .1
-        .clone();
-    let cards = run_card(&db, &["list"]).success_json()["cards"]
+    let db = &w.dotenv_db.as_ref().expect("a dotenv-selected database").db;
+    let cards = run_card(db, &["list"]).success_json()["cards"]
         .as_array()
         .expect("cards")
         .clone();
@@ -1321,25 +1377,13 @@ fn dotenv_database_holds_card(w: &mut CardWorld) {
 #[when("a Card is created via a dotenv with duplicate database entries")]
 fn create_via_dotenv_duplicates(w: &mut CardWorld) {
     let home = TempDir::new().expect("temp home");
-    let first = TempDir::new().expect("first dir");
-    let second = TempDir::new().expect("second dir");
+    let first = TempDb::new();
+    let second = TempDb::new();
     let factory = home.path().join(".daemar");
     std::fs::create_dir_all(&factory).expect("factory home");
-    let first_db = first
-        .path()
-        .join("daemar.db")
-        .to_str()
-        .expect("utf-8 path")
-        .to_owned();
-    let second_db = second
-        .path()
-        .join("daemar.db")
-        .to_str()
-        .expect("utf-8 path")
-        .to_owned();
     std::fs::write(
         factory.join(".env"),
-        format!("DAEMAR_DB={first_db}\nDAEMAR_DB={second_db}\n"),
+        format!("DAEMAR_DB={}\nDAEMAR_DB={}\n", first.db, second.db),
     )
     .expect("write dotenv");
     let run = run_card_command(|command| {
@@ -1358,14 +1402,14 @@ fn create_via_dotenv_duplicates(w: &mut CardWorld) {
     });
     run.success_json();
     w.fake_home = Some(home);
-    w.dotenv_db = Some((first, first_db));
-    w.dotenv_second = Some((second, second_db));
+    w.dotenv_db = Some(first);
+    w.dotenv_second = Some(second);
 }
 
 #[then("the first declared database holds the Card and the second does not exist")]
 fn first_declaration_wins(w: &mut CardWorld) {
-    let first_db = w.dotenv_db.as_ref().expect("a first declaration").1.clone();
-    let cards = run_card(&first_db, &["list"]).success_json()["cards"]
+    let first_db = &w.dotenv_db.as_ref().expect("a first declaration").db;
+    let cards = run_card(first_db, &["list"]).success_json()["cards"]
         .as_array()
         .expect("cards")
         .clone();
@@ -1374,7 +1418,7 @@ fn first_declaration_wins(w: &mut CardWorld) {
         1,
         "the first declared database must hold the Card"
     );
-    let second_db = &w.dotenv_second.as_ref().expect("a second declaration").1;
+    let second_db = &w.dotenv_second.as_ref().expect("a second declaration").db;
     assert!(
         !Path::new(second_db).exists(),
         "a later duplicate must not silently redirect the record to {second_db}"
