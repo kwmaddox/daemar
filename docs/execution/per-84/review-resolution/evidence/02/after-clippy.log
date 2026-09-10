@@ -1,0 +1,14 @@
+    Checking daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+error: unused import: `Connection`
+   --> crates/daemar-card/src/console.rs:562:41
+    |
+562 |         use sqlx::{ConnectOptions as _, Connection as _};
+    |                                         ^^^^^^^^^^
+    |
+    = note: `-D unused-imports` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: could not compile `daemar-card` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+
+COMMAND_EXIT=101

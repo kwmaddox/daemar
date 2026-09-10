@@ -1,0 +1,36 @@
+   Compiling daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+error[E0433]: cannot find type `Port` in this scope
+   --> crates/daemar-card/src/console.rs:550:42
+    |
+550 |             let bound = LoopbackAddr::v4(Port::new(7331));
+    |                                          ^^^^ use of undeclared type `Port`
+    |
+help: consider importing this struct
+    |
+534 +         use crate::console::Port;
+    |
+
+error[E0433]: cannot find type `Port` in this scope
+   --> crates/daemar-card/src/console.rs:596:60
+    |
+596 |             let listener = Listener::bind(LoopbackAddr::v4(Port::EPHEMERAL)).await.expect("listener");
+    |                                                            ^^^^ use of undeclared type `Port`
+    |
+help: consider importing this struct
+    |
+534 +         use crate::console::Port;
+    |
+
+error: lifetime may not live long enough
+   --> crates/daemar-card/src/console.rs:529:56
+    |
+529 |         serve_with_accept(listener, reader, |listener| listener.accept()).await
+    |                                              --------- ^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+    |                                              |       |
+    |                                              |       return type of closure `impl futures::Future<Output = Result<(tokio::net::TcpStream, std::net::SocketAddr), std::io::Error>>` contains a lifetime `'2`
+    |                                              has type `&'1 tokio::net::TcpListener`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `daemar-card` (lib test) due to 3 previous errors
+cwd=/Users/kendall/code/github/daemar
+exit=101

@@ -1,0 +1,14 @@
+COMMAND: cargo fmt --all -- --check
+CWD: /Users/kendall/code/github/daemar
+Diff in /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:688:
+                 );
+             }
+             MetaRefreshTarget::Unsupported => {
+[31m-                panic!(
+(B[m[31m-                    "<meta http-equiv=refresh> has unsupported or unresolved refresh content"
+(B[m[31m-                );
+(B[m[32m+                panic!("<meta http-equiv=refresh> has unsupported or unresolved refresh content");
+(B[m             }
+         }
+     }
+COMMAND_EXIT: 1

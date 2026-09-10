@@ -1,0 +1,3 @@
+COMMAND: cargo fmt --all -- --check
+CWD: /Users/kendall/code/github/daemar
+COMMAND_EXIT: 0

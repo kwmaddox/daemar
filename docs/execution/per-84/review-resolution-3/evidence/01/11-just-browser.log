@@ -1,0 +1,51 @@
+COMMAND: just browser
+CWD: /Users/kendall/code/github/daemar
+cargo build -p daemar-card --bin card
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+cd browser && npx playwright test
+
+Running 11 tests using 9 workers
+
+(node:16464) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16465) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16466) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16468) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16472) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16469) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16470) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16473) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16467) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16471) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:16468) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:16465) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:16466) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:16470) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:16472) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:16469) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:16467) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:16471) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:16473) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+  ✓   2 [chromium] › tests/console.spec.ts:83:9 › S3-B8 the console is self-contained in a real browser › loading the queue page fetches exactly the page and one stylesheet, with no errors (553ms)
+  ✓   4 [chromium] › tests/console.spec.ts:83:9 › S3-B8 the console is self-contained in a real browser › loading a Card page fetches exactly the page and one stylesheet, with no errors (560ms)
+  ✓   3 [chromium] › tests/console.spec.ts:83:9 › S3-B8 the console is self-contained in a real browser › loading an entry inspector fetches exactly the page and one stylesheet, with no errors (579ms)
+  ✓   7 [chromium] › tests/console.spec.ts:240:7 › S3-B9 failures are visible and fabricate nothing › an unknown Card is a visible not-found page with the queue and no Card identity (575ms)
+  ✓   5 [chromium] › tests/console.spec.ts:256:7 › S3-B9 failures are visible and fabricate nothing › a corrupt entry is a visible storage-failed page that keeps the queue and fabricates nothing (605ms)
+  ✓   6 [chromium] › tests/console.spec.ts:221:7 › S3-B6 the inspector is reachable by clicking and its envelope is visible › browser back from the inspector returns to the Card page with no inspector (634ms)
+  ✓   1 [chromium] › tests/console.spec.ts:119:7 › S3-B4/B5 the operator can read the queue and the stream › every queue row's title, task key, and last activity are visible and match the record (660ms)
+  ✓  11 [chromium] › tests/console.spec.ts:299:7 › S3-B9 failures are visible and fabricate nothing › an empty, migrated store shows a visibly empty queue (115ms)
+  ✓  10 [chromium] › tests/console.spec.ts:279:7 › S3-B9 failures are visible and fabricate nothing › a queue the console cannot read is a visible storage-failed page with no queue (169ms)
+  ✓   9 [chromium] › tests/console.spec.ts:181:7 › S3-B6 the inspector is reachable by clicking and its envelope is visible › clicking a stream row's inspect link lands on the entry route with a visible envelope (744ms)
+  ✓   8 [chromium] › tests/console.spec.ts:148:7 › S3-B4/B5 the operator can read the queue and the stream › every stream row is visible with its sequence, summary, and provenance (757ms)
+
+  11 passed (1.2s)
+COMMAND_EXIT: 0

@@ -1,0 +1,4 @@
+062828bc95f93cc23b20f5721d535e63b170551506175d6a918d0f6208bf1377  browser/tests/console.spec.ts
+622f626c3740134e1d5b101f0d1a2edf223b1cac7a3ed0c643346edba3be5176  crates/daemar-card/tests/behavior/console/http.rs
+950896116733023a7d7685e137acf1f6bc21f7cd2b16452b2fc438919dc877ee  crates/daemar-card/tests/behavior/console/mod.rs
+9e5f1aa6e882c7512e856783584623080b9c39bb60827a8c5eadaccda882eb5c  crates/daemar-card/tests/features/console.feature

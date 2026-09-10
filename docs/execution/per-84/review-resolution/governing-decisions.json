@@ -1,0 +1,124 @@
+[
+  {
+    "sequence": 45,
+    "payload": {
+      "reason": "R1 accepted: split the StageSummary sink row from DecisionSummary in the hostile sink table; remove the payload sink only from the Stage and StageSummary rows; absence/equality assertions use member presence, not indexing that collapses absence to JSON null. The inspector renders the producer payload only and omits the payload element when the history entry has no payload member. Expected end state of the plan becomes all 119 cucumber scenarios green. R2 accepted as a public-surface change, approved by the operator in conversation: `impl std::fmt::Display for ConfigSource` with one spelling source, Flag -> flag, Env -> env, DotEnv -> dotenv, Default -> default, written directly to the formatter. R3 accepted: `datetime` attributes on time elements may carry typed server timestamps; producer text stays out of attributes. R4 accepted: card_page identity comes from the matching QueueCard of the same request's queue read, no second list query. R5 accepted: a small private RFC3339 formatter per crate is fine, no new public helper. R6 accepted: Askama render failure yields a fixed plain-text 500 after buffering; storage failures keep the HTML error page; no new error variant. R7 accepted: favicon is escalated only on an observed fetch-set failure with evidence. R8 accepted: the no-background-task fence means no application workflow, projection or polling tasks; SQLx pool maintenance is permitted. R9 accepted: the reader opens as a normal read-only live WAL reader, journal_mode unspecified, immutable false, and never reuses the writer's create/migrate/chmod path or falls back to writing.",
+      "summary": "Operator rulings on plan review recommendations R1-R9 (sequence 44): all accepted. R1 is a targeted test fix; R2 is a skeleton amendment (revision 6) adding a hand-written Display for ConfigSource."
+    }
+  },
+  {
+    "sequence": 46,
+    "payload": {
+      "reason": "Amendment to skeleton revision 5. Added to the console module, next to `ConfigSource`:\n\n```rust\n/// The single spelling of each configuration source, used by the startup\n/// line and by every error that names where a value came from.\n///\n/// Invariant: `Flag` renders `flag`, `Env` renders `env`, `DotEnv` renders\n/// `dotenv`, `Default` renders `default`; nothing else in the crate spells\n/// these names (C14).\nimpl std::fmt::Display for ConfigSource {\n    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;\n}\n```\n\nThe body writes each name directly to the formatter with `f.write_str`; no intermediate `String`, no `to_string` helper. Any `Startup` or error `Display` that names a source goes through this impl. Everything else in revision 5 stands unchanged.",
+      "summary": "Typed skeleton revision 6: revision 5 (sequence 38) plus one public trait impl, `impl std::fmt::Display for ConfigSource`, approved by the operator in conversation as the R2 ruling (sequence 45). No other signature changes."
+    }
+  },
+  {
+    "sequence": 66,
+    "payload": {
+      "reason": "Answer to executor question65. Following operator confirmation in conversation, correct the orchestration error rather than treating this as a product/policy approval. A meaningful test through an approved but absent API may establish initial red by a missing-API compile failure, honestly labelled compile-red. No behavioral failure is required before that API exists. Once compilable, new behavior tests must observe unmet behavior, not artificial assert-false tests, deliberately broken stubs or environmental failures. Tests precede corresponding implementation; preserve source snapshot, actual command/output/exit and green rerun. If a later case is already satisfied by an earlier legitimate implementation slice, record its initial pass and that earlier slice's genuine red/green provenance; never break working behavior merely to manufacture red. The failure at checkpointA is valid initial compile-red. Failed attempt62 remains rejected. Product scope, approved public surface, four-task structure, Luna-only implementation, all-green/conventions barrier and Card escalation remain unchanged. Fresh subagent updates the plan text, then a fresh Luna executor resumes from checkpointA. This resolves the wording defect; it is not an independent review result.",
+      "summary": "Correct initial TDD red rule: meaningful missing-approved-API compile failure permits implementation; artificial failures remain invalid"
+    }
+  },
+  {
+    "sequence": 70,
+    "payload": {
+      "payload": {
+        "all_other_conventions": "no findings",
+        "challenger": "/root/run2_task1_conventions_refute",
+        "checker": "/root/run2_task1_conventions",
+        "findings": [
+          {
+            "counterargument": "public to_json accessor legitimately returns owned Value",
+            "disposition": "survives narrowly at publication caller; accessor retained",
+            "finding": "publication materializes owned JSON/strings despite existing writer sink",
+            "id": "C13"
+          },
+          {
+            "counterargument": "fixtures and independent expected values",
+            "disposition": "survives under explicit repetition clause; independent expected strings/default verification retained",
+            "finding": "chosen numeric7331 test fixture repeated unnamed in console/error tests",
+            "id": "C14"
+          }
+        ],
+        "repair_dispatch": "# PER-84 Task1 bounded conventions repair\n\nFresh Luna executor. Read AGENTS.md, conventions.md C13/C14 (and all other C-IDs remain binding), docs/execution/per-84/active-dispatch.md, current console.rs/error.rs, and run2-task1-handoff.md. Scope ONLY the two adjudicated conventions defects below, no independent review or scope expansion. All code/tests are otherwise passing43 library tests; external missing-serve cases remain approved intermediate57pass62fail. Root independently reproduced full gate and saved docs/execution/per-84/run2-task1-root-gate.txt.\n\nC13: console.rs publish_startup currently calls startup.to_json() before serializing to an existing io::Write, allocating intermediate strings via url()/source.to_string(). Stream publication through a PRIVATE serialization path without that owned Value/string preparation. Keep public to_json()/url() API and their standalone behavior unchanged; do not add public Serialize impl or public helper beyond skeleton. Preserve complete one-line JSON, correct escaping, exact tests, flush, partial writes and error causes. New private serialization can reuse ConfigSource Display as single spelling. No invented public API, no manual unsafe JSON string escaping, no tests weakened to accept changed semantics.\n\nC14: repeated numeric port fixture7331 at console.rs address/default tests and error.rs bind test must be named with rationale. A shared crate-private cfg(test) fixture constant in an owned existing module may be used, avoiding new public contract. Keep independently expected wire strings and default-port assertion meaningful; don't replace the independent expected fixture with production DEFAULT_PORT or make an assertion self-equality. Numeric occurrences within same expression don't each require separate changes. No general fixture cleanup.\n\nWrites limited to crates/daemar-card/src/console.rs, crates/daemar-card/src/error.rs and docs/execution/per-84/run2-task1-repair-* evidence + run2-task1-repair-handoff.md. Unit test mechanics may adapt to fixture naming but all asserted behavior remains. No other files/dependencies/policy or accepted external tests. Conventions repair is behavior-preserving; run existing tests before and after, do not manufacture new red for already-correct behavior. Add meaningful tests first only if a previously unmet behavior is discovered within existing scope. Save full command outputs and exact changed-file hashes. Use apply_patch for edits and documented sandbox escalation for sockets/advisory DB.\n\nAcceptance: cargo test --locked -p daemar-card --lib (43 or more tests, zero failures); strict Clippy; just check with only named missing-serve failures; git diff --check. Include explicit C13/C14 correction sites and C1–C16 impact checklist. Fix ordinary compile/lint issues in owned code and rerun; no per-test root approval. Stop at handoff or genuine missing-authority conflict, not routine gate errors. Card escalation only via existing CLI explicit --db /Users/kendall/.daemar/daemar.db, Card01a0693e-bc16-7272-9ce9-a20f3b07f875, decision summary/reason, producer implementer/kindagent, scoped permission if needed. No completion event, reviews, extra agents, commits or Task2. Root independently validates correction and dispatches Task2 when accepted.\n",
+        "root_gate": {
+          "command": "just check",
+          "exit": 101,
+          "log": "docs/execution/per-84/run2-task1-root-gate.txt",
+          "reason": "serve absent",
+          "scenarios_failed": 62,
+          "scenarios_passed": 57,
+          "unit_passed": 43
+        },
+        "status": "Task1 remains in execution; no independent review",
+        "task": 1
+      },
+      "stage": "execution-conformance",
+      "summary": "Task1 root gate confirms43 unit tests and expected absent-serve boundary; C13/C14 conformance failures independently challenged and confirmed; fresh Luna repair dispatched inside execution"
+    }
+  },
+  {
+    "sequence": 71,
+    "payload": {
+      "payload": {
+        "conventions": {
+          "C13": "private StartupWire writes through serializer; public owned accessors retained",
+          "C14": "test fixtures named with independent expected wire strings retained",
+          "others": "no findings"
+        },
+        "external": {
+          "failed": 62,
+          "passed": 57,
+          "reason": "serve absent"
+        },
+        "gate_log": "docs/execution/per-84/run2-task1-repaired-root-gate.txt",
+        "independent_review": false,
+        "model": "gpt-5.6-luna",
+        "next_dispatch": "# PER-84 Task2 dispatch\n\nExecute Task2 (Verified read-only Reader and shared read queries) of the current docs/plans/per-84-luna-execution-plan.md under docs/execution/per-84/active-dispatch.md. Both are binding; active-dispatch Task1 starting-state paragraph is predecessor context, not your assigned work. Factory contract: docs/execution/per-84/contract.md; predecessor docs/execution/per-84/run2-task1-repair-handoff.md and run2-task1-repaired-root-gate.txt. Root accepts Task1:43 library tests green; C13/C14 repaired; all other conventions checked; external suite57passed62failed solely absent serve. Preserve foundation and protected accepted tests.\n\nFresh Luna executor, only implementation writer. Complete Task2's approved Reader, shared Store query delegation, read-only exact schema verification, queue and membership entry reads, with the named test-first cases. Write only storage.rs/lib.rs and private storage tests per plan plus run2-task2-* evidence/handoff. No CLI, HTTP or policy changes. Test-first missing-approved-API compile-red is valid; keep actual commands/output before bodies and green reruns, not artificial assertions or retrospective claims. In-scope ordinary compiler/test/lint repairs are yours to complete without stopping for approval. Make required test diagnostics/fixtures in crate-local tests only; don't change production migration set or existing external acceptance harness.\n\nRun Task2 acceptance from repository root with required environment permissions: focused and full unit tests, just check, C1–C16 self-check. Real writer/reader databases are temporary, never the Card DB. If SQLx behavior is unclear consult installed matching source and use concrete tests; no guesses that cross approved contract. Record live-WAL read-only proof, missing/schema mismatch classifications, unchanged writer regression coverage, queue corrupt-payload isolation and highest-sequence timestamp, cross-Card membership. Keep the public surface exactly approved.\n\nOutput docs/execution/per-84/run2-task2-handoff.md and complete command logs/source hashes. Card escalation uses explicit DB /Users/kendall/.daemar/daemar.db, Card01a0693e-bc16-7272-9ce9-a20f3b07f875, existing CLI /Users/kendall/code/github/daemar/target/debug/card, decision summary/reason, producer implementer/kind agent, scoped permission. Only true unanswered scope/authority conflicts stop execution. No reviews, other agents, commits or Task3. Root runs independent gates/conventions after handoff. Do not rely on chat history or prior failed attempts.\n",
+        "snapshot": "/private/tmp/per84-execution-GGJtBp/task1-accepted.tar.gz",
+        "task1": "accepted intermediate slice, not full execution completion",
+        "unit_passed": 43
+      },
+      "stage": "execution",
+      "summary": "Task1 accepted after C13/C14 repair and independent gate rerun:43 library tests pass, only expected missing-serve failures; fresh Luna Task2 Reader dispatch"
+    }
+  },
+  {
+    "sequence": 74,
+    "payload": {
+      "payload": {
+        "executor_model": "gpt-5.6-luna",
+        "next_dispatch": "docs/execution/per-84/run2-task3-dispatch.md",
+        "predecessor": "docs/execution/per-84/run2-task2-repair-b-handoff.md",
+        "process_decision": "Operator explicitly prohibits root semantic review. Root verifies commands and orchestrates; designated dedicated model review only at its stage after all-green. Supersedes contrary root acceptance-review language in older plan/dispatches. Earlier root semantic steering is a recorded process deviation, not unaided factory evidence.",
+        "results": {
+          "behavior_fail": 62,
+          "behavior_pass": 57,
+          "boundary": "missing serve, approved intermediate successor scope",
+          "gate_exit": 101,
+          "unit_pass": 51
+        },
+        "status": "command-verified handoff; Task3 dispatched",
+        "task": 2,
+        "verification": "docs/execution/per-84/run2-task2-command-verification.md"
+      },
+      "stage": "execution",
+      "summary": "Task2 command results verified; Task3 activated with operator-corrected root orchestration-only boundary"
+    }
+  },
+  {
+    "sequence": 79,
+    "payload": {
+      "payload": {
+        "executor_completion_sequence": 78,
+        "handoff": "# PER-84 review-ready execution handoff\n\nExecution has reached the independent-review boundary. This is not a semantic review verdict and no commit was made.\n\nRoot independently ran the final commands against the completed working-tree candidate:\n- just check, repository root, exit 0: 60 library tests, 6 binary tests, 119/119 behavior scenarios and 627/627 steps. Complete output run2-root-final-check.txt, SHA256 2811c18449e36c84059fa2397d068daf1f23e80fa7c420b42bdf3e8f2dffd958.\n- just browser, repository root, exit 0: 11/11 browser tests. Complete output run2-root-final-browser.txt, SHA256 97190c2e3fd2ab1556dc086d47db99d05990996d9cd3f0df2f13fce2297c464e.\n- ./node_modules/.bin/tsc --noEmit, cwd browser, exit 0, no output.\n\nRoot verified all 19 admitted browser/behavior/migration file hashes matched admission.md. Root read command results and handoffs only in this final verification; no code/test-correctness review was performed. Executor checklists remain executor-authored semantic claims, not an independent-review verdict.\n\nExecutor final handoff: run2-final-repair-handoff.md (SHA256 fad0bd1ad72d4f3d4bb67ed56c8e5c3e609459e2a80f2492dd0fab8af53f68a5). Candidate manifests/digests: run2-final-repair-status.txt and run2-final-repair-hashes.txt. Base HEAD remains 4c809b31264f6c147563c52604d6aea598487ccd; dirty/untracked acceptance inputs were admitted before implementation, so HEAD alone is not the review baseline. Preserve admission.md and the pre-execution archive as baseline evidence.\n\nExecutor-authored completion confirmed on Card at sequence 78, entry 01a083b5-5a07-7cd0-b69b-f592d0afb132.\n\nProcess deviations remain recorded: earlier root semantic steering and predecessor missing test-first evidence mean this is assisted execution, not unassisted validation of the intended factory process. Do not erase or reinterpret those deviations. Dedicated reviewers/refuters must follow the operator's clean-context workflow; non-spec review remains blind. Root does not supply its own semantic findings. No independent review was launched during execution.\n",
+        "root_role": "command verification only",
+        "status": "review-ready; no independent review verdict"
+      },
+      "stage": "execution",
+      "summary": "PER-84 ready for independent review: root verified all final gates exit0; 119/119 behavior,11/11 browser,60 library,6 binary; protected acceptance files unchanged"
+    }
+  }
+]
+

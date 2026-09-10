@@ -1,0 +1,3 @@
+d2c6ade32004d2dff0f5ebe473e992587b5f38499a304fd9b273be2d62f3f537  crates/daemar-card/src/console.rs
+9ab7796562b40de277cb140d9e13647e915d6e06c82ac3e352c00578ad8e2219  crates/daemar-card/templates/queue.html
+e410217046de6e2389d3598115413d9eb366da82ee06a5f338a565e48867d936  crates/daemar-card/templates/error.html

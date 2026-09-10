@@ -1,7 +1,8 @@
 //! The crate's failure contract (C1/C2/C3): one explicit enum, hand-written
 //! `Display`/`Error` impls, and a stable machine-facing category taxonomy.
 
-use crate::domain::{CardId, EntryType};
+use crate::domain::{CardId, EntryId, EntryType, SchemaIncompatibility};
+use std::path::PathBuf;
 
 /// Every way the Card store can refuse or fail (S1-B8/B12).
 ///
@@ -9,6 +10,42 @@ use crate::domain::{CardId, EntryType};
 /// variants carry the typed detail.
 #[derive(Debug)]
 pub enum Error {
+    /// The requested database file is absent.
+    DatabaseMissing {
+        /// The absent path.
+        path: PathBuf,
+    },
+    /// The database migration history does not match this build.
+    SchemaIncompatible {
+        /// The refused path.
+        path: PathBuf,
+        /// The mismatch reason.
+        reason: SchemaIncompatibility,
+    },
+    /// Binding the loopback socket failed.
+    Bind {
+        /// The requested address.
+        addr: crate::console::LoopbackAddr,
+        /// The operating-system failure.
+        source: std::io::Error,
+    },
+    /// Publishing the startup line failed.
+    PublishStartup {
+        /// The write or flush failure.
+        source: std::io::Error,
+    },
+    /// The accept loop failed.
+    Serve {
+        /// The operating-system failure.
+        source: std::io::Error,
+    },
+    /// The entry is not a member of the addressed Card.
+    EntryNotFound {
+        /// The addressed Card.
+        card_id: CardId,
+        /// The missing entry.
+        entry_id: EntryId,
+    },
     /// The requested entry type is not in the closed M1 vocabulary.
     UnknownEntryType {
         /// The entry type string as the producer supplied it.
@@ -100,6 +137,14 @@ pub enum StorageContext {
     ReadHistory,
     /// Listing Cards.
     ListCards,
+    /// Opening an existing database read-only.
+    OpenReadOnly,
+    /// Verifying migration history.
+    VerifySchema,
+    /// Reading the queue.
+    Queue,
+    /// Reading one entry.
+    ReadEntry,
 }
 
 /// The four-way failure taxonomy of the machine-facing contract (S1-B12).
@@ -113,6 +158,8 @@ pub enum ErrorCategory {
     Missing,
     /// The store itself failed.
     Storage,
+    /// An unavailable external resource.
+    Unavailable,
 }
 
 impl Error {
@@ -120,6 +167,13 @@ impl Error {
     #[must_use]
     pub fn category(&self) -> ErrorCategory {
         match self {
+            Error::DatabaseMissing { .. }
+            | Error::EntryNotFound { .. }
+            | Error::CardNotFound { .. } => ErrorCategory::Missing,
+            Error::SchemaIncompatible { .. }
+            | Error::Bind { .. }
+            | Error::PublishStartup { .. }
+            | Error::Serve { .. } => ErrorCategory::Unavailable,
             Error::UnknownEntryType { .. }
             | Error::UnknownProducerKind { .. }
             | Error::UnknownSchemaVersion { .. }
@@ -130,7 +184,6 @@ impl Error {
             | Error::NotSingleLine { .. }
             | Error::DuplicateJsonMember { .. } => ErrorCategory::Validation,
             Error::IdempotencyConflict { .. } => ErrorCategory::Conflict,
-            Error::CardNotFound { .. } => ErrorCategory::Missing,
             Error::Corrupt { .. } | Error::Storage { .. } => ErrorCategory::Storage,
         }
     }
@@ -139,6 +192,16 @@ impl Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Error::DatabaseMissing { path } => write!(f, "no database at {}", path.display()),
+            Error::SchemaIncompatible { path, reason } => {
+                write!(f, "database {} schema is {reason}", path.display())
+            }
+            Error::Bind { addr, .. } => write!(f, "cannot bind {addr}"),
+            Error::PublishStartup { .. } => f.write_str("startup line could not be published"),
+            Error::Serve { .. } => f.write_str("console server failed"),
+            Error::EntryNotFound { card_id, entry_id } => {
+                write!(f, "no entry `{entry_id}` on Card `{card_id}`")
+            }
             Error::UnknownEntryType { requested } => {
                 write!(f, "unknown entry type `{requested}`")
             }
@@ -199,9 +262,15 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Error::Bind { source, .. }
+            | Error::PublishStartup { source }
+            | Error::Serve { source } => Some(source),
             Error::MalformedPayload { source, .. } => Some(source),
             Error::Storage { source, .. } => Some(source),
-            Error::UnknownEntryType { .. }
+            Error::DatabaseMissing { .. }
+            | Error::SchemaIncompatible { .. }
+            | Error::EntryNotFound { .. }
+            | Error::UnknownEntryType { .. }
             | Error::UnknownProducerKind { .. }
             | Error::UnknownSchemaVersion { .. }
             | Error::MissingProducer
@@ -225,6 +294,10 @@ impl std::fmt::Display for StorageContext {
             StorageContext::AppendEntry => "append-entry",
             StorageContext::ReadHistory => "read-history",
             StorageContext::ListCards => "list-cards",
+            StorageContext::OpenReadOnly => "open-read-only",
+            StorageContext::VerifySchema => "verify-schema",
+            StorageContext::Queue => "queue",
+            StorageContext::ReadEntry => "read-entry",
         };
         f.write_str(name)
     }
@@ -237,7 +310,71 @@ impl std::fmt::Display for ErrorCategory {
             ErrorCategory::Conflict => "conflict",
             ErrorCategory::Missing => "missing",
             ErrorCategory::Storage => "storage",
+            ErrorCategory::Unavailable => "unavailable",
         };
         f.write_str(name)
+    }
+}
+
+#[cfg(test)]
+mod restart_b_tests {
+    use std::error::Error as _;
+    use std::io;
+    use std::path::PathBuf;
+
+    use super::{Error, ErrorCategory, StorageContext};
+    use crate::console::LoopbackAddr;
+    use crate::domain::{CardId, EntryId, EntryType, MigrationVersion, SchemaIncompatibility};
+
+    // Stable port used only for the independent bind-error display fixture.
+    const BIND_ERROR_FIXTURE_PORT: u16 = 7331;
+
+    #[test]
+    fn new_error_categories_displays_and_sources_are_typed() {
+        let path = PathBuf::from("cards.db");
+        let missing = Error::DatabaseMissing { path: path.clone() };
+        assert_eq!(missing.category(), ErrorCategory::Missing);
+        assert_eq!(missing.to_string(), "no database at cards.db");
+
+        let incompatible = Error::SchemaIncompatible {
+            path,
+            reason: SchemaIncompatibility::Uninitialized,
+        };
+        assert_eq!(incompatible.category(), ErrorCategory::Unavailable);
+        assert_eq!(
+            incompatible.to_string(),
+            "database cards.db schema is uninitialized"
+        );
+
+        assert_eq!(StorageContext::OpenReadOnly.to_string(), "open-read-only");
+        assert_eq!(StorageContext::VerifySchema.to_string(), "verify-schema");
+        assert_eq!(StorageContext::Queue.to_string(), "queue");
+        assert_eq!(StorageContext::ReadEntry.to_string(), "read-entry");
+        assert_eq!(ErrorCategory::Unavailable.to_string(), "unavailable");
+
+        let source = io::Error::new(io::ErrorKind::PermissionDenied, "bind sentinel");
+        let bind = Error::Bind {
+            addr: LoopbackAddr::v4(crate::console::Port::new(BIND_ERROR_FIXTURE_PORT)),
+            source,
+        };
+        assert_eq!(bind.category(), ErrorCategory::Unavailable);
+        assert_eq!(bind.to_string(), "cannot bind 127.0.0.1:7331");
+        assert_eq!(bind.source().unwrap().to_string(), "bind sentinel");
+
+        let serve = Error::Serve {
+            source: io::Error::other("serve sentinel"),
+        };
+        assert_eq!(serve.category(), ErrorCategory::Unavailable);
+        assert_eq!(serve.to_string(), "console server failed");
+        assert_eq!(serve.source().unwrap().to_string(), "serve sentinel");
+
+        let entry = Error::EntryNotFound {
+            card_id: CardId::from("card-1".to_owned()),
+            entry_id: EntryId::from("entry-1".to_owned()),
+        };
+        assert_eq!(entry.category(), ErrorCategory::Missing);
+        assert_eq!(entry.to_string(), "no entry `entry-1` on Card `card-1`");
+        assert_eq!(EntryType::Decision.to_string(), "decision");
+        assert_eq!(MigrationVersion::new(1).to_string(), "1");
     }
 }

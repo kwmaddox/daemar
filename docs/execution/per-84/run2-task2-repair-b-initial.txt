@@ -1,0 +1,256 @@
+   Compiling daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+error[E0277]: a slice of type `[storage::AppliedMigration]` cannot be built since `[storage::AppliedMigration]` has no definite size
+    --> crates/daemar-card/src/storage.rs:886:178
+     |
+ 886 | ...sion, checksum, success }).collect(),
+     |                               ^^^^^^^ try explicitly collecting into a `Vec<storage::AppliedMigration>`
+     |
+     = help: the trait `FromIterator<storage::AppliedMigration>` is not implemented for `[storage::AppliedMigration]`
+note: the method call chain might not have had the expected associated types
+    --> crates/daemar-card/src/storage.rs:886:94
+     |
+ 886 | ...   vec![(1, vec![1], true), (2, vec![2], true), (3, vec![3], true)].into_iter().map(|(version, checksum, success)| AppliedMigration { version, checksum, success }).co...
+     |       ---------------------------------------------------------------- ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Iterator::Item` changed to `AppliedMigration` here
+     |       |                                                                |
+     |       |                                                                `Iterator::Item` is `(i64, Vec<u8>, bool)` here
+     |       this expression has type `Vec<(i64, Vec<u8>, bool)>`
+note: required by a bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:19
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::collect`
+
+error[E0277]: a value of type `[storage::AppliedMigration]` cannot be built from an iterator over elements of type `_`
+    --> crates/daemar-card/src/storage.rs:891:40
+     |
+ 891 |                 Vec::new().into_iter().collect(),
+     |                                        ^^^^^^^ value of type `[storage::AppliedMigration]` cannot be built from `std::iter::Iterator<Item=_>`
+     |
+     = help: the trait `FromIterator<_>` is not implemented for `[storage::AppliedMigration]`
+note: required by a bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:19
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::collect`
+
+error[E0277]: a slice of type `[storage::AppliedMigration]` cannot be built since `[storage::AppliedMigration]` has no definite size
+    --> crates/daemar-card/src/storage.rs:896:138
+     |
+ 896 | ...sion, checksum, success }).collect(),
+     |                               ^^^^^^^ try explicitly collecting into a `Vec<storage::AppliedMigration>`
+     |
+     = help: the trait `FromIterator<storage::AppliedMigration>` is not implemented for `[storage::AppliedMigration]`
+note: the method call chain might not have had the expected associated types
+    --> crates/daemar-card/src/storage.rs:896:54
+     |
+ 896 | ...   vec![(1, vec![1], true)].into_iter().map(|(version, checksum, success)| AppliedMigration { version, checksum, success }).col...
+     |       ------------------------ ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Iterator::Item` changed to `AppliedMigration` here
+     |       |                        |
+     |       |                        `Iterator::Item` is `(i64, Vec<u8>, bool)` here
+     |       this expression has type `Vec<(i64, Vec<u8>, bool)>`
+note: required by a bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:19
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::collect`
+
+error[E0277]: a slice of type `[storage::AppliedMigration]` cannot be built since `[storage::AppliedMigration]` has no definite size
+    --> crates/daemar-card/src/storage.rs:910:115
+     |
+ 910 |                 ].into_iter().map(|(version, checksum, success)| AppliedMigration { version, checksum, success }).collect(),
+     |                                                                                                                   ^^^^^^^ try explicitly collecting into a `Vec<storage::AppliedMigration>`
+     |
+     = help: the trait `FromIterator<storage::AppliedMigration>` is not implemented for `[storage::AppliedMigration]`
+note: the method call chain might not have had the expected associated types
+    --> crates/daemar-card/src/storage.rs:910:31
+     |
+ 905 | /                 vec![
+ 906 | |                     (1, vec![1], true),
+ 907 | |                     (2, vec![2], true),
+ 908 | |                     (3, vec![3], true),
+ 909 | |                     (4, vec![4], true),
+ 910 | |                 ].into_iter().map(|(version, checksum, success)| AppliedMigration { version, checksum, success }).collect(),
+     | |                 - ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Iterator::Item` changed to `AppliedMigration` here
+     | |                 | |
+     | |_________________| `Iterator::Item` is `(i64, Vec<u8>, bool)` here
+     |                   this expression has type `Vec<(i64, Vec<u8>, bool)>`
+note: required by a bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:19
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::collect`
+
+error[E0277]: a slice of type `[storage::AppliedMigration]` cannot be built since `[storage::AppliedMigration]` has no definite size
+    --> crates/daemar-card/src/storage.rs:917:158
+     |
+ 917 | ...sion, checksum, success }).collect(),
+     |                               ^^^^^^^ try explicitly collecting into a `Vec<storage::AppliedMigration>`
+     |
+     = help: the trait `FromIterator<storage::AppliedMigration>` is not implemented for `[storage::AppliedMigration]`
+note: the method call chain might not have had the expected associated types
+    --> crates/daemar-card/src/storage.rs:917:74
+     |
+ 917 | ...   vec![(1, vec![1], true), (9, vec![2], true)].into_iter().map(|(version, checksum, success)| AppliedMigration { version, checksum, success }).co...
+     |       -------------------------------------------- ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Iterator::Item` changed to `AppliedMigration` here
+     |       |                                            |
+     |       |                                            `Iterator::Item` is `(i64, Vec<u8>, bool)` here
+     |       this expression has type `Vec<(i64, Vec<u8>, bool)>`
+note: required by a bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:19
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::collect`
+
+error[E0277]: a slice of type `[storage::AppliedMigration]` cannot be built since `[storage::AppliedMigration]` has no definite size
+    --> crates/daemar-card/src/storage.rs:925:138
+     |
+ 925 | ...sion, checksum, success }).collect(),
+     |                               ^^^^^^^ try explicitly collecting into a `Vec<storage::AppliedMigration>`
+     |
+     = help: the trait `FromIterator<storage::AppliedMigration>` is not implemented for `[storage::AppliedMigration]`
+note: the method call chain might not have had the expected associated types
+    --> crates/daemar-card/src/storage.rs:925:54
+     |
+ 925 | ...   vec![(1, vec![9], true)].into_iter().map(|(version, checksum, success)| AppliedMigration { version, checksum, success }).col...
+     |       ------------------------ ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Iterator::Item` changed to `AppliedMigration` here
+     |       |                        |
+     |       |                        `Iterator::Item` is `(i64, Vec<u8>, bool)` here
+     |       this expression has type `Vec<(i64, Vec<u8>, bool)>`
+note: required by a bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:19
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::collect`
+
+error[E0277]: a slice of type `[storage::AppliedMigration]` cannot be built since `[storage::AppliedMigration]` has no definite size
+    --> crates/daemar-card/src/storage.rs:932:158
+     |
+ 932 | ...sion, checksum, success }).collect(),
+     |                               ^^^^^^^ try explicitly collecting into a `Vec<storage::AppliedMigration>`
+     |
+     = help: the trait `FromIterator<storage::AppliedMigration>` is not implemented for `[storage::AppliedMigration]`
+note: the method call chain might not have had the expected associated types
+    --> crates/daemar-card/src/storage.rs:932:74
+     |
+ 932 | ...   vec![(8, vec![9], true), (9, vec![8], true)].into_iter().map(|(version, checksum, success)| AppliedMigration { version, checksum, success }).co...
+     |       -------------------------------------------- ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Iterator::Item` changed to `AppliedMigration` here
+     |       |                                            |
+     |       |                                            `Iterator::Item` is `(i64, Vec<u8>, bool)` here
+     |       this expression has type `Vec<(i64, Vec<u8>, bool)>`
+note: required by a bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:19
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::collect`
+
+error[E0277]: the size for values of type `[storage::AppliedMigration]` cannot be known at compilation time
+   --> crates/daemar-card/src/storage.rs:939:20
+    |
+939 |         for (name, applied, want) in cases {
+    |                    ^^^^^^^ doesn't have a size known at compile-time
+    |
+    = help: the trait `Sized` is not implemented for `[storage::AppliedMigration]`
+    = note: all local variables must have a statically known size
+
+error[E0277]: the size for values of type `[storage::AppliedMigration]` cannot be known at compilation time
+   --> crates/daemar-card/src/storage.rs:939:38
+    |
+939 |         for (name, applied, want) in cases {
+    |                                      ^^^^^ doesn't have a size known at compile-time
+    |
+    = help: the trait `Sized` is not implemented for `[storage::AppliedMigration]`
+    = note: only the last element of a tuple may have a dynamically sized type
+
+error[E0277]: the size for values of type `[storage::AppliedMigration]` cannot be known at compilation time
+    --> crates/daemar-card/src/storage.rs:886:178
+     |
+ 886 | ...ration { version, checksum, success }).collect(),
+     |                                           ^^^^^^^ doesn't have a size known at compile-time
+     |
+     = help: the trait `Sized` is not implemented for `[storage::AppliedMigration]`
+note: required by an implicit `Sized` bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:16
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                ^ required by the implicit `Sized` requirement on this type parameter in `Iterator::collect`
+
+error[E0277]: the size for values of type `[storage::AppliedMigration]` cannot be known at compilation time
+    --> crates/daemar-card/src/storage.rs:891:40
+     |
+ 891 |                 Vec::new().into_iter().collect(),
+     |                                        ^^^^^^^ doesn't have a size known at compile-time
+     |
+     = help: the trait `Sized` is not implemented for `[storage::AppliedMigration]`
+note: required by an implicit `Sized` bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:16
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                ^ required by the implicit `Sized` requirement on this type parameter in `Iterator::collect`
+
+error[E0277]: the size for values of type `[storage::AppliedMigration]` cannot be known at compilation time
+    --> crates/daemar-card/src/storage.rs:896:138
+     |
+ 896 | ...ration { version, checksum, success }).collect(),
+     |                                           ^^^^^^^ doesn't have a size known at compile-time
+     |
+     = help: the trait `Sized` is not implemented for `[storage::AppliedMigration]`
+note: required by an implicit `Sized` bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:16
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                ^ required by the implicit `Sized` requirement on this type parameter in `Iterator::collect`
+
+error[E0277]: the size for values of type `[storage::AppliedMigration]` cannot be known at compilation time
+    --> crates/daemar-card/src/storage.rs:910:115
+     |
+ 910 |                 ].into_iter().map(|(version, checksum, success)| AppliedMigration { version, checksum, success }).collect(),
+     |                                                                                                                   ^^^^^^^ doesn't have a size known at compile-time
+     |
+     = help: the trait `Sized` is not implemented for `[storage::AppliedMigration]`
+note: required by an implicit `Sized` bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:16
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                ^ required by the implicit `Sized` requirement on this type parameter in `Iterator::collect`
+
+error[E0277]: the size for values of type `[storage::AppliedMigration]` cannot be known at compilation time
+    --> crates/daemar-card/src/storage.rs:917:158
+     |
+ 917 | ...ration { version, checksum, success }).collect(),
+     |                                           ^^^^^^^ doesn't have a size known at compile-time
+     |
+     = help: the trait `Sized` is not implemented for `[storage::AppliedMigration]`
+note: required by an implicit `Sized` bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:16
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                ^ required by the implicit `Sized` requirement on this type parameter in `Iterator::collect`
+
+error[E0277]: the size for values of type `[storage::AppliedMigration]` cannot be known at compilation time
+    --> crates/daemar-card/src/storage.rs:925:138
+     |
+ 925 | ...ration { version, checksum, success }).collect(),
+     |                                           ^^^^^^^ doesn't have a size known at compile-time
+     |
+     = help: the trait `Sized` is not implemented for `[storage::AppliedMigration]`
+note: required by an implicit `Sized` bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:16
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                ^ required by the implicit `Sized` requirement on this type parameter in `Iterator::collect`
+
+error[E0277]: the size for values of type `[storage::AppliedMigration]` cannot be known at compilation time
+    --> crates/daemar-card/src/storage.rs:932:158
+     |
+ 932 | ...ration { version, checksum, success }).collect(),
+     |                                           ^^^^^^^ doesn't have a size known at compile-time
+     |
+     = help: the trait `Sized` is not implemented for `[storage::AppliedMigration]`
+note: required by an implicit `Sized` bound in `collect`
+    --> /Users/kendall/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2051:16
+     |
+2051 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                ^ required by the implicit `Sized` requirement on this type parameter in `Iterator::collect`
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `daemar-card` (lib test) due to 17 previous errors

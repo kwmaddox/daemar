@@ -1,0 +1,31 @@
+# PER-84 run2 Task1 repair verification
+
+Working directory: /Users/kendall/code/github/daemar
+
+Baseline before repair:
+
+`cargo test --locked -p daemar-card --lib` — exit 101 in the sandbox: 36
+passed and 7 existing loopback listener tests failed with OS
+`Operation not permitted`. This is the documented socket permission boundary.
+
+Repair rerun (loopback access permitted):
+
+`cargo fmt --all -- --check && cargo test --locked -p daemar-card --lib` —
+exit 0; 43 passed, 0 failed.
+
+`cargo clippy --all-targets --all-features -- -D warnings` — exit 0.
+
+`just check` — exit 101 only at the approved missing-`serve` boundary; 119
+scenarios, 57 passed and 62 failed, with the failures reporting the expected
+unrecognized `serve` subcommand. Rust quality checks and all existing S1
+behavior passed.
+
+`git diff --check` — exit 0.
+
+Changed-file SHA-256 after repair:
+
+`crates/daemar-card/src/console.rs`
+`8be2ec9c24e89793e2b06527f7ca3e3ae0534b133c21cc7c521973cb5fdf06e1`
+
+`crates/daemar-card/src/error.rs`
+`5018daad3c1f4493d7d302565f82461fe48f168da0a31676d6c768a81fa3b0a6`

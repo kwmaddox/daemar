@@ -30,6 +30,8 @@ use tempfile::TempDir;
 
 // An explicit path keeps the module under `tests/behavior/`, where cargo
 // does not auto-discover it as a separate integration-test target.
+#[path = "behavior/console/mod.rs"]
+mod console;
 #[path = "behavior/slice2.rs"]
 mod slice2;
 
@@ -153,6 +155,8 @@ struct CardWorld {
     // rejection steps can prove the record is unchanged, not merely the
     // same size (review finding: cardinality is not immutability).
     history_before: Option<Vec<Value>>,
+    // --- S3 (PER-84): the console over HTTP ------------------------------
+    console: console::ConsoleState,
 }
 
 impl CardWorld {

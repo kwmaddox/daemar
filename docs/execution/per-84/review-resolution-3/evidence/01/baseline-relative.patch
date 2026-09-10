@@ -1,0 +1,152 @@
+--- docs/execution/per-84/review-resolution-3/evidence/01/mod.rs.before	2026-09-09 15:30:03
++++ crates/daemar-card/tests/behavior/console/mod.rs	2026-09-09 15:37:04
+@@ -612,27 +612,46 @@
+         && resolved.port_or_known_default() == base.port_or_known_default()
+ }
+ 
+-fn meta_refresh_target(el: &El) -> Option<String> {
+-    if el.tag() != "meta" {
+-        return None;
++enum MetaRefreshTarget {
++    NotRefresh,
++    Target(String),
++    Unsupported,
++}
++
++fn meta_refresh_target(el: &El) -> MetaRefreshTarget {
++    if el.tag() != "meta" {
++        return MetaRefreshTarget::NotRefresh;
+     }
+-    let http_equiv = el
++    let Some(http_equiv) = el
+         .attrs()
+         .into_iter()
+         .find(|(name, _)| name.eq_ignore_ascii_case("http-equiv"))
+-        .map(|(_, value)| value)?;
+-    if !http_equiv.eq_ignore_ascii_case("refresh") {
+-        return None;
++        .map(|(_, value)| value)
++    else {
++        return MetaRefreshTarget::NotRefresh;
++    };
++    if !http_equiv.eq_ignore_ascii_case("refresh") {
++        return MetaRefreshTarget::NotRefresh;
+     }
+-    let content = el.attr("content")?;
+-    let (_, target) = content.split_once(';')?;
++    let Some(content) = el.attr("content") else {
++        return MetaRefreshTarget::Unsupported;
++    };
++    let Some((_, target)) = content.split_once(';') else {
++        return MetaRefreshTarget::Unsupported;
++    };
+     let target = target.trim();
+-    let token = target.get(..3)?;
++    let Some(token) = target.get(..3) else {
++        return MetaRefreshTarget::Unsupported;
++    };
+     if !token.eq_ignore_ascii_case("url") {
+-        return None;
++        return MetaRefreshTarget::Unsupported;
+     }
+-    let target = target.get(3..)?.trim_start();
+-    let target = target.strip_prefix('=')?.trim();
++    let Some(target) = target.get(3..).map(str::trim_start) else {
++        return MetaRefreshTarget::Unsupported;
++    };
++    let Some(target) = target.strip_prefix('=').map(str::trim) else {
++        return MetaRefreshTarget::Unsupported;
++    };
+     let target = target
+         .strip_prefix('\'')
+         .and_then(|target| target.strip_suffix('\''))
+@@ -642,7 +661,11 @@
+                 .and_then(|target| target.strip_suffix('"'))
+         })
+         .unwrap_or(target);
+-    Some(target.to_owned())
++    if target.is_empty() {
++        MetaRefreshTarget::Unsupported
++    } else {
++        MetaRefreshTarget::Target(target.to_owned())
++    }
+ }
+ 
+ fn assert_document_urls_same_origin(base: &Url, doc: &Document) {
+@@ -656,11 +679,17 @@
+                 );
+             }
+         }
+-        if let Some(target) = meta_refresh_target(&el) {
+-            assert!(
+-                is_same_origin(base, &target),
+-                "<meta refresh={target:?}> resolves off the console origin {base}"
+-            );
++        match meta_refresh_target(&el) {
++            MetaRefreshTarget::NotRefresh => {}
++            MetaRefreshTarget::Target(target) => {
++                assert!(
++                    is_same_origin(base, &target),
++                    "<meta refresh={target:?}> resolves off the console origin {base}"
++                );
++            }
++            MetaRefreshTarget::Unsupported => {
++                panic!("<meta http-equiv=refresh> has unsupported or unresolved refresh content");
++            }
+         }
+     }
+ }
+@@ -676,6 +705,53 @@
+         rejected.is_err(),
+         "foreign meta refresh passed the origin oracle"
+     );
++
++    let foreign_comma = Document::parse(
++        r#"<html><head><meta http-equiv="refresh" content="30,url=https://foreign.example/"></head></html>"#,
++    );
++    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        assert_document_urls_same_origin(base, &foreign_comma);
++    }));
++    assert!(
++        rejected.is_err(),
++        "foreign comma meta refresh passed the origin oracle"
++    );
++
++    for (label, html) in [
++        (
++            "foreign bare target",
++            r#"<html><head><meta http-equiv="refresh" content="30;https://foreign.example/"></head><body></body></html>"#,
++        ),
++        (
++            "foreign comma bare target",
++            r#"<html><head><meta http-equiv="refresh" content="30,https://foreign.example/"></head><body></body></html>"#,
++        ),
++        (
++            "local comma url target",
++            r#"<html><head><meta http-equiv="refresh" content="30,url=/cards/local"></head><body></body></html>"#,
++        ),
++        (
++            "local bare target",
++            r#"<html><head><meta http-equiv="refresh" content="30;/cards/local"></head><body></body></html>"#,
++        ),
++        (
++            "missing refresh content",
++            r#"<html><head><meta http-equiv="refresh"></head><body></body></html>"#,
++        ),
++        (
++            "empty refresh content",
++            r#"<html><head><meta http-equiv="refresh" content=""></head><body></body></html>"#,
++        ),
++    ] {
++        let doc = Document::parse(html);
++        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            assert_document_urls_same_origin(base, &doc);
++        }));
++        assert!(
++            rejected.is_err(),
++            "{label} meta refresh passed the origin oracle"
++        );
++    }
+ 
+     for html in [
+         r#"<link rel="stylesheet" href="/static/console.css">"#,

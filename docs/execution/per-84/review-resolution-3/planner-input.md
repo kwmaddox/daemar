@@ -1,0 +1,10 @@
+# CE-M residue: factory planning input
+
+Operator's continuing workflow: findings advisory, evidence required to reject or promote refuted parts; fresh planner -> fresh gpt-5.6-luna executor, NO plan review. Root orchestrates and verifies commands, not semantic code/test review.
+
+Read findings.json (Card92/93), AGENTS.md, CONTEXT.md, conventions.md, ../contract.md, ../review-resolution-2/dispositions.md, ../review-resolution-2/evidence/01/handoff.md and implicated test source. Prior selected referents ../review-resolution-2/referents.json provide Card16/18/45 etc. No chat/memories/old failed plans/reviewer definitions or broad review.
+
+CE-N is closed. Scope only the CE-M delayed-refresh parsing residue: comma separator and optional url prefix. Withdrawn 421 and zero-delay limbs stay withdrawn unless promotion is supported by concrete evidence. Review offers standards-consistent parsing or fail-closed handling. Independently choose bounded disposition/repair as planner from the cited standard and current oracle, not blindly mandatory review code. Verify the primary WHATWG specification when relying on its algorithm. Preserve all existing positive and negative oracle controls and same-origin/error-page assertions; no production/browser/feature/policy/API changes planned.
+
+Produce dispositions.md, docs/plans/per-84-ce-m-residue-plan.md and a single directly dispatchable task-01.md in this folder. Only source ownership: crates/daemar-card/tests/behavior/console/mod.rs; other edits only evidence. If genuinely impossible within authority, report exact gap. No implementation, Card writes, agents, commits. Use meaningful isolated oracle fixtures through existing accepted seam, per TDD skill; preserve honest initial results, no production mutation/manufactured historical red. Executor performs complete test/static/conventions loop and final unfiltered just check, just browser, browser local tsc --noEmit green with complete logs/cwd/exits. Review after repair limited to CE-M residue, not broad re-review.
+

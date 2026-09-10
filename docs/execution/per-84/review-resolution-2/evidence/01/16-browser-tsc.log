@@ -1,0 +1,4 @@
+COMMAND: ./node_modules/.bin/tsc --noEmit 
+CWD: /Users/kendall/code/github/daemar
+docs/execution/per-84/review-resolution-2/evidence/01/run.sh: line 9: ./node_modules/.bin/tsc: No such file or directory
+COMMAND_EXIT=127

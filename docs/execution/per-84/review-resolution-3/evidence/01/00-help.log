@@ -1,0 +1,65 @@
+COMMAND: cargo test -p daemar-card --test behavior -- --help
+CWD: /Users/kendall/code/github/daemar
+   Compiling daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.93s
+     Running tests/behavior.rs (target/debug/deps/behavior-59d729ca70be0cf7)
+Run the tests, pet a dog!
+
+Usage: behavior-59d729ca70be0cf7 [OPTIONS]
+
+Options:
+  -n, --name <regex>
+          Regex to filter scenarios by their name
+          
+          [alias: --scenario-name]
+
+  -t, --tags <tagexpr>
+          Tag expression to filter scenarios by.
+          
+          Note: Tags from Feature, Rule and Scenario are merged together on filtering, so be careful
+          about conflicting tags on different levels.
+
+  -i, --input <glob>
+          Glob pattern to look for feature files with. By default, looks for `*.feature`s in the
+          path configured tests runner
+
+  -c, --concurrency <int>
+          Number of scenarios to run concurrently. If not specified, uses the value configured in
+          tests runner, or 64 by default
+
+      --fail-fast
+          Run tests until the first failure
+          
+          [alias: --ff]
+
+      --retry <int>
+          Number of times a scenario will be retried in case of a failure
+
+      --retry-after <duration>
+          Delay between each scenario retry attempt.
+          
+          Duration is represented in a human-readable format like `12min5s`.
+          Supported suffixes:
+          - `nsec`, `ns` — nanoseconds.
+          - `usec`, `us` — microseconds.
+          - `msec`, `ms` — milliseconds.
+          - `seconds`, `second`, `sec`, `s` - seconds.
+          - `minutes`, `minute`, `min`, `m` - minutes.
+
+      --retry-tag-filter <tagexpr>
+          Tag expression to filter retried scenarios
+
+  -v...
+          Verbosity of an output.
+          
+          `-v` is default verbosity, `-vv` additionally outputs world on failed steps, `-vvv`
+          additionally outputs step's doc string (if present).
+
+      --color <auto|always|never>
+          Coloring policy for a console output
+          
+          [default: auto]
+
+  -h, --help
+          Print help (see a summary with '-h')
+COMMAND_EXIT: 0

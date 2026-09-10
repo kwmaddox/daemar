@@ -1,0 +1,13 @@
+{
+  "name": "daemar-browser-tests",
+  "private": true,
+  "description": "Browser-observable proofs for the Card console (PER-84, S3). Run via `just browser`; never part of pre-commit.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2"
+  }
+}

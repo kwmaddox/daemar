@@ -1,0 +1,8 @@
+# PER-84 test-first wording correction
+
+Fresh planning subagent, plan-only edit. Operator confirmed the orchestration correction in conversation: requiring behavioral failure before a new API exists was an impossible ordering requirement, not a product/policy choice. A meaningful test failing compilation specifically because an approved API is absent is valid initial TDD red. Root is authorized to correct this without another approval loop. No scope/API/decomposition change.
+
+Read AGENTS.md and docs/plans/per-84-luna-execution-plan.md. Edit only that plan via apply_patch to remove the contradiction in the common test-first rule: permit initial missing-approved-API compile red, distinguish it honestly from behavioral red; once APIs compile, tests for new behavior should fail on actual unmet behavior, not artificial assertions or deliberately broken production stubs. Preserve tests-before-corresponding-body, exact named test cases, saved command/exit/output evidence and red-to-green obligation. Do not manufacture historical red, weaken tests or require an already-correct behavior to be broken merely to get a failure. If a later case is already satisfied by a previous legitimate implementation slice, record its observed initial pass and the earlier slice's actual red/green evidence honestly; it is not a new red event. This is clarification of faithful TDD, not permission to implement untested code first.
+
+No implementation, dependency/gate/test changes, reviews, new agents, or Card writes. Maintain all protected fences, four tasks, Luna execution and all-green-before-independent-review. Run git diff --check and return exact edited wording plus any blocker. Root records ruling and dispatches a fresh executor concurrently.
+

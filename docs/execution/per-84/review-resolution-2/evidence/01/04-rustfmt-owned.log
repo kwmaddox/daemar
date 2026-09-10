@@ -1,0 +1,120 @@
+COMMAND: rustfmt crates/daemar-card/tests/behavior/console/mod.rs 
+CWD: /Users/kendall/code/github/daemar
+error[E0670]: `async fn` is not permitted in Rust 2015
+   --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:388:1
+    |
+388 | async fn connect_writable(path: &str) -> SqliteConnection {
+    | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+    |
+    = help: pass `--edition 2024` to `rustc`
+    = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+   --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:397:1
+    |
+397 | async fn applied_migrations(path: &str) -> Vec<AppliedMigration> {
+    | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+    |
+    = help: pass `--edition 2024` to `rustc`
+    = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+   --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:419:1
+    |
+419 | async fn table_names(path: &str) -> Vec<String> {
+    | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+    |
+    = help: pass `--edition 2024` to `rustc`
+    = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+   --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:440:1
+    |
+440 | async fn snapshot_file(path: &str) -> FileSnapshot {
+    | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+    |
+    = help: pass `--edition 2024` to `rustc`
+    = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+    --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:1165:1
+     |
+1165 | async fn empty_sqlite_file(w: &mut CardWorld) {
+     | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+     |
+     = help: pass `--edition 2024` to `rustc`
+     = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+    --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:1182:1
+     |
+1182 | async fn no_card_schema(w: &mut CardWorld) {
+     | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+     |
+     = help: pass `--edition 2024` to `rustc`
+     = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+    --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:1194:1
+     |
+1194 | async fn behind_schema_db(w: &mut CardWorld) {
+     | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+     |
+     = help: pass `--edition 2024` to `rustc`
+     = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+    --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:1221:1
+     |
+1221 | async fn migrations_unchanged(w: &mut CardWorld) {
+     | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+     |
+     = help: pass `--edition 2024` to `rustc`
+     = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+    --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:1242:1
+     |
+1242 | async fn record_main_file(w: &mut CardWorld) {
+     | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+     |
+     = help: pass `--edition 2024` to `rustc`
+     = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+    --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:1259:1
+     |
+1259 | async fn main_file_unchanged(w: &mut CardWorld) {
+     | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+     |
+     = help: pass `--edition 2024` to `rustc`
+     = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+    --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:1978:1
+     |
+1978 | async fn request_hostile_pages(w: &mut CardWorld, which: String) {
+     | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+     |
+     = help: pass `--edition 2024` to `rustc`
+     = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+    --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:2620:1
+     |
+2620 | async fn corrupt_payload(w: &mut CardWorld, sequence: u64) {
+     | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+     |
+     = help: pass `--edition 2024` to `rustc`
+     = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+error[E0670]: `async fn` is not permitted in Rust 2015
+    --> /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:2673:1
+     |
+2673 | async fn corrupt_recorded_at(w: &mut CardWorld, title: String) {
+     | ^^^^^ to use `async fn`, switch to Rust 2018 or later
+     |
+     = help: pass `--edition 2024` to `rustc`
+     = note: for more on editions, read https://doc.rust-lang.org/edition-guide
+
+COMMAND_EXIT=1

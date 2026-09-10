@@ -1,0 +1,136 @@
+cargo build -p daemar-card --bin card
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+cd browser && npx playwright test
+
+Running 11 tests using 9 workers
+
+(node:52696) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52701) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52700) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52702) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52705) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52703) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52706) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52704) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52699) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52707) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:52701) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:52704) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:52703) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:52706) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:52705) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:52700) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:52699) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:52702) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(node:52707) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+  ✓   6 [chromium] › tests/console.spec.ts:83:9 › S3-B8 the console is self-contained in a real browser › loading a Card page fetches exactly the page and one stylesheet, with no errors (585ms)
+  ✓   7 [chromium] › tests/console.spec.ts:83:9 › S3-B8 the console is self-contained in a real browser › loading the queue page fetches exactly the page and one stylesheet, with no errors (582ms)
+  ✓   1 [chromium] › tests/console.spec.ts:83:9 › S3-B8 the console is self-contained in a real browser › loading an entry inspector fetches exactly the page and one stylesheet, with no errors (596ms)
+  ✓   2 [chromium] › tests/console.spec.ts:240:7 › S3-B9 failures are visible and fabricate nothing › an unknown Card is a visible not-found page with the queue and no Card identity (610ms)
+  ✓   5 [chromium] › tests/console.spec.ts:256:7 › S3-B9 failures are visible and fabricate nothing › a corrupt entry is a visible storage-failed page that keeps the queue and fabricates nothing (627ms)
+  ✓   4 [chromium] › tests/console.spec.ts:221:7 › S3-B6 the inspector is reachable by clicking and its envelope is visible › browser back from the inspector returns to the Card page with no inspector (669ms)
+  ✓  11 [chromium] › tests/console.spec.ts:299:7 › S3-B9 failures are visible and fabricate nothing › an empty, migrated store shows a visibly empty queue (116ms)
+  ✓   9 [chromium] › tests/console.spec.ts:119:7 › S3-B4/B5 the operator can read the queue and the stream › every queue row's title, task key, and last activity are visible and match the record (707ms)
+  ✓   3 [chromium] › tests/console.spec.ts:181:7 › S3-B6 the inspector is reachable by clicking and its envelope is visible › clicking a stream row's inspect link lands on the entry route with a visible envelope (752ms)
+  ✘  10 [chromium] › tests/console.spec.ts:279:7 › S3-B9 failures are visible and fabricate nothing › a queue the console cannot read is a visible storage-failed page with no queue (5.2s)
+  ✘   8 [chromium] › tests/console.spec.ts:148:7 › S3-B4/B5 the operator can read the queue and the stream › every stream row is visible with its sequence, summary, and provenance (5.8s)
+
+
+  1) [chromium] › tests/console.spec.ts:148:7 › S3-B4/B5 the operator can read the queue and the stream › every stream row is visible with its sequence, summary, and provenance 
+
+    Error: data-field=summary
+
+    expect(locator).toBeVisible() failed
+
+    Locator:  locator('[data-role="stream-row"][data-entry-id="01a083ad-0b2a-7242-ad8e-e5cb1f2a502a"]').locator('[data-field="summary"]')
+    Expected: visible
+    Received: hidden
+    Timeout:  5000ms
+
+    Call log:
+      - data-field=summary with timeout 5000ms
+      - waiting for locator('[data-role="stream-row"][data-entry-id="01a083ad-0b2a-7242-ad8e-e5cb1f2a502a"]').locator('[data-field="summary"]')
+        14 × locator resolved to <span data-field="summary"></span>
+           - unexpected value "hidden"
+
+
+      47 | async function visibleText(scope: import("@playwright/test").Locator, name: string, text: string) {
+      48 |   const shown = scope.locator(byField(name));
+    > 49 |   await expect(shown, `data-field=${name}`).toBeVisible();
+         |                                             ^
+      50 |   await expect(shown, `data-field=${name}`).toHaveText(text);
+      51 | }
+      52 |
+        at visibleText (/Users/kendall/code/github/daemar/browser/tests/console.spec.ts:49:45)
+        at /Users/kendall/code/github/daemar/browser/tests/console.spec.ts:170:13
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/console-S3-B4-B5-the-opera-20426-ence-summary-and-provenance-chromium/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/console-S3-B4-B5-the-opera-20426-ence-summary-and-provenance-chromium/error-context.md
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/console-S3-B4-B5-the-opera-20426-ence-summary-and-provenance-chromium/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/console-S3-B4-B5-the-opera-20426-ence-summary-and-provenance-chromium/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2) [chromium] › tests/console.spec.ts:279:7 › S3-B9 failures are visible and fabricate nothing › a queue the console cannot read is a visible storage-failed page with no queue 
+
+    Error: expect(locator).toHaveCount(expected) failed
+
+    Locator:  locator('[data-role="queue"]')
+    Expected: 0
+    Received: 1
+    Timeout:  5000ms
+
+    Call log:
+      - Expect "toHaveCount" with timeout 5000ms
+      - waiting for locator('[data-role="queue"]')
+        14 × locator resolved to 1 element
+           - unexpected value "1"
+
+
+      287 |       await expect(error).toBeVisible();
+      288 |       await expect(error).toContainText(/storage failed/i);
+    > 289 |       await expect(page.locator(byRole(role.queue))).toHaveCount(0);
+          |                                                      ^
+      290 |       await expect(page.locator(byRole(role.queueRow))).toHaveCount(0);
+      291 |       await expect(page.locator(byRole(role.cardIdentity))).toHaveCount(0);
+      292 |       await expect(page.locator(byRole(role.stream))).toHaveCount(0);
+        at /Users/kendall/code/github/daemar/browser/tests/console.spec.ts:289:54
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/console-S3-B9-failures-are-7f2a0-e-failed-page-with-no-queue-chromium/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/console-S3-B9-failures-are-7f2a0-e-failed-page-with-no-queue-chromium/error-context.md
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/console-S3-B9-failures-are-7f2a0-e-failed-page-with-no-queue-chromium/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/console-S3-B9-failures-are-7f2a0-e-failed-page-with-no-queue-chromium/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2 failed
+    [chromium] › tests/console.spec.ts:148:7 › S3-B4/B5 the operator can read the queue and the stream › every stream row is visible with its sequence, summary, and provenance 
+    [chromium] › tests/console.spec.ts:279:7 › S3-B9 failures are visible and fabricate nothing › a queue the console cannot read is a visible storage-failed page with no queue 
+  9 passed (6.2s)
+error: recipe `browser` failed on line 30 with exit code 1
+
+[exit=1 cwd=/Users/kendall/code/github/daemar]

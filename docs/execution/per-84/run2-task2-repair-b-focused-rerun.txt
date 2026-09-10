@@ -1,0 +1,9 @@
+   Compiling daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+     Running unittests src/lib.rs (target/debug/deps/daemar_card-be65ea026e154b50)
+
+running 1 test
+test storage::store_seam_tests::reader_refuses_dirty_and_mismatched_bookkeeping ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 0.02s
+

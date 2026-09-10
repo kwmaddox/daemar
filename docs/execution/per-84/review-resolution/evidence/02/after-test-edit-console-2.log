@@ -1,0 +1,45 @@
+   Compiling daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+warning: unused import: `Connection`
+   --> crates/daemar-card/src/console.rs:562:41
+    |
+562 |         use sqlx::{ConnectOptions as _, Connection as _};
+    |                                         ^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `daemar-card` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.04s
+     Running unittests src/lib.rs (target/debug/deps/daemar_card-87c6881c75cf7cb6)
+
+running 13 tests
+test console::web::tests::render_failure_returns_fixed_plain_text_500 ... ok
+test console::web::tests::accept_failure_returns_serve_with_source ... FAILED
+test console::web::tests::unsafe_method_unknown_route_returns_405 ... ok
+test console::web::tests::unsafe_method_css_returns_405 ... ok
+test console::web::tests::empty_host_returns_empty_421 ... ok
+test console::web::tests::unsafe_method_card_returns_405_with_allow_and_empty_body ... ok
+test console::web::tests::unsafe_method_root_returns_405_with_allow_and_empty_body ... ok
+test console::web::tests::foreign_host_precedes_unsafe_method ... ok
+test console::web::tests::host_rejection_precedes_unreadable_storage ... ok
+test console::web::tests::queue_failure_has_no_queue_or_card ... ok
+test console::web::tests::stream_failure_has_queue_without_partial_card ... ok
+test console::web::tests::payload_absence_is_rendered_without_payload_element ... ok
+test console::web::tests::head_matches_get_status_and_type_without_body ... ok
+
+failures:
+
+---- console::web::tests::accept_failure_returns_serve_with_source stdout ----
+
+thread 'console::web::tests::accept_failure_returns_serve_with_source' (38083615) panicked at crates/daemar-card/src/console.rs:779:18:
+listener: Bind { addr: LoopbackAddr { ip: V4, port: Port(0) }, source: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    console::web::tests::accept_failure_returns_serve_with_source
+
+test result: FAILED. 12 passed; 1 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p daemar-card --lib`
+
+COMMAND_EXIT=101

@@ -20,3 +20,15 @@ bootstrap:
 # Throwaway UI study for the Card console. Not production code.
 prototype-card-console:
     cargo run --manifest-path prototypes/card-console/Cargo.toml
+
+# Browser-observable proofs for the Card console (PER-84, S3): what the
+# browser fetched, what the operator can see, where clicks land. Runs
+# Playwright against the built `card` binary. Before acceptance, never in
+# pre-commit; the Rust behavior suite stays the gate.
+browser:
+    cargo build -p daemar-card --bin card
+    cd browser && npx playwright test
+
+# One-time per-clone setup for `just browser`: Node packages and Chromium.
+browser-install:
+    cd browser && npm ci && npx playwright install chromium

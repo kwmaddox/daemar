@@ -1,0 +1,1 @@
+8e8498a48fb0e80f6405ac617fc78accf678f6a8bcaac2a5cf317d2635ff3b41  crates/daemar-card/tests/behavior/console/mod.rs

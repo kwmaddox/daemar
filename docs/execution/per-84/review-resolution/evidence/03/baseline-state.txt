@@ -1,0 +1,43 @@
+4c809b31264f6c147563c52604d6aea598487ccd
+ M .gitignore
+ M AGENTS.md
+ M Cargo.lock
+ M crates/daemar-card/Cargo.toml
+ M crates/daemar-card/src/domain.rs
+ M crates/daemar-card/src/error.rs
+ M crates/daemar-card/src/lib.rs
+ M crates/daemar-card/src/main.rs
+ M crates/daemar-card/src/storage.rs
+ M crates/daemar-card/tests/behavior.rs
+ M deny.toml
+ M justfile
+?? .pi/
+?? agents/
+?? browser/
+?? crates/daemar-card/src/console.rs
+?? crates/daemar-card/static/
+?? crates/daemar-card/templates/
+?? crates/daemar-card/tests/behavior/console/
+?? crates/daemar-card/tests/features/console.feature
+?? docs/execution/
+?? docs/plans/
+?? docs/research/per-83-story-review-refutation-ledger.md
+ .gitignore                           |   5 +
+ AGENTS.md                            | 112 ++++++
+ Cargo.lock                           | 428 ++++++++++++++++++++
+ crates/daemar-card/Cargo.toml        |   9 +-
+ crates/daemar-card/src/domain.rs     | 124 ++++++
+ crates/daemar-card/src/error.rs      | 143 ++++++-
+ crates/daemar-card/src/lib.rs        |   6 +-
+ crates/daemar-card/src/main.rs       | 131 +++++--
+ crates/daemar-card/src/storage.rs    | 735 ++++++++++++++++++++++++++++++++---
+ crates/daemar-card/tests/behavior.rs |   4 +
+ deny.toml                            |   2 +
+ justfile                             |  12 +
+ 12 files changed, 1613 insertions(+), 98 deletions(-)
+8e2472a7533ecd809064a19cf8eaee0a7ad5a9d96ecab20f8e7b3ab65f4128e1  crates/daemar-card/src/main.rs
+1eb91c16b70dd6ffdcbc2296e1e93dc02cfaf5012785e0071da50a6d5c943d34  crates/daemar-card/src/storage.rs
+d2c6ade32004d2dff0f5ebe473e992587b5f38499a304fd9b273be2d62f3f537  crates/daemar-card/src/console.rs
+4d5521a7e40dc5d29edd7adc234c2e4b6102556356116b3fef5ce3d11d494b9a  crates/daemar-card/Cargo.toml
+5b5f355fda23e532b173c968dc229acd3afc77c867ef1c291e92c98cada9d73e  Cargo.lock
+COMMAND_CWD=/Users/kendall/code/github/daemar

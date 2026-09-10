@@ -1,0 +1,16 @@
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/kendall/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/matchit-0.8.4/Cargo.toml:30:20
+   │
+30 │ license = "MIT AND BSD-3-Clause"
+   │            ────────━━━━━━━━━━━━
+   │                    │
+   │                    rejected: license is not explicitly allowed
+   │
+   ├ BSD-3-Clause - BSD 3-Clause "New" or "Revised" License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ matchit v0.8.4
+     └── axum v0.8.9
+         └── daemar-card v0.1.0
+
+licenses FAILED

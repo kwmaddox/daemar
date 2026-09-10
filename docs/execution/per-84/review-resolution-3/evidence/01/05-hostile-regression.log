@@ -1,0 +1,87 @@
+COMMAND: cargo test -p daemar-card --test behavior -- --name Producer-controlled\ text\ is\ inert\ at\ every\ sink
+CWD: /Users/kendall/code/github/daemar
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/behavior.rs (target/debug/deps/behavior-59d729ca70be0cf7)
+Feature: The operator reads Cards on a local Queue First console
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose title is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that title is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose task key is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that task key is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose workspace is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that workspace is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose producer identity is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that producer identity is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose decision summary is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that decision summary is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose decision reason is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that decision reason is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose stage is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that stage is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose stage-event summary is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that stage-event summary is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose payload string at the top level is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that payload string at the top level is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose payload string nested three levels deep is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that payload string nested three levels deep is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+  Scenario Outline: Producer-controlled text is inert at every sink
+   ✔  Given a hostile marker that would create an element, an attribute, a script, and a style if interpreted
+   ✔  And a Card whose payload member name is the hostile marker
+   ✔  And the console is running
+   ✔  When every page that renders that payload member name is requested
+   ✔  Then at every sink the hostile marker appears as text and nothing else
+   ✔  And no page contains an element, attribute, script, or style the marker would have created
+[Summary]
+1 feature
+11 scenarios (11 passed)
+66 steps (66 passed)
+COMMAND_EXIT: 0

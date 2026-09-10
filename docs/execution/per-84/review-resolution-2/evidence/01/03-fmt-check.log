@@ -1,0 +1,83 @@
+COMMAND: cargo fmt --all --check 
+CWD: /Users/kendall/code/github/daemar
+Diff in /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:669:
+     let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+         assert_document_urls_same_origin(base, &foreign);
+     }));
+[31m-    assert!(rejected.is_err(), "foreign meta refresh passed the origin oracle");
+(B[m[32m+    assert!(
+(B[m[32m+        rejected.is_err(),
+(B[m[32m+        "foreign meta refresh passed the origin oracle"
+(B[m[32m+    );
+(B[m 
+     for html in [
+         r#"<link rel="stylesheet" href="/static/console.css">"#,
+Diff in /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:2081:
+         role::INSPECTOR,
+         role::PAYLOAD,
+     ] {
+[31m-        assert!(!doc.has_role(landmark), "{page} rendered data-role={landmark}");
+(B[m[32m+        assert!(
+(B[m[32m+            !doc.has_role(landmark),
+(B[m[32m+            "{page} rendered data-role={landmark}"
+(B[m[32m+        );
+(B[m     }
+ }
+ 
+Diff in /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:2109:
+     let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+         assert_error_title(&raw, card, marker, "raw fixture");
+     }));
+[31m-    assert!(rejected.is_err(), "raw hostile title passed the error oracle");
+(B[m[32m+    assert!(
+(B[m[32m+        rejected.is_err(),
+(B[m[32m+        "raw hostile title passed the error oracle"
+(B[m[32m+    );
+(B[m 
+     let absent = Document::parse(
+         r#"<div data-role="queue-row" data-card-id="card-1"><span>Hostile text</span></div>"#,
+Diff in /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:2117:
+     let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+         assert_error_title(&absent, card, marker, "absent-title fixture");
+     }));
+[31m-    assert!(rejected.is_err(), "absent title sink passed the error oracle");
+(B[m[32m+    assert!(
+(B[m[32m+        rejected.is_err(),
+(B[m[32m+        "absent title sink passed the error oracle"
+(B[m[32m+    );
+(B[m }
+ 
+ fn assert_marker_created_nothing(doc: &Document, page: &str) {
+Diff in /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:2156:
+         .console
+         .responses
+         .iter()
+[31m-        .map(|response| {
+(B[m[31m-            Document::parse(&response.body)
+(B[m[31m-        })
+(B[m[32m+        .map(|response| Document::parse(&response.body))
+(B[m         .collect();
+     assert_eq!(docs.len(), if which == HostileField::Title { 5 } else { 3 });
+     for response in w.console.responses.iter().take(3) {
+Diff in /Users/kendall/code/github/daemar/crates/daemar-card/tests/behavior/console/mod.rs:2168:
+         let card = w.primary_card();
+         let marker = w.console.hostile.as_ref().expect("a hostile marker");
+         check_error_title_oracle_fixtures();
+[31m-        assert_eq!(w.console.responses[3].status, 404, "{}", w.console.responses[3].describe());
+(B[m[31m-        assert_eq!(w.console.responses[4].status, 500, "{}", w.console.responses[4].describe());
+(B[m[32m+        assert_eq!(
+(B[m[32m+            w.console.responses[3].status,
+(B[m[32m+            404,
+(B[m[32m+            "{}",
+(B[m[32m+            w.console.responses[3].describe()
+(B[m[32m+        );
+(B[m[32m+        assert_eq!(
+(B[m[32m+            w.console.responses[4].status,
+(B[m[32m+            500,
+(B[m[32m+            "{}",
+(B[m[32m+            w.console.responses[4].describe()
+(B[m[32m+        );
+(B[m         assert_error_title(&docs[3], &card, marker, "404 error page");
+         assert_error_title(&docs[4], &card, marker, "500 error page");
+     }
+COMMAND_EXIT=1

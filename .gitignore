@@ -19,3 +19,8 @@
 
 # prototype workspaces build into their own target dirs
 /prototypes/*/target/
+
+# browser proof layer (just browser): installed packages and run output
+/browser/node_modules/
+/browser/test-results/
+/browser/playwright-report/

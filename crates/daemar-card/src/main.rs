@@ -7,17 +7,21 @@
 //! a category (`validation | conflict | missing | storage`) and a
 //! non-zero exit.
 
+use std::future::Future;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 use clap::{Arg, ArgMatches, Command};
 use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 
+use daemar_card::console::{ConfigSource, Listener, LoopbackAddr, Port, Startup, DEFAULT_PORT};
 use daemar_card::{
-    AppendEntry, CardId, CreateCard, EntryType, Error, Payload, Producer, ProducerKind, Store,
-    CURRENT_SCHEMA_VERSION,
+    AppendEntry, CardId, CreateCard, EntryType, Error, Payload, Producer, ProducerKind, Reader,
+    Store, CURRENT_SCHEMA_VERSION,
 };
 
 /// Environment variable selecting the database (S1-B14).
@@ -33,6 +37,16 @@ const DB_FILE: &str = "daemar.db";
 /// without touching the process environment (only `DAEMAR_DB` is
 /// honored from it).
 const ENV_FILE: &str = ".env";
+// Clap's locked feature set accepts a borrowed default string, but not an
+// owned String. Cache the one conversion from the typed library default so
+// every CLI construction borrows the same process-lifetime value.
+static DEFAULT_PORT_TEXT: OnceLock<String> = OnceLock::new();
+
+fn default_port_text() -> &'static str {
+    DEFAULT_PORT_TEXT
+        .get_or_init(|| DEFAULT_PORT.get().to_string())
+        .as_str()
+}
 
 /// Resolved runtime configuration. Precedence: `--db` flag > process env
 /// > factory-home `.env` > factory-home default (milestone Q8).
@@ -41,30 +55,11 @@ struct Config {
     source: ConfigSource,
 }
 
-/// Where the active database path came from; reported by `card db-path`
-/// so "which database am I talking to" is always one command away.
-enum ConfigSource {
-    Flag,
-    Env,
-    DotEnv,
-    Default,
-}
-
-impl ConfigSource {
-    fn name(&self) -> &'static str {
-        match self {
-            ConfigSource::Flag => "flag",
-            ConfigSource::Env => "env",
-            ConfigSource::DotEnv => "dotenv",
-            ConfigSource::Default => "default",
-        }
-    }
-}
-
 /// A CLI failure ready for rendering: a domain error, an invalid
 /// invocation, or a configuration problem the library never sees.
 /// `FactoryHome` keeps its typed io source (C3) instead of formatting it
 /// into prose at construction.
+#[derive(Debug)]
 enum Failure {
     Domain(Error),
     Invalid(String),
@@ -120,15 +115,21 @@ async fn main() -> ExitCode {
         Err(parse_error) => return render_parse_outcome(&parse_error),
     };
     match run(matches).await {
-        Ok(value) => {
-            println!("{value}");
-            ExitCode::SUCCESS
-        }
+        Ok(control) => match write_success(&mut std::io::stdout().lock(), control) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        },
         Err(failure) => {
             eprintln!("{}", failure.to_json());
             ExitCode::FAILURE
         }
     }
+}
+
+#[derive(Debug)]
+enum Control {
+    Print(Value),
+    Served,
 }
 
 fn render_parse_outcome(parse_error: &clap::Error) -> ExitCode {
@@ -148,23 +149,67 @@ fn render_parse_outcome(parse_error: &clap::Error) -> ExitCode {
     }
 }
 
-async fn run(matches: clap::ArgMatches) -> Result<Value, Failure> {
+async fn run(matches: clap::ArgMatches) -> Result<Control, Failure> {
     let config = resolve_config(matches.get_one::<PathBuf>("db").cloned())?;
     match matches.subcommand() {
         // ast-grep-ignore: no-string-literal-dispatch -- parse boundary: clap subcommand names, converted once
-        Some(("db-path", _)) => Ok(json!({
+        Some(("db-path", _)) => Ok(Control::Print(json!({
             "db_path": config.db_path,
-            "source": config.source.name(),
-        })),
+            "source": config.source.to_string(),
+        }))),
         // ast-grep-ignore: no-string-literal-dispatch -- parse boundary: clap subcommand names, converted once
-        Some(("create", sub)) => create(sub, &config).await,
+        Some(("create", sub)) => create(sub, &config).await.map(Control::Print),
         // ast-grep-ignore: no-string-literal-dispatch -- parse boundary: clap subcommand names, converted once
-        Some(("append", sub)) => append(sub, &config).await,
+        Some(("append", sub)) => append(sub, &config).await.map(Control::Print),
         // ast-grep-ignore: no-string-literal-dispatch -- parse boundary: clap subcommand names, converted once
-        Some(("history", sub)) => history(sub, &config).await,
+        Some(("history", sub)) => history(sub, &config).await.map(Control::Print),
         // ast-grep-ignore: no-string-literal-dispatch -- parse boundary: clap subcommand names, converted once
-        Some(("list", _)) => list(&config).await,
+        Some(("list", _)) => list(&config).await.map(Control::Print),
+        // ast-grep-ignore: no-string-literal-dispatch -- parse boundary: clap subcommand name, converted once
+        Some(("serve", sub)) => serve(sub, &config).await,
         _ => Err(Failure::Config("unknown command")),
+    }
+}
+
+async fn serve(sub: &ArgMatches, config: &Config) -> Result<Control, Failure> {
+    let port = *sub
+        .get_one::<u16>("port")
+        .ok_or(Failure::Invalid("port is required".to_owned()))?;
+    serve_with_operations(
+        port,
+        config,
+        |startup| daemar_card::console::publish_startup(&mut std::io::stdout().lock(), startup),
+        daemar_card::console::serve,
+    )
+    .await
+}
+
+async fn serve_with_operations<P, C, F>(
+    port: u16,
+    config: &Config,
+    publish: P,
+    continue_server: C,
+) -> Result<Control, Failure>
+where
+    P: FnOnce(&Startup) -> Result<(), Error>,
+    C: FnOnce(Listener, Reader) -> F,
+    F: Future<Output = Result<(), Error>>,
+{
+    let reader = Reader::open_existing(&config.db_path).await?;
+    let listener = Listener::bind(LoopbackAddr::v4(Port::new(port))).await?;
+    let startup = Startup::from_listener(&listener, config.db_path.clone(), config.source);
+    publish(&startup)?;
+    continue_server(listener, reader).await?;
+    Ok(Control::Served)
+}
+
+fn write_success(out: &mut impl Write, control: Control) -> std::io::Result<()> {
+    match control {
+        Control::Print(value) => {
+            serde_json::to_writer(&mut *out, &value).map_err(std::io::Error::other)?;
+            out.write_all(b"\n")
+        }
+        Control::Served => Ok(()),
     }
 }
 
@@ -238,6 +283,17 @@ fn cli() -> Command {
         .subcommand(Command::new("list").about("List Cards in creation order"))
         .subcommand(
             Command::new("db-path").about("Report the active database path and where it came from"),
+        )
+        .subcommand(
+            Command::new("serve")
+                .about("Serve the local read-only Card console")
+                .arg(
+                    Arg::new("port")
+                        .long("port")
+                        .value_name("PORT")
+                        .value_parser(clap::value_parser!(u16))
+                        .default_value(default_port_text()),
+                ),
         )
 }
 
@@ -508,5 +564,266 @@ fn render_timestamp(timestamp: time::OffsetDateTime) -> String {
     match timestamp.format(&Rfc3339) {
         Ok(rendered) => rendered,
         Err(_unformattable) => timestamp.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::error::Error as _;
+    use std::io;
+    use std::rc::Rc;
+
+    struct RecordingWriter(Rc<RefCell<Vec<u8>>>);
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FailingWriter {
+        bytes: Vec<u8>,
+        fail_write: bool,
+        fail_flush: bool,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                return Err(io::Error::other("write sentinel"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_flush {
+                return Err(io::Error::other("flush sentinel"));
+            }
+            Ok(())
+        }
+    }
+
+    async fn migrated_config() -> (tempfile::TempDir, Config) {
+        let dir = tempfile::TempDir::new().expect("temp directory");
+        let path = dir.path().join("cards.db");
+        let store = Store::open(&path).await.expect("migrate fixture");
+        drop(store);
+        (
+            dir,
+            Config {
+                db_path: path,
+                source: ConfigSource::Flag,
+            },
+        )
+    }
+
+    #[test]
+    fn reader_failure_is_domain_without_startup() {
+        let failure = Failure::from(Error::DatabaseMissing {
+            path: PathBuf::from("missing.db"),
+        });
+        assert!(matches!(
+            failure,
+            Failure::Domain(Error::DatabaseMissing { .. })
+        ));
+    }
+
+    #[test]
+    fn bind_failure_is_domain_without_startup() {
+        let failure = Failure::from(Error::Bind {
+            addr: LoopbackAddr::v4(Port::new(7331)),
+            source: std::io::Error::other("occupied"),
+        });
+        assert!(matches!(failure, Failure::Domain(Error::Bind { .. })));
+    }
+
+    #[tokio::test]
+    async fn publish_write_failure_is_domain_and_prevents_serve() {
+        let (_dir, config) = migrated_config().await;
+        let continued = Rc::new(Cell::new(false));
+        let observed = Rc::clone(&continued);
+        let result = serve_with_operations(
+            0,
+            &config,
+            |startup| {
+                let mut writer = FailingWriter {
+                    bytes: Vec::new(),
+                    fail_write: true,
+                    fail_flush: false,
+                };
+                daemar_card::console::publish_startup(&mut writer, startup)
+            },
+            move |_listener, _reader| {
+                observed.set(true);
+                async { Ok(()) }
+            },
+        )
+        .await;
+        let error = result.expect_err("write failure");
+        let Failure::Domain(error) = error else {
+            panic!("expected domain publication error");
+        };
+        assert!(matches!(error, Error::PublishStartup { .. }));
+        assert_eq!(error.category(), daemar_card::ErrorCategory::Unavailable);
+        assert_eq!(
+            error.source().expect("source").to_string(),
+            "write sentinel"
+        );
+        assert!(!continued.get(), "serve continuation must not run");
+    }
+
+    #[tokio::test]
+    async fn publish_flush_failure_is_domain_and_prevents_serve() {
+        let (_dir, config) = migrated_config().await;
+        let continued = Rc::new(Cell::new(false));
+        let observed = Rc::clone(&continued);
+        let result = serve_with_operations(
+            0,
+            &config,
+            |startup| {
+                let mut writer = FailingWriter {
+                    bytes: Vec::new(),
+                    fail_write: false,
+                    fail_flush: true,
+                };
+                daemar_card::console::publish_startup(&mut writer, startup)
+            },
+            move |_listener, _reader| {
+                observed.set(true);
+                async { Ok(()) }
+            },
+        )
+        .await;
+        let error = result.expect_err("flush failure");
+        let Failure::Domain(error) = error else {
+            panic!("expected domain publication error");
+        };
+        assert!(matches!(error, Error::PublishStartup { .. }));
+        assert_eq!(error.category(), daemar_card::ErrorCategory::Unavailable);
+        assert_eq!(
+            error.source().expect("source").to_string(),
+            "flush sentinel"
+        );
+        assert!(!continued.get(), "serve continuation must not run");
+    }
+
+    #[test]
+    fn serve_failure_is_domain() {
+        let failure = Failure::from(Error::Serve {
+            source: std::io::Error::other("accept failed"),
+        });
+        assert!(matches!(failure, Failure::Domain(Error::Serve { .. })));
+    }
+
+    #[tokio::test]
+    async fn serve_uses_published_listener() {
+        let (_dir, config) = migrated_config().await;
+        let published = Rc::new(RefCell::new(None));
+        let captured = Rc::clone(&published);
+        let result = serve_with_operations(
+            0,
+            &config,
+            move |startup| {
+                *captured.borrow_mut() = Some(startup.clone());
+                Ok(())
+            },
+            move |listener, _reader| {
+                let startup = published.borrow_mut().take().expect("published startup");
+                assert_eq!(listener.bound(), startup.bound());
+                assert_ne!(listener.bound().port(), Port::EPHEMERAL);
+                async { Ok(()) }
+            },
+        )
+        .await;
+        assert!(matches!(result, Ok(Control::Served)));
+    }
+
+    #[test]
+    fn serve_emits_no_second_success_line() {
+        let bytes = Rc::new(RefCell::new(Vec::new()));
+        let mut writer = RecordingWriter(Rc::clone(&bytes));
+        write_success(&mut writer, Control::Served).expect("served has no output");
+        assert!(bytes.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn production_success_output_has_one_startup_line_and_no_second_line() {
+        let (_dir, config) = migrated_config().await;
+        let bytes = Rc::new(RefCell::new(Vec::new()));
+        let published_bytes = Rc::clone(&bytes);
+        let control = serve_with_operations(
+            0,
+            &config,
+            move |startup| {
+                let mut writer = RecordingWriter(Rc::clone(&published_bytes));
+                daemar_card::console::publish_startup(&mut writer, startup)
+            },
+            |_listener, _reader| async { Ok(()) },
+        )
+        .await
+        .expect("serve orchestration");
+        let before = bytes.borrow().clone();
+        let mut writer = RecordingWriter(Rc::clone(&bytes));
+        write_success(&mut writer, control).expect("served output");
+        assert_eq!(*bytes.borrow(), before);
+        let text = String::from_utf8(before).expect("startup JSON");
+        assert_eq!(text.lines().count(), 1);
+        let value: Value = serde_json::from_str(text.trim_end()).expect("startup object");
+        assert_eq!(
+            value.get("db_path").expect("db_path"),
+            config.db_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(value.get("source").expect("source"), "flag");
+        assert!(value
+            .get("url")
+            .expect("url")
+            .as_str()
+            .is_some_and(|url| url.starts_with("http://127.0.0.1:")));
+    }
+
+    #[test]
+    fn print_success_output_is_one_json_line() {
+        let bytes = Rc::new(RefCell::new(Vec::new()));
+        let mut writer = RecordingWriter(Rc::clone(&bytes));
+        write_success(&mut writer, Control::Print(json!({"ok": true}))).expect("print output");
+        assert_eq!(&*bytes.borrow(), b"{\"ok\":true}\n");
+    }
+
+    #[test]
+    fn serve_port_defaults_from_console_default_and_rejects_invalid_values() {
+        let matches = cli()
+            .try_get_matches_from(["card", "serve"])
+            .expect("default port");
+        assert_eq!(
+            matches
+                .subcommand_matches("serve")
+                .unwrap()
+                .get_one::<u16>("port"),
+            Some(&7331)
+        );
+        let explicit = cli()
+            .try_get_matches_from(["card", "serve", "--port", "0"])
+            .expect("explicit ephemeral port");
+        assert_eq!(
+            explicit
+                .subcommand_matches("serve")
+                .unwrap()
+                .get_one::<u16>("port"),
+            Some(&0)
+        );
+        assert!(cli()
+            .try_get_matches_from(["card", "serve", "--port", "not-a-port"])
+            .is_err());
+        assert!(cli()
+            .try_get_matches_from(["card", "serve", "--port", "65536"])
+            .is_err());
     }
 }

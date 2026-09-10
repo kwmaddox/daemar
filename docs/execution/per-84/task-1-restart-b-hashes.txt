@@ -1,0 +1,4 @@
+dea18022729f4a59e4889a7f25b2c00d977f589215e2b1d51c138c4c9b2ab8bc  crates/daemar-card/src/console.rs
+1989793fbee8b22a4cf40c3b1a4956f28e5bf0ce0bda5f32cfc28f69715759da  crates/daemar-card/src/domain.rs
+ad31e9831ea82173370a6935c039a6f49dcd7a8c6212325207b636574b3022b9  crates/daemar-card/src/error.rs
+0003bd894d9b0fbabf2d4ba95954f628606b3e435d6ad934d8a867278ab92378  crates/daemar-card/src/lib.rs

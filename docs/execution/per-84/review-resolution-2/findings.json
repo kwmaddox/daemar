@@ -1,0 +1,82 @@
+[
+  {
+    "sequence": 87,
+    "payload": {
+      "payload": {
+        "axes_clean": [
+          "complexity",
+          "quality (incl. error handling)",
+          "security",
+          "language standards",
+          "codebase standards (C1-C16)",
+          "spec adherence"
+        ],
+        "both_prior_passes_clean": "delta re-review (post-repair) found no new findings; this full-spectrum pass with tightened bar found 2 narrow test-adequacy gaps, both on error pages",
+        "candidate": "working tree vs HEAD 4c809b31264f6c147563c52604d6aea598487ccd (all prior findings repaired and verified; delta re-review at seq 86-era found no new findings)",
+        "composition": "7 finders (5 spec-blind, 2 spec-aware) with tightened trivial bar; 2 refuters in parallel (one per surviving finding); orchestrator adjudication. First full review: Card seq 80/81; dispositions seq 83; repair verification: re-review with per-group refuters (all ten CE findings resolved, zero refuted).",
+        "findings": [
+          {
+            "axis": "test-adequacy",
+            "evidence": [
+              "tests/behavior/console/mod.rs:591-599,2250-2285",
+              "console.rs:386-419",
+              "console.feature:402-416",
+              "browser/tests/console.spec.ts:81-106,236-253",
+              "Card seq 16 (BT1 meta refresh url), seq 18"
+            ],
+            "finding": "Narrowed by refutation: a <meta http-equiv=\"refresh\"> referencing a foreign origin in the 404 error-page body passes every Layer-1 S3-B8 scan (content is not in URL_ATTRS at tests/behavior/console/mod.rs:591, meta is not in EMBEDDING_TAGS at mod.rs:594-599) and is not origin-checked by the Playwright layer (the fetch-set test at browser/tests/console.spec.ts:81-106 loads only queue, Card, and inspector routes), leaving the console.feature:414 same-origin property unpinned for meta refresh on the 404 page - despite Card seq 16 adjudicating meta refresh into BT1 scope and seq 18 cutting the implementing extractor without a recorded exclusion. WITHDRAWN by refutation: the 421 limb (421 body is Body::empty(), console.rs:413-419 - no browser ever renders it) and the 0-second-delay form (the S3-B9 test at console.spec.ts:236-253 racy-catches a 0s navigation; only a delayed form like content=\"30;url=...\" cleanly ships green).",
+            "id": "CE-M",
+            "refutation": "PARTIALLY SURVIVES",
+            "refuting_evidence": "421 limb false (empty body, no browser renders it); 0-second form racy-caught by S3-B9 assertions",
+            "severity": "minor",
+            "sources": [
+              "mod.rs:591-599,2250-2285",
+              "console.rs:386-419",
+              "console.feature:402-416",
+              "console.spec.ts:81-106,236-253",
+              "Card seq 16, 18"
+            ],
+            "surviving": "As narrowed above (404 page, delayed refresh, every gate green)"
+          },
+          {
+            "axis": "test-adequacy",
+            "evidence": [
+              "templates/error.html:1",
+              "mod.rs:1910-1921,1925-1969,2073-2076",
+              "console.feature:327-337,410-416,432-440,464-478",
+              "Card seq 45/47 (no error-page exclusion), seq 80/81 (no prior disposition)"
+            ],
+            "finding": "Narrowed by refutation: in the S3-B7 hostile-content outline's title row, the 'every page that renders that field' step requests only the queue page, Card page, and entry inspector (tests/behavior/console/mod.rs:1910-1921), and no hostile-content scenario ever requests a 404 or 500 page; since templates/error.html renders {{ card.title }} inside a data-role=\"queue-row\" sink via a template separate from queue.html (no shared macro), an escaping bug specific to ErrorTemplate's queue row would ship green, contrary to console.feature:327-337. WITHDRAWN by refutation: the blanket form (the error template renders only card.id and card.title - the other ten outline fields never reach it, so those rows are correctly excluded by the step's own page-instance language). Citation corrections: feature text at console.feature:327-337 (not 157-163); test functions at mod.rs:1910-1921/1925-1969/2073-2076.",
+            "id": "CE-N",
+            "refutation": "PARTIALLY SURVIVES",
+            "refuting_evidence": "Only the title field reaches the error template; blanket claim overreached; citations were stale (substance unaffected)",
+            "severity": "minor",
+            "sources": [
+              "error.html:1",
+              "mod.rs:1910-1921,1925-1969,2073-2076",
+              "console.feature:327-337,410-416,432-440,464-478"
+            ],
+            "surviving": "As narrowed above (title row only)"
+          }
+        ],
+        "plan_sequence": 56,
+        "review": "full-spectrum re-review (second pass over the fully repaired candidate)",
+        "tally": {
+          "findings": 2,
+          "partially_survive": 2,
+          "refuted": 0,
+          "survive": 0
+        }
+      },
+      "stage": "code-execution-review",
+      "summary": "Full-spectrum re-review of the repaired candidate: 5 axes clean, 2 narrow test-adequacy findings (CE-M, CE-N), both partially survived refutation and stand in narrowed form"
+    }
+  },
+  {
+    "sequence": 88,
+    "payload": {
+      "reason": "Adjudication of the full-spectrum re-review recorded at sequence 87. Five axes returned no findings under the tightened bar (complexity, quality, security, language standards, codebase standards), and spec adherence is clean: every S3-B1..B9 behavior implemented, no scope creep. This is the second full pass over the candidate; the first (seq 80/81) found twelve, all dispositioned at seq 83, repaired, and verified resolved by refutation-grade re-verification; the delta re-review found nothing; this pass found two.\n\nBoth findings survive only in refutation-narrowed form, and both are minor test-adequacy gaps on the error pages - the last unpinned corners of the S3-B7/S3-B8 sentences:\n\n(1) CE-M (minor): a delayed <meta http-equiv=\"refresh\"> to a foreign origin in the 404 error-page body passes the Layer-1 same-origin scan (content not in URL_ATTRS, meta not in EMBEDDING_TAGS) and the Playwright fetch-set test never loads the 404 route, so the console.feature:414 same-origin property is unpinned there. Card seq 16 adjudicated meta refresh into BT1 scope; seq 18 cut the implementing extractor without a recorded exclusion, so the gap is a restoration duty, not a new demand. Fix shape: add meta-refresh content handling to the Layer-1 URL scan (or restore the seq-16 coverage at the error-page scan set).\n\n(2) CE-N (minor): the S3-B7 hostile-content title row never requests an error page, but templates/error.html renders {{ card.title }} in a queue row through a separate template from queue.html, so an escaping bug specific to ErrorTemplate would ship green. Fix shape: plant the hostile marker as a Card title in one S3-B7 scenario and request the 404 (unknown Card) and corrupt-500 pages alongside the existing three, asserting the marker stays text at the error-page queue-row sink.\n\nBoth fixes are bounded test additions in tests/behavior/console/mod.rs; neither requires production changes unless fixing reveals a real escaping or scan bug. Disposition: route to the next fix round with the narrowed claims; after repair, refutation-grade re-verification of exactly these two claims suffices - no further full-spectrum pass is warranted unless the production surface changes.",
+      "summary": "Full-spectrum re-review adjudication: candidate clean on 5 axes; CE-M and CE-N stand in narrowed form (both minor, both error-page test gaps); queue for the next fix round"
+    }
+  }
+]

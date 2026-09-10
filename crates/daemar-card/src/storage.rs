@@ -11,7 +11,8 @@ use sqlx::{Row, SqlitePool};
 
 use crate::domain::{
     Accepted, AppendEntry, CardCreatedV1, CardId, CardSummary, CreateCard, Entry, EntryId,
-    EntryType, Payload, Producer, ProducerKind, CURRENT_SCHEMA_VERSION,
+    EntryType, MigrationVersion, Payload, Producer, ProducerKind, QueueCard, SchemaIncompatibility,
+    CURRENT_SCHEMA_VERSION,
 };
 use crate::error::{Error, StorageContext};
 
@@ -25,6 +26,174 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// this type; it has no update or delete surface (S1-B10), and never will.
 pub struct Store {
     pool: SqlitePool,
+    reader: Reader,
+}
+
+/// Read-only capability for an existing, verified Card database.
+pub struct Reader {
+    pool: SqlitePool,
+}
+
+impl Reader {
+    /// Opens an existing database without creating, migrating, or changing its permissions.
+    ///
+    /// # Errors
+    /// Returns a typed missing, schema, or storage error.
+    pub async fn open_existing(path: &Path) -> Result<Reader, Error> {
+        if !path.is_file() {
+            return Err(Error::DatabaseMissing {
+                path: path.to_owned(),
+            });
+        }
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(false)
+            .read_only(true)
+            .busy_timeout(BUSY_TIMEOUT);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .connect_with(options)
+            .await
+            .map_err(|source| Error::Storage {
+                context: StorageContext::OpenReadOnly,
+                source,
+            })?;
+        let reader = Reader { pool };
+        reader.verify_schema(path).await?;
+        Ok(reader)
+    }
+
+    async fn verify_schema(&self, path: &Path) -> Result<(), Error> {
+        let context = StorageContext::VerifySchema;
+        let table: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|source| Error::Storage { context, source })?;
+        if table.is_none() {
+            return Err(Error::SchemaIncompatible {
+                path: path.to_owned(),
+                reason: SchemaIncompatibility::Uninitialized,
+            });
+        }
+        let rows =
+            sqlx::query("SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|source| Error::Storage { context, source })?;
+        if rows.is_empty() {
+            return Err(Error::SchemaIncompatible {
+                path: path.to_owned(),
+                reason: SchemaIncompatibility::Uninitialized,
+            });
+        }
+        let applied = rows
+            .iter()
+            .map(|row| {
+                let version: i64 = row
+                    .try_get("version")
+                    .map_err(|source| Error::Storage { context, source })?;
+                let checksum: Vec<u8> = row
+                    .try_get("checksum")
+                    .map_err(|source| Error::Storage { context, source })?;
+                let success: bool = row
+                    .try_get("success")
+                    .map_err(|source| Error::Storage { context, source })?;
+                Ok(AppliedMigration {
+                    version,
+                    checksum,
+                    success,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let migrator = sqlx::migrate!("./migrations");
+        let expected: Vec<ExpectedMigration> = migrator
+            .migrations
+            .iter()
+            .map(|migration| ExpectedMigration {
+                version: migration.version,
+                checksum: migration.checksum.to_vec(),
+            })
+            .collect();
+        let reason = compare_schema(&expected, &applied);
+        if let Some(reason) = reason {
+            return Err(Error::SchemaIncompatible {
+                path: path.to_owned(),
+                reason,
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns every Card and its highest-sequence activity timestamp.
+    ///
+    /// # Errors
+    /// Returns a queue storage or corruption error.
+    pub async fn queue(&self) -> Result<Vec<QueueCard>, Error> {
+        let context = StorageContext::Queue;
+        let rows = sqlx::query(
+            "SELECT c.card_id, c.title, c.task_key, c.workspace, c.created_at, e.recorded_at AS last_activity \
+             FROM cards c JOIN card_entries e ON e.card_id = c.card_id \
+             AND e.sequence = (SELECT MAX(sequence) FROM card_entries WHERE card_id = c.card_id) \
+             ORDER BY c.rowid",
+        ).fetch_all(&self.pool).await.map_err(|source| Error::Storage { context, source })?;
+        rows.iter()
+            .map(|row| {
+                Ok(QueueCard {
+                    card: CardSummary {
+                        card_id: CardId::from(column::<String>(row, "card_id", context)?),
+                        title: column(row, "title", context)?,
+                        task_key: column(row, "task_key", context)?,
+                        workspace: column(row, "workspace", context)?,
+                        created_at: column(row, "created_at", context)?,
+                    },
+                    last_activity: column(row, "last_activity", context)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Lists Cards in creation order.
+    ///
+    /// # Errors
+    /// Returns a storage or corruption error.
+    pub async fn list_cards(&self) -> Result<Vec<CardSummary>, Error> {
+        list_cards_from_pool(&self.pool).await
+    }
+
+    /// Reads a Card's complete ordered history, optionally filtered by type.
+    ///
+    /// # Errors
+    /// Returns a missing Card, storage, or corruption error.
+    pub async fn history(
+        &self,
+        card_id: &CardId,
+        filter: Option<EntryType>,
+    ) -> Result<Vec<Entry>, Error> {
+        history_from_pool(&self.pool, card_id, filter).await
+    }
+
+    /// Reads one entry only when it belongs to the addressed Card.
+    ///
+    /// # Errors
+    /// Returns a missing Card/entry, storage, or corruption error.
+    pub async fn entry(&self, card_id: &CardId, entry_id: &EntryId) -> Result<Entry, Error> {
+        let context = StorageContext::ReadEntry;
+        require_card_from_pool(&self.pool, card_id, context).await?;
+        let row = sqlx::query("SELECT entry_id, card_id, sequence, entry_type, schema_version, producer_id, producer_kind, recorded_at, payload FROM card_entries WHERE card_id = ?1 AND entry_id = ?2")
+            .bind(card_id.as_str()).bind(entry_id.as_str()).fetch_optional(&self.pool).await
+            .map_err(|source| Error::Storage { context, source })?;
+        row.map(|row| entry_from_row(&row, context))
+            .transpose()?
+            .ok_or(Error::EntryNotFound {
+                card_id: card_id.clone(),
+                entry_id: entry_id.clone(),
+            })
+    }
 }
 
 impl Store {
@@ -59,7 +228,10 @@ impl Store {
                 source: sqlx::Error::from(source),
             })?;
         restrict_database_permissions(path)?;
-        Ok(Store { pool })
+        Ok(Store {
+            reader: Reader { pool: pool.clone() },
+            pool,
+        })
     }
 
     /// Creates a Card and appends its card-created entry at sequence 1,
@@ -197,36 +369,7 @@ impl Store {
         card_id: &CardId,
         filter: Option<EntryType>,
     ) -> Result<Vec<Entry>, Error> {
-        let context = StorageContext::ReadHistory;
-        self.require_card(card_id, context).await?;
-        let rows = match filter {
-            Some(entry_type) => {
-                sqlx::query(
-                    "SELECT entry_id, card_id, sequence, entry_type, schema_version, \
-                     producer_id, producer_kind, recorded_at, payload \
-                     FROM card_entries WHERE card_id = ?1 AND entry_type = ?2 \
-                     ORDER BY sequence",
-                )
-                .bind(card_id.as_str())
-                .bind(entry_type.to_string())
-                .fetch_all(&self.pool)
-                .await
-            }
-            None => {
-                sqlx::query(
-                    "SELECT entry_id, card_id, sequence, entry_type, schema_version, \
-                     producer_id, producer_kind, recorded_at, payload \
-                     FROM card_entries WHERE card_id = ?1 ORDER BY sequence",
-                )
-                .bind(card_id.as_str())
-                .fetch_all(&self.pool)
-                .await
-            }
-        }
-        .map_err(|source| Error::Storage { context, source })?;
-        rows.iter()
-            .map(|row| entry_from_row(row, context))
-            .collect()
+        self.reader.history(card_id, filter).await
     }
 
     /// All Cards in creation order (S1-B1).
@@ -235,38 +378,11 @@ impl Store {
     ///
     /// [`Error::Storage`].
     pub async fn list_cards(&self) -> Result<Vec<CardSummary>, Error> {
-        let context = StorageContext::ListCards;
-        let rows = sqlx::query(
-            "SELECT card_id, title, task_key, workspace, created_at FROM cards ORDER BY rowid",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|source| Error::Storage { context, source })?;
-        rows.iter()
-            .map(|row| {
-                Ok(CardSummary {
-                    card_id: CardId::from(column::<String>(row, "card_id", context)?),
-                    title: column(row, "title", context)?,
-                    task_key: column(row, "task_key", context)?,
-                    workspace: column(row, "workspace", context)?,
-                    created_at: column(row, "created_at", context)?,
-                })
-            })
-            .collect()
+        self.reader.list_cards().await
     }
 
     async fn require_card(&self, card_id: &CardId, context: StorageContext) -> Result<(), Error> {
-        let found = sqlx::query("SELECT 1 FROM cards WHERE card_id = ?1")
-            .bind(card_id.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|source| Error::Storage { context, source })?;
-        match found {
-            Some(_) => Ok(()),
-            None => Err(Error::CardNotFound {
-                card_id: card_id.clone(),
-            }),
-        }
+        require_card_from_pool(&self.pool, card_id, context).await
     }
 
     /// Looks up a prior create with this key: identical fingerprint replays
@@ -406,6 +522,129 @@ impl Store {
         let raw: i64 = row.try_get("sequence")?;
         Ok((entry_id, raw))
     }
+}
+
+async fn list_cards_from_pool(pool: &SqlitePool) -> Result<Vec<CardSummary>, Error> {
+    let context = StorageContext::ListCards;
+    let rows = sqlx::query(
+        "SELECT card_id, title, task_key, workspace, created_at FROM cards ORDER BY rowid",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|source| Error::Storage { context, source })?;
+    rows.iter()
+        .map(|row| {
+            Ok(CardSummary {
+                card_id: CardId::from(column::<String>(row, "card_id", context)?),
+                title: column(row, "title", context)?,
+                task_key: column(row, "task_key", context)?,
+                workspace: column(row, "workspace", context)?,
+                created_at: column(row, "created_at", context)?,
+            })
+        })
+        .collect()
+}
+
+async fn history_from_pool(
+    pool: &SqlitePool,
+    card_id: &CardId,
+    filter: Option<EntryType>,
+) -> Result<Vec<Entry>, Error> {
+    let context = StorageContext::ReadHistory;
+    require_card_from_pool(pool, card_id, context).await?;
+    let (query, type_name) = match filter {
+        Some(entry_type) => ("SELECT entry_id, card_id, sequence, entry_type, schema_version, producer_id, producer_kind, recorded_at, payload FROM card_entries WHERE card_id = ?1 AND entry_type = ?2 ORDER BY sequence", Some(entry_type.to_string())),
+        None => ("SELECT entry_id, card_id, sequence, entry_type, schema_version, producer_id, producer_kind, recorded_at, payload FROM card_entries WHERE card_id = ?1 ORDER BY sequence", None),
+    };
+    let mut request = sqlx::query(query).bind(card_id.as_str());
+    if let Some(type_name) = type_name {
+        request = request.bind(type_name);
+    }
+    let rows = request
+        .fetch_all(pool)
+        .await
+        .map_err(|source| Error::Storage { context, source })?;
+    rows.iter()
+        .map(|row| entry_from_row(row, context))
+        .collect()
+}
+
+async fn require_card_from_pool(
+    pool: &SqlitePool,
+    card_id: &CardId,
+    context: StorageContext,
+) -> Result<(), Error> {
+    let found = sqlx::query("SELECT 1 FROM cards WHERE card_id = ?1")
+        .bind(card_id.as_str())
+        .fetch_optional(pool)
+        .await
+        .map_err(|source| Error::Storage { context, source })?;
+    match found {
+        Some(_) => Ok(()),
+        None => Err(Error::CardNotFound {
+            card_id: card_id.clone(),
+        }),
+    }
+}
+
+fn compare_schema(
+    expected: &[ExpectedMigration],
+    applied: &[AppliedMigration],
+) -> Option<SchemaIncompatibility> {
+    if let Some(dirty) = applied.iter().find(|migration| !migration.success) {
+        return Some(SchemaIncompatibility::Dirty {
+            version: MigrationVersion::new(dirty.version),
+        });
+    }
+    if applied.is_empty() {
+        return Some(SchemaIncompatibility::Uninitialized);
+    }
+    for (index, applied_migration) in applied.iter().enumerate().take(expected.len()) {
+        let Some(wanted) = expected.get(index) else {
+            continue;
+        };
+        if applied_migration.version != wanted.version {
+            return Some(SchemaIncompatibility::Diverged {
+                expected: MigrationVersion::new(wanted.version),
+                found: MigrationVersion::new(applied_migration.version),
+            });
+        }
+        if applied_migration.checksum != wanted.checksum {
+            return Some(SchemaIncompatibility::ChecksumMismatch {
+                version: MigrationVersion::new(applied_migration.version),
+            });
+        }
+    }
+    if applied.len() < expected.len() {
+        if let Some(next) = expected.get(applied.len()) {
+            return Some(SchemaIncompatibility::Behind {
+                applied: applied.len(),
+                required: expected.len(),
+                next_required: MigrationVersion::new(next.version),
+            });
+        }
+    }
+    if applied.len() > expected.len() {
+        if let Some(unknown) = applied.get(expected.len()) {
+            return Some(SchemaIncompatibility::Ahead {
+                unknown_version: MigrationVersion::new(unknown.version),
+            });
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedMigration {
+    version: i64,
+    checksum: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppliedMigration {
+    version: i64,
+    checksum: Vec<u8>,
+    success: bool,
 }
 
 /// Owner-only mode for the durable Card record and its `WAL`/`SHM`
@@ -587,6 +826,8 @@ mod store_seam_tests {
     use crate::domain::DecisionV1;
     use crate::error::ErrorCategory;
 
+    const CORRUPT_TIMESTAMP: &str = "not-a-timestamp";
+
     async fn open_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let store = Store::open(&dir.path().join("daemar.db"))
@@ -613,6 +854,378 @@ mod store_seam_tests {
             })
             .await
             .expect("create card")
+    }
+
+    #[tokio::test]
+    async fn reader_opens_migrated_store_and_delegates_reads() {
+        let (dir, store) = open_store().await;
+        let card_id = open_card(&store).await;
+        let reader = Reader::open_existing(&dir.path().join("daemar.db"))
+            .await
+            .expect("migrated store is readable");
+        assert_eq!(reader.list_cards().await.expect("list").len(), 1);
+        assert_eq!(
+            reader.history(&card_id, None).await.expect("history").len(),
+            1
+        );
+        let queue = reader.queue().await.expect("queue");
+        assert_eq!(queue.first().map(|item| &item.card.card_id), Some(&card_id));
+    }
+
+    fn schema_expected() -> Vec<ExpectedMigration> {
+        vec![
+            ExpectedMigration {
+                version: 1,
+                checksum: vec![1],
+            },
+            ExpectedMigration {
+                version: 2,
+                checksum: vec![2],
+            },
+            ExpectedMigration {
+                version: 3,
+                checksum: vec![3],
+            },
+        ]
+    }
+
+    fn applied(rows: Vec<(i64, Vec<u8>, bool)>) -> Vec<AppliedMigration> {
+        rows.into_iter()
+            .map(|(version, checksum, success)| AppliedMigration {
+                version,
+                checksum,
+                success,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn schema_comparison_precedence_covers_all_shapes() {
+        let expected = schema_expected();
+        let cases = [
+            (
+                "exact",
+                applied(vec![
+                    (1, vec![1], true),
+                    (2, vec![2], true),
+                    (3, vec![3], true),
+                ]),
+                None,
+            ),
+            (
+                "empty",
+                Vec::new(),
+                Some(SchemaIncompatibility::Uninitialized),
+            ),
+            (
+                "behind",
+                applied(vec![(1, vec![1], true)]),
+                Some(SchemaIncompatibility::Behind {
+                    applied: 1,
+                    required: 3,
+                    next_required: MigrationVersion::new(2),
+                }),
+            ),
+            (
+                "ahead",
+                applied(vec![
+                    (1, vec![1], true),
+                    (2, vec![2], true),
+                    (3, vec![3], true),
+                    (4, vec![4], true),
+                ]),
+                Some(SchemaIncompatibility::Ahead {
+                    unknown_version: MigrationVersion::new(4),
+                }),
+            ),
+            (
+                "diverged",
+                applied(vec![(1, vec![1], true), (9, vec![2], true)]),
+                Some(SchemaIncompatibility::Diverged {
+                    expected: MigrationVersion::new(2),
+                    found: MigrationVersion::new(9),
+                }),
+            ),
+            (
+                "checksum",
+                applied(vec![(1, vec![9], true)]),
+                Some(SchemaIncompatibility::ChecksumMismatch {
+                    version: MigrationVersion::new(1),
+                }),
+            ),
+            (
+                "first mismatch",
+                applied(vec![(8, vec![9], true), (9, vec![8], true)]),
+                Some(SchemaIncompatibility::Diverged {
+                    expected: MigrationVersion::new(1),
+                    found: MigrationVersion::new(8),
+                }),
+            ),
+        ];
+        for (name, applied, want) in cases {
+            assert_eq!(compare_schema(&expected, &applied), want, "{name}");
+        }
+        let dirty = vec![
+            AppliedMigration {
+                version: 1,
+                checksum: vec![9],
+                success: false,
+            },
+            AppliedMigration {
+                version: 9,
+                checksum: vec![8],
+                success: false,
+            },
+        ];
+        assert_eq!(
+            compare_schema(&expected, &dirty),
+            Some(SchemaIncompatibility::Dirty {
+                version: MigrationVersion::new(1)
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_refuses_missing_and_uninitialized_without_mutation() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let missing = dir.path().join("missing.db");
+        assert!(matches!(
+            Reader::open_existing(&missing).await,
+            Err(Error::DatabaseMissing { .. })
+        ));
+        assert!(!missing.exists());
+        let empty = dir.path().join("empty.db");
+        std::fs::File::create(&empty).expect("empty db");
+        let before_bytes = std::fs::read(&empty).expect("bytes");
+        let before_metadata = std::fs::metadata(&empty).expect("metadata");
+        assert!(matches!(
+            Reader::open_existing(&empty).await,
+            Err(Error::SchemaIncompatible {
+                reason: SchemaIncompatibility::Uninitialized,
+                ..
+            })
+        ));
+        let after_metadata = std::fs::metadata(&empty).expect("metadata");
+        assert_eq!(std::fs::read(&empty).expect("bytes"), before_bytes);
+        assert_eq!(
+            after_metadata.permissions().readonly(),
+            before_metadata.permissions().readonly()
+        );
+        assert_eq!(after_metadata.len(), before_metadata.len());
+    }
+
+    #[tokio::test]
+    async fn reader_refuses_dirty_and_mismatched_bookkeeping() {
+        let dirty_dir = tempfile::TempDir::new().expect("temp dir");
+        let dirty_path = dirty_dir.path().join("dirty.db");
+        let dirty_store = Store::open(&dirty_path).await.expect("store");
+        sqlx::query("UPDATE _sqlx_migrations SET success = 0, version = 99")
+            .execute(&dirty_store.pool)
+            .await
+            .expect("dirty row");
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&dirty_store.pool)
+            .await
+            .expect("checkpoint dirty fixture");
+        drop(dirty_store);
+        let dirty_before = std::fs::read(&dirty_path).expect("bytes");
+        let dirty_meta = std::fs::metadata(&dirty_path).expect("metadata");
+        assert!(matches!(
+            Reader::open_existing(&dirty_path).await,
+            Err(Error::SchemaIncompatible { reason: SchemaIncompatibility::Dirty { version }, .. }) if version.get() == 99
+        ));
+        assert_eq!(std::fs::read(&dirty_path).expect("bytes"), dirty_before);
+        assert_eq!(
+            std::fs::metadata(&dirty_path)
+                .expect("metadata")
+                .permissions()
+                .readonly(),
+            dirty_meta.permissions().readonly()
+        );
+
+        let mismatch_dir = tempfile::TempDir::new().expect("temp dir");
+        let mismatch_path = mismatch_dir.path().join("mismatch.db");
+        let mismatch_store = Store::open(&mismatch_path).await.expect("store");
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00'")
+            .execute(&mismatch_store.pool)
+            .await
+            .expect("checksum row");
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&mismatch_store.pool)
+            .await
+            .expect("checkpoint checksum fixture");
+        drop(mismatch_store);
+        let mismatch_before = std::fs::read(&mismatch_path).expect("bytes");
+        let mismatch_meta = std::fs::metadata(&mismatch_path).expect("metadata");
+        assert!(matches!(
+            Reader::open_existing(&mismatch_path).await,
+            Err(Error::SchemaIncompatible { reason: SchemaIncompatibility::ChecksumMismatch { version }, .. }) if version.get() == 1
+        ));
+        assert_eq!(
+            std::fs::read(&mismatch_path).expect("bytes"),
+            mismatch_before
+        );
+        assert_eq!(
+            std::fs::metadata(&mismatch_path)
+                .expect("metadata")
+                .permissions()
+                .readonly(),
+            mismatch_meta.permissions().readonly()
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_connection_is_read_only_and_sees_live_writer_append() {
+        let (dir, store) = open_store().await;
+        let card_id = open_card(&store).await;
+        let reader = Reader::open_existing(&dir.path().join("daemar.db"))
+            .await
+            .expect("reader");
+        let writable = sqlx::SqlitePool::connect(&format!(
+            "sqlite://{}",
+            dir.path().join("daemar.db").display()
+        ))
+        .await
+        .expect("writable control");
+        let control_write = sqlx::query("INSERT INTO cards (card_id, title, created_at, fingerprint) VALUES ('control', 'control', '2020-01-01T00:00:00Z', 'control')").execute(&writable).await;
+        assert!(
+            control_write.is_ok(),
+            "valid write should succeed on writable control"
+        );
+        let write = sqlx::query("INSERT INTO cards (card_id, title, created_at, fingerprint) VALUES ('x', 'x', '2020-01-01T00:00:00Z', 'x')").execute(&reader.pool).await;
+        assert!(
+            write.is_err(),
+            "Reader's actual connection must reject writes"
+        );
+        assert!(write.unwrap_err().to_string().contains("readonly"));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT title FROM cards WHERE card_id = 'x'")
+                .fetch_optional(&writable)
+                .await
+                .expect("control query"),
+            None
+        );
+        assert_eq!(
+            reader
+                .history(&card_id, None)
+                .await
+                .expect("initial read")
+                .len(),
+            1
+        );
+        store
+            .append(AppendEntry {
+                card_id: card_id.clone(),
+                payload: decision_payload(),
+                producer: operator("writer"),
+                idempotency_key: None,
+            })
+            .await
+            .expect("append");
+        assert_eq!(
+            reader
+                .history(&card_id, None)
+                .await
+                .expect("live read")
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_orders_cards_and_uses_latest_sequence_without_decoding_payload() {
+        let (dir, store) = open_store().await;
+        let first = open_card(&store).await;
+        let second = open_card(&store).await;
+        store
+            .append(AppendEntry {
+                card_id: first.clone(),
+                payload: decision_payload(),
+                producer: operator("writer"),
+                idempotency_key: None,
+            })
+            .await
+            .expect("append");
+        sqlx::query("UPDATE card_entries SET recorded_at = '2030-01-01T00:00:00Z', payload = 'not-json' WHERE card_id = ?1 AND sequence = 1").bind(first.as_str()).execute(&store.pool).await.expect("corrupt old payload");
+        sqlx::query("UPDATE card_entries SET recorded_at = '2000-01-01T00:00:00Z' WHERE card_id = ?1 AND sequence = 2").bind(first.as_str()).execute(&store.pool).await.expect("set latest sequence time");
+        let reader = Reader::open_existing(&dir.path().join("daemar.db"))
+            .await
+            .expect("reader");
+        let queue = reader.queue().await.expect("queue");
+        assert_eq!(queue.len(), 2);
+        let mut queue_items = queue.into_iter();
+        let first_item = queue_items.next().expect("first queue item");
+        let second_item = queue_items.next().expect("second queue item");
+        assert_eq!(first_item.card.card_id, first);
+        assert_eq!(second_item.card.card_id, second);
+        assert_eq!(
+            first_item.last_activity.to_string(),
+            "2000-01-01 0:00:00.0 +00:00:00"
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_rejects_corrupt_selected_columns() {
+        let (dir, store) = open_store().await;
+        let card_id = open_card(&store).await;
+        sqlx::query("UPDATE card_entries SET recorded_at = ?1 WHERE card_id = ?2 AND sequence = 1")
+            .bind(CORRUPT_TIMESTAMP)
+            .bind(card_id.as_str())
+            .execute(&store.pool)
+            .await
+            .expect("corrupt timestamp");
+        let reader = Reader::open_existing(&dir.path().join("daemar.db"))
+            .await
+            .expect("reader");
+        assert!(reader.queue().await.is_err());
+
+        let card_dir = tempfile::TempDir::new().expect("card dir");
+        let card_path = card_dir.path().join("card.db");
+        let card_store = Store::open(&card_path).await.expect("store");
+        let card_id = open_card(&card_store).await;
+        sqlx::query("UPDATE cards SET created_at = ?1 WHERE card_id = ?2")
+            .bind(CORRUPT_TIMESTAMP)
+            .bind(card_id.as_str())
+            .execute(&card_store.pool)
+            .await
+            .expect("corrupt card timestamp");
+        let card_reader = Reader::open_existing(&card_path).await.expect("reader");
+        assert!(card_reader.queue().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn reader_entry_membership_distinguishes_card_and_entry_absence() {
+        let (dir, store) = open_store().await;
+        let card_id = open_card(&store).await;
+        let other_card = open_card(&store).await;
+        let history = store.history(&card_id, None).await.expect("history");
+        let entry_id = history
+            .first()
+            .expect("card-created entry")
+            .entry_id
+            .clone();
+        let reader = Reader::open_existing(&dir.path().join("daemar.db"))
+            .await
+            .expect("reader");
+        assert!(reader.entry(&card_id, &entry_id).await.is_ok());
+        assert!(matches!(
+            reader.entry(&other_card, &entry_id).await,
+            Err(Error::EntryNotFound { .. })
+        ));
+        let unknown_card = CardId::from("unknown-card".to_owned());
+        assert!(matches!(
+            reader.entry(&unknown_card, &entry_id).await,
+            Err(Error::CardNotFound { .. })
+        ));
+        let unknown_entry = EntryId::from("unknown-entry".to_owned());
+        assert!(matches!(
+            reader.entry(&card_id, &unknown_entry).await,
+            Err(Error::EntryNotFound { .. })
+        ));
+        assert!(matches!(
+            reader.entry(&unknown_card, &unknown_entry).await,
+            Err(Error::CardNotFound { .. })
+        ));
     }
 
     fn decision_payload() -> Payload {

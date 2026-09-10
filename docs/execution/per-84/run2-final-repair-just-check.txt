@@ -1,0 +1,40 @@
+scripts/check.sh
+Running 5 tests
+
+----------- Case Details -----------
+PASS no-string-literal-dispatch  ...................
+PASS no-stringly-typed-field  .................
+PASS no-box-dyn-error  .......................
+PASS no-allow-attributes  ..........................
+PASS ignore-discipline  ............
+
+test result: ok. 5 passed; 0 failed;
+docs/execution/per-84/run2-task3-continuation-console-before-tests.rs
+help[unused-suppression]: Unused 'ast-grep-ignore' directive.
+@@ -285,7 +285,7 @@
+286 286│         sequence: u64,
+287 287│         schema_version: u32,
+288 288│         entry_type: crate::EntryType,
+289    │-        // ast-grep-ignore: no-stringly-typed-field -- producer identity is opaque durable text in the domain
+    289│+        
+290 290│         producer_id: String,
+291 291│         producer_kind: crate::ProducerKind,
+292 292│         recorded_at: String,
+    Checking daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+error: field `title` is never read
+   --> crates/daemar-card/src/console.rs:294:9
+    |
+283 |     struct EntryView {
+    |            --------- field in this struct
+...
+294 |         title: Option<String>,
+    |         ^^^^^
+    |
+    = note: `EntryView` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: could not compile `daemar-card` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `daemar-card` (lib test) due to 1 previous error
+error: recipe `check` failed on line 12 with exit code 101

@@ -1,0 +1,33 @@
+    Checking daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+error: indexing may panic
+   --> crates/daemar-card/src/main.rs:780:20
+    |
+780 |         assert_eq!(value["db_path"], config.db_path.to_string_lossy().as_ref());
+    |                    ^^^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#indexing_slicing
+    = note: requested on the command line with `-D clippy::indexing-slicing`
+
+error: indexing may panic
+   --> crates/daemar-card/src/main.rs:781:20
+    |
+781 |         assert_eq!(value["source"], "flag");
+    |                    ^^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#indexing_slicing
+
+error: indexing may panic
+   --> crates/daemar-card/src/main.rs:782:17
+    |
+782 |         assert!(value["url"]
+    |                 ^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#indexing_slicing
+
+error: could not compile `daemar-card` (bin "card" test) due to 3 previous errors
+
+COMMAND_EXIT=101
+COMMAND_CWD=/Users/kendall/code/github/daemar

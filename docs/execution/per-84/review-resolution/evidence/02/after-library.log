@@ -1,0 +1,83 @@
+   Compiling daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+warning: unused import: `Connection`
+   --> crates/daemar-card/src/console.rs:562:41
+    |
+562 |         use sqlx::{ConnectOptions as _, Connection as _};
+    |                                         ^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `daemar-card` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
+     Running unittests src/lib.rs (target/debug/deps/daemar_card-87c6881c75cf7cb6)
+
+running 64 tests
+test console::tests::loopback_address_formats_both_families ... ok
+test console::tests::config_source_has_contract_spellings ... ok
+test console::tests::publish_startup_error_category_and_display ... ok
+test console::tests::listener_zero_reports_bound_port ... ok
+test console::tests::occupied_port_returns_bind_error_without_retry ... ok
+test console::tests::publish_flush_failure_preserves_source ... ok
+test console::tests::publish_write_failure_preserves_source ... ok
+test console::tests::publish_writes_one_line_and_flushes ... ok
+test console::tests::publish_handles_partial_writes ... ok
+test console::tests::startup_uses_bound_listener ... ok
+test domain::restart_b_tests::migration_version_and_schema_reason_displays_are_stable ... ok
+test domain::tests::duplicate_probe_traverses_well_formed_json ... ok
+test domain::tests::entry_type_round_trips ... ok
+test domain::tests::every_error_variant_maps_to_its_category ... ok
+test domain::tests::from_raw_parses_card_created_with_absent_references ... ok
+test domain::tests::from_raw_rejects_text_that_is_not_json ... ok
+test domain::tests::from_raw_rejects_blank_required_fields ... ok
+test domain::tests::from_raw_rejects_wrong_json_shape ... ok
+test domain::tests::from_raw_rejects_unknown_fields ... ok
+test domain::tests::from_raw_reports_the_requested_unknown_version ... ok
+test domain::tests::from_raw_stage_event_rejects_duplicate_envelope_member ... ok
+test domain::tests::from_raw_stage_event_rejects_duplicate_in_payload ... ok
+test domain::tests::from_raw_stage_event_rejects_explicit_null_payload ... ok
+test domain::tests::from_raw_stage_event_rejects_non_string_stage ... ok
+test domain::tests::from_raw_stage_event_rejects_unknown_envelope_member ... ok
+test domain::tests::history_fields_decision_format ... ok
+test console::web::tests::render_failure_returns_fixed_plain_text_500 ... ok
+test domain::tests::history_fields_stage_event_no_payload ... ok
+test domain::tests::producer_kind_round_trips ... ok
+test domain::tests::stage_event_from_parts_duplicate_array_with_later_members ... ok
+test domain::tests::stage_event_from_parts_duplicate_nested_with_later_sibling ... ok
+test domain::tests::stage_event_from_parts_duplicate_with_later_sibling_top_level ... ok
+test domain::tests::stage_event_from_parts_rejects_cr_or_lf_in_summary ... ok
+test domain::tests::stage_event_from_parts_rejects_duplicate_at_top_level ... ok
+test domain::tests::stage_event_from_parts_rejects_duplicate_in_array_element ... ok
+test domain::tests::stage_event_from_parts_rejects_duplicate_nested_deep ... ok
+test domain::tests::stage_event_from_parts_rejects_non_object_payloads ... ok
+test domain::tests::stage_event_nested_payload_round_trip ... ok
+test error::restart_b_tests::new_error_categories_displays_and_sources_are_typed ... ok
+test console::web::tests::accept_failure_returns_serve_with_source ... ok
+test storage::store_seam_tests::reader_opens_migrated_store_and_delegates_reads ... ok
+test storage::store_seam_tests::corrupted_stored_payload_reads_as_corrupt ... ok
+test storage::store_seam_tests::schema_comparison_precedence_covers_all_shapes ... ok
+test storage::store_seam_tests::reader_refuses_missing_and_uninitialized_without_mutation ... ok
+test storage::store_seam_tests::queue_orders_cards_and_uses_latest_sequence_without_decoding_payload ... ok
+test console::web::tests::unsafe_method_root_returns_405_with_allow_and_empty_body ... ok
+test console::web::tests::unsafe_method_card_returns_405_with_allow_and_empty_body ... ok
+test storage::tests::identical_requests_fingerprint_equal ... ok
+test storage::tests::each_differing_field_changes_the_fingerprint ... ok
+test storage::store_seam_tests::reader_entry_membership_distinguishes_card_and_entry_absence ... ok
+test console::web::tests::unsafe_method_unknown_route_returns_405 ... ok
+test console::web::tests::unsafe_method_css_returns_405 ... ok
+test console::web::tests::foreign_host_precedes_unsafe_method ... ok
+test storage::store_seam_tests::reader_connection_is_read_only_and_sees_live_writer_append ... ok
+test console::web::tests::empty_host_returns_empty_421 ... ok
+test console::web::tests::queue_failure_has_no_queue_or_card ... ok
+test console::web::tests::host_rejection_precedes_unreadable_storage ... ok
+test storage::store_seam_tests::store_refuses_blank_required_fields ... ok
+test storage::store_seam_tests::store_refuses_appending_card_created ... ok
+test console::web::tests::stream_failure_has_queue_without_partial_card ... ok
+test console::web::tests::payload_absence_is_rendered_without_payload_element ... ok
+test console::web::tests::head_matches_get_status_and_type_without_body ... ok
+test storage::store_seam_tests::queue_rejects_corrupt_selected_columns ... ok
+test storage::store_seam_tests::reader_refuses_dirty_and_mismatched_bookkeeping ... ok
+
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+COMMAND_EXIT=0
