@@ -1,6 +1,0 @@
-Tested-file SHA-256 hashes, captured after the focused test:
-
-0d77e5fc0979f448ffebd4fd635294a2b4558f00414b08bec3f72b4f04d4f6ab  crates/daemar-card/src/console.rs
-0003bd894d9b0fbabf2d4ba95954f628606b3e435d6ad934d8a867278ab92378  crates/daemar-card/src/lib.rs
-4e35398d0f6a6c825dd9a1bf4986df61c34dac16f5746026b680a8c73857912e  crates/daemar-card/Cargo.toml
-7d90d06e37d6500a96ea897beba415d6529e1cca893319b0a934adfddf94ccf9  Cargo.lock

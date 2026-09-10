@@ -1,8 +1,0 @@
-hyper v1.11.1
-├── axum v0.8.9
-│   └── daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
-└── hyper-util v0.1.20
-    ├── axum v0.8.9 (*)
-    └── daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
-exit=0
-cwd=/Users/kendall/code/github/daemar

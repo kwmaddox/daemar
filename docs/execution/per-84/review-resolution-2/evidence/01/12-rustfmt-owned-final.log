@@ -1,3 +1,0 @@
-COMMAND: rustfmt --edition 2021 crates/daemar-card/tests/behavior/console/mod.rs 
-CWD: /Users/kendall/code/github/daemar
-COMMAND_EXIT=0

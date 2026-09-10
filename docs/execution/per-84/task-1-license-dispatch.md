@@ -1,8 +1,0 @@
-# PER-84 Task 1 license repair
-
-Fresh Luna executor. Task: implement the operator's narrow dependency-policy ruling at Card sequence 61. Card ID 01a0693e-bc16-7272-9ce9-a20f3b07f875; authoritative DB /Users/kendall/.daemar/daemar.db. Ruling: operator allows BSD-3-Clause specifically to unblock matchit 0.8.4 via axum 0.8.9; add it to deny.toml [licenses].allow with a dated comment naming that dependency. No other policy weakening or implementation change authorized. Task 1 itself is not accepted by this ruling.
-
-Read AGENTS.md, deny.toml, current crate manifest and relevant lock entries. Preserve dirty user/previous executor work. Only edit deny.toml using apply_patch. Do not edit code, tests, plan, dependencies or lockfile. Before edit, run cargo deny check licenses to capture real red; after edit rerun that command and just check. Use normal sandbox escalation for advisory-db/socket/network requirements; do not filter, waive or modify checks. Missing serve may still leave accepted intermediate S3 failures (57 prior scenarios green, 62 S3 absent-serve failures); report actual totals rather than assume them.
-
-Write docs/execution/per-84/task-1-license-handoff.md with exact diff, command outcomes and evidence. Capture full relevant output in task-1-license-* evidence files in that directory (apply_patch for document edits). No Card writes except if an unanswered record question requires the plan's append-and-stop escalation using /Users/kendall/code/github/daemar/target/debug/card and the explicit DB above. No review, no additional agents, no Task2. Report done or blocked. This is a clean-context bounded repair, not authority to repair other Task1 gaps.
-

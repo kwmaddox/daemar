@@ -1,3 +1,0 @@
-COMMAND: git diff --check 
-CWD: /Users/kendall/code/github/daemar
-COMMAND_EXIT=0

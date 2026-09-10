@@ -1,3 +1,0 @@
-COMMAND: ./node_modules/.bin/tsc --noEmit
-CWD: /Users/kendall/code/github/daemar/browser
-COMMAND_EXIT: 0

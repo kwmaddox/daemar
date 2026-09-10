@@ -1,4 +1,0 @@
-owned=crates/daemar-card/tests/behavior/console/mod.rs
-changed_outside_owned=0
-missing_baseline=0
-status_paths_equal_outside_evidence=yes
