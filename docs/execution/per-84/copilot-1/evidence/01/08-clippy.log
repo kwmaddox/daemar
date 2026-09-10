@@ -1,0 +1,13 @@
+    Checking daemar-card v0.1.0 (/Users/kendall/code/github/daemar/crates/daemar-card)
+error: indexing may panic
+    --> crates/daemar-card/src/storage.rs:1221:29
+     |
+1221 |         assert_eq!(healthy, initial[0].card.card_id);
+     |                             ^^^^^^^^^^
+     |
+     = help: consider using `.get(n)` or `.get_mut(n)` instead
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#indexing_slicing
+     = note: requested on the command line with `-D clippy::indexing-slicing`
+
+error: could not compile `daemar-card` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

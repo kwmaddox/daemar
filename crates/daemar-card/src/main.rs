@@ -5,7 +5,7 @@
 //! the library. Machine-facing contract (S1-B12): success is JSON on
 //! stdout with assigned IDs and sequences; failure is JSON on stderr with
 //! a category (`validation | conflict | missing | storage`) and a
-//! non-zero exit.
+//! non-zero exit. Unavailable failures report the `unavailable` category.
 
 use std::future::Future;
 use std::io::Write;

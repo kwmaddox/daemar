@@ -137,7 +137,7 @@ impl Reader {
         let context = StorageContext::Queue;
         let rows = sqlx::query(
             "SELECT c.card_id, c.title, c.task_key, c.workspace, c.created_at, e.recorded_at AS last_activity \
-             FROM cards c JOIN card_entries e ON e.card_id = c.card_id \
+             FROM cards c LEFT JOIN card_entries e ON e.card_id = c.card_id \
              AND e.sequence = (SELECT MAX(sequence) FROM card_entries WHERE card_id = c.card_id) \
              ORDER BY c.rowid",
         ).fetch_all(&self.pool).await.map_err(|source| Error::Storage { context, source })?;
@@ -151,7 +151,10 @@ impl Reader {
                         workspace: column(row, "workspace", context)?,
                         created_at: column(row, "created_at", context)?,
                     },
-                    last_activity: column(row, "last_activity", context)?,
+                    last_activity: row
+                        .try_get::<Option<time::OffsetDateTime>, _>("last_activity")
+                        .map_err(|source| Error::Storage { context, source })?
+                        .ok_or(Error::Corrupt { context })?,
                 })
             })
             .collect()
@@ -1191,6 +1194,34 @@ mod store_seam_tests {
             .expect("corrupt card timestamp");
         let card_reader = Reader::open_existing(&card_path).await.expect("reader");
         assert!(card_reader.queue().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn queue_rejects_card_without_entries() {
+        let (dir, store) = open_store().await;
+        let healthy = open_card(&store).await;
+        let entryless = open_card(&store).await;
+        let initial = store.reader.queue().await.expect("initial queue");
+        assert_eq!(initial.len(), 2);
+        sqlx::query("DELETE FROM card_entries WHERE card_id = ?1")
+            .bind(entryless.as_str())
+            .execute(&store.pool)
+            .await
+            .expect("delete entryless Card entries");
+        let reader = Reader::open_existing(&dir.path().join("daemar.db"))
+            .await
+            .expect("reader");
+        let error = reader.queue().await.expect_err("entryless Card is corrupt");
+        assert!(matches!(
+            error,
+            Error::Corrupt {
+                context: StorageContext::Queue
+            }
+        ));
+        assert_eq!(
+            healthy,
+            initial.first().expect("initial healthy Card").card.card_id
+        );
     }
 
     #[tokio::test]

@@ -563,6 +563,17 @@ mod web {
         use std::{error::Error as _, io, path::Path};
         use tower::ServiceExt;
 
+        // Router tests use a deterministic address but never bind it.
+        const ROUTER_FIXTURE_PORT: u16 = 7331;
+
+        fn fixture_host(port: u16) -> String {
+            format!("127.0.0.1:{port}")
+        }
+
+        fn foreign_fixture_host() -> String {
+            format!("evil.test:{ROUTER_FIXTURE_PORT}")
+        }
+
         struct Fixture {
             _dir: tempfile::TempDir,
             path: std::path::PathBuf,
@@ -654,7 +665,7 @@ mod web {
             uri: &str,
             host: Option<&str>,
         ) -> axum::response::Response {
-            let bound = LoopbackAddr::v4(Port::new(7331));
+            let bound = LoopbackAddr::v4(Port::new(ROUTER_FIXTURE_PORT));
             let mut request = Request::builder().method(method).uri(uri);
             if let Some(host) = host {
                 request = request.header(header::HOST, host);
@@ -692,7 +703,8 @@ mod web {
 
         #[tokio::test]
         async fn foreign_host_precedes_unsafe_method() {
-            let result = response(Method::POST, "/", Some("evil.test:7331")).await;
+            let foreign = foreign_fixture_host();
+            let result = response(Method::POST, "/", Some(&foreign)).await;
             assert_eq!(result.status(), StatusCode::MISDIRECTED_REQUEST);
             assert!(body(result).await.is_empty());
         }
@@ -716,7 +728,7 @@ mod web {
                 fixture.reader.clone(),
                 Method::GET,
                 "/",
-                Some("127.0.0.1:7331"),
+                Some(&fixture_host(ROUTER_FIXTURE_PORT)),
             )
             .await;
             assert_eq!(accepted.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -728,7 +740,12 @@ mod web {
 
         #[tokio::test]
         async fn unsafe_method_unknown_route_returns_405() {
-            let result = response(Method::POST, "/unknown", Some("127.0.0.1:7331")).await;
+            let result = response(
+                Method::POST,
+                "/unknown",
+                Some(&fixture_host(ROUTER_FIXTURE_PORT)),
+            )
+            .await;
             assert_eq!(result.status(), StatusCode::METHOD_NOT_ALLOWED);
             assert_eq!(result.headers()[header::ALLOW], "GET, HEAD");
             assert!(body(result).await.is_empty());
@@ -736,7 +753,12 @@ mod web {
 
         #[tokio::test]
         async fn unsafe_method_css_returns_405() {
-            let result = response(Method::PUT, "/static/console.css", Some("127.0.0.1:7331")).await;
+            let result = response(
+                Method::PUT,
+                "/static/console.css",
+                Some(&fixture_host(ROUTER_FIXTURE_PORT)),
+            )
+            .await;
             assert_eq!(result.status(), StatusCode::METHOD_NOT_ALLOWED);
             assert_eq!(result.headers()[header::ALLOW], "GET, HEAD");
             assert!(body(result).await.is_empty());
@@ -744,7 +766,8 @@ mod web {
 
         #[tokio::test]
         async fn unsafe_method_root_returns_405_with_allow_and_empty_body() {
-            let result = response(Method::POST, "/", Some("127.0.0.1:7331")).await;
+            let result =
+                response(Method::POST, "/", Some(&fixture_host(ROUTER_FIXTURE_PORT))).await;
             assert_eq!(result.status(), StatusCode::METHOD_NOT_ALLOWED);
             assert_eq!(result.headers()[header::ALLOW], "GET, HEAD");
             assert!(body(result).await.is_empty());
@@ -754,8 +777,13 @@ mod web {
         async fn unsafe_method_card_returns_405_with_allow_and_empty_body() {
             let fixture = fixture().await;
             let uri = format!("/cards/{}", fixture.card_id);
-            let result =
-                response_with(fixture.reader, Method::PUT, &uri, Some("127.0.0.1:7331")).await;
+            let result = response_with(
+                fixture.reader,
+                Method::PUT,
+                &uri,
+                Some(&fixture_host(ROUTER_FIXTURE_PORT)),
+            )
+            .await;
             assert_eq!(result.status(), StatusCode::METHOD_NOT_ALLOWED);
             assert_eq!(result.headers()[header::ALLOW], "GET, HEAD");
             assert!(body(result).await.is_empty());
@@ -799,6 +827,39 @@ mod web {
         }
 
         #[tokio::test]
+        async fn entryless_card_queue_failure_has_no_queue_or_card() {
+            let fixture = fixture().await;
+            let host = fixture_host(ROUTER_FIXTURE_PORT);
+            let mut connection = writable(&fixture.path).await;
+            sqlx::query("DELETE FROM card_entries")
+                .execute(&mut connection)
+                .await
+                .expect("remove Card entries");
+
+            let root = response_with(fixture.reader.clone(), Method::GET, "/", Some(&host)).await;
+            assert_eq!(root.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let card_uri = format!("/cards/{}", fixture.card_id);
+            let card = response_with(fixture.reader, Method::GET, &card_uri, Some(&host)).await;
+            assert_eq!(card.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let card_body = body(card).await;
+            assert!(card_body
+                .windows("storage failed".len())
+                .any(|w| w == b"storage failed"));
+            for marker in [
+                "data-role=\"queue\"",
+                "data-role=\"card-identity\"",
+                "data-role=\"stream\"",
+                "data-role=\"inspector\"",
+                "data-role=\"payload\"",
+                "HTTP fixture Card",
+            ] {
+                assert!(!card_body
+                    .windows(marker.len())
+                    .any(|w| w == marker.as_bytes()));
+            }
+        }
+
+        #[tokio::test]
         async fn queue_failure_has_no_queue_or_card() {
             let fixture = fixture().await;
             let mut connection = writable(&fixture.path).await;
@@ -806,8 +867,13 @@ mod web {
                 .execute(&mut connection)
                 .await
                 .expect("corrupt queue timestamp");
-            let result =
-                response_with(fixture.reader, Method::GET, "/", Some("127.0.0.1:7331")).await;
+            let result = response_with(
+                fixture.reader,
+                Method::GET,
+                "/",
+                Some(&fixture_host(ROUTER_FIXTURE_PORT)),
+            )
+            .await;
             assert_eq!(result.status(), StatusCode::INTERNAL_SERVER_ERROR);
             let body = body(result).await;
             assert!(body
@@ -844,7 +910,7 @@ mod web {
                     fixture.reader.clone(),
                     Method::GET,
                     &uri,
-                    Some("127.0.0.1:7331"),
+                    Some(&fixture_host(ROUTER_FIXTURE_PORT)),
                 )
                 .await;
                 let expected_status = get.status();
@@ -854,7 +920,7 @@ mod web {
                     fixture.reader.clone(),
                     Method::HEAD,
                     &uri,
-                    Some("127.0.0.1:7331"),
+                    Some(&fixture_host(ROUTER_FIXTURE_PORT)),
                 )
                 .await;
                 assert_eq!(head.status(), expected_status, "HEAD status for {uri}");
@@ -881,7 +947,7 @@ mod web {
                 fixture.reader.clone(),
                 Method::GET,
                 &absent_uri,
-                Some("127.0.0.1:7331"),
+                Some(&fixture_host(ROUTER_FIXTURE_PORT)),
             )
             .await;
             assert_eq!(absent.status(), StatusCode::OK);
@@ -907,7 +973,7 @@ mod web {
                 fixture.reader,
                 Method::GET,
                 &present_uri,
-                Some("127.0.0.1:7331"),
+                Some(&fixture_host(ROUTER_FIXTURE_PORT)),
             )
             .await;
             assert_eq!(present.status(), StatusCode::OK);
@@ -927,7 +993,7 @@ mod web {
                 fixture.reader.clone(),
                 Method::GET,
                 "/",
-                Some("127.0.0.1:7331"),
+                Some(&fixture_host(ROUTER_FIXTURE_PORT)),
             )
             .await;
             assert_eq!(control.status(), StatusCode::OK);
@@ -938,8 +1004,13 @@ mod web {
                 .await
                 .expect("corrupt stream payload");
             let uri = format!("/cards/{}", fixture.card_id);
-            let result =
-                response_with(fixture.reader, Method::GET, &uri, Some("127.0.0.1:7331")).await;
+            let result = response_with(
+                fixture.reader,
+                Method::GET,
+                &uri,
+                Some(&fixture_host(ROUTER_FIXTURE_PORT)),
+            )
+            .await;
             assert_eq!(result.status(), StatusCode::INTERNAL_SERVER_ERROR);
             let body = body(result).await;
             for marker in ["data-role=\"queue\"", "HTTP fixture Card", "storage failed"] {

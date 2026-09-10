@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// Every way the Card store can refuse or fail (S1-B8/B12).
 ///
-/// `category()` is the stable four-way taxonomy agents branch on; the
+/// `category()` is the stable five-way taxonomy agents branch on; the
 /// variants carry the typed detail.
 #[derive(Debug)]
 pub enum Error {
@@ -147,7 +147,7 @@ pub enum StorageContext {
     ReadEntry,
 }
 
-/// The four-way failure taxonomy of the machine-facing contract (S1-B12).
+/// The five-way failure taxonomy of the machine-facing contract (S1-B12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCategory {
     /// The request was rejected before touching the record.

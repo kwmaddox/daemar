@@ -1,0 +1,86 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/daemar_card-87c6881c75cf7cb6)
+
+running 24 tests
+test console::tests::loopback_address_formats_both_families ... ok
+test console::tests::config_source_has_contract_spellings ... ok
+test console::tests::publish_startup_error_category_and_display ... ok
+test console::tests::occupied_port_returns_bind_error_without_retry ... FAILED
+test console::tests::listener_zero_reports_bound_port ... FAILED
+test console::tests::publish_handles_partial_writes ... FAILED
+test console::tests::publish_writes_one_line_and_flushes ... FAILED
+test console::tests::publish_write_failure_preserves_source ... FAILED
+test console::web::tests::render_failure_returns_fixed_plain_text_500 ... ok
+test console::tests::publish_flush_failure_preserves_source ... FAILED
+test console::tests::startup_uses_bound_listener ... FAILED
+test console::web::tests::host_rejection_precedes_unreadable_storage ... ok
+test console::web::tests::accept_failure_returns_serve_with_source ... FAILED
+test console::web::tests::empty_host_returns_empty_421 ... ok
+test console::web::tests::unsafe_method_root_returns_405_with_allow_and_empty_body ... ok
+test console::web::tests::foreign_host_precedes_unsafe_method ... ok
+test console::web::tests::unsafe_method_unknown_route_returns_405 ... ok
+test console::web::tests::queue_failure_has_no_queue_or_card ... ok
+test console::web::tests::unsafe_method_css_returns_405 ... ok
+test console::web::tests::unsafe_method_card_returns_405_with_allow_and_empty_body ... ok
+test console::web::tests::entryless_card_queue_failure_has_no_queue_or_card ... ok
+test console::web::tests::stream_failure_has_queue_without_partial_card ... ok
+test console::web::tests::head_matches_get_status_and_type_without_body ... ok
+test console::web::tests::payload_absence_is_rendered_without_payload_element ... ok
+
+failures:
+
+---- console::tests::occupied_port_returns_bind_error_without_retry stdout ----
+
+thread 'console::tests::occupied_port_returns_bind_error_without_retry' (39139658) panicked at crates/daemar-card/src/console.rs:1074:14:
+the first loopback listener should bind: Bind { addr: LoopbackAddr { ip: V4, port: Port(0) }, source: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- console::tests::listener_zero_reports_bound_port stdout ----
+
+thread 'console::tests::listener_zero_reports_bound_port' (39139656) panicked at crates/daemar-card/src/console.rs:1065:14:
+an ephemeral loopback listener should bind: Bind { addr: LoopbackAddr { ip: V4, port: Port(0) }, source: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" } }
+
+---- console::tests::publish_handles_partial_writes stdout ----
+
+thread 'console::tests::publish_handles_partial_writes' (39139660) panicked at crates/daemar-card/src/console.rs:1179:14:
+the loopback listener should bind: Bind { addr: LoopbackAddr { ip: V4, port: Port(0) }, source: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" } }
+
+---- console::tests::publish_writes_one_line_and_flushes stdout ----
+
+thread 'console::tests::publish_writes_one_line_and_flushes' (39139663) panicked at crates/daemar-card/src/console.rs:1179:14:
+the loopback listener should bind: Bind { addr: LoopbackAddr { ip: V4, port: Port(0) }, source: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" } }
+
+---- console::tests::publish_write_failure_preserves_source stdout ----
+
+thread 'console::tests::publish_write_failure_preserves_source' (39139662) panicked at crates/daemar-card/src/console.rs:1179:14:
+the loopback listener should bind: Bind { addr: LoopbackAddr { ip: V4, port: Port(0) }, source: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" } }
+
+---- console::tests::publish_flush_failure_preserves_source stdout ----
+
+thread 'console::tests::publish_flush_failure_preserves_source' (39139659) panicked at crates/daemar-card/src/console.rs:1179:14:
+the loopback listener should bind: Bind { addr: LoopbackAddr { ip: V4, port: Port(0) }, source: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" } }
+
+---- console::tests::startup_uses_bound_listener stdout ----
+
+thread 'console::tests::startup_uses_bound_listener' (39139664) panicked at crates/daemar-card/src/console.rs:1088:14:
+the loopback listener should bind: Bind { addr: LoopbackAddr { ip: V4, port: Port(0) }, source: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" } }
+
+---- console::web::tests::accept_failure_returns_serve_with_source stdout ----
+
+thread 'console::web::tests::accept_failure_returns_serve_with_source' (39139665) panicked at crates/daemar-card/src/console.rs:797:18:
+listener: Bind { addr: LoopbackAddr { ip: V4, port: Port(0) }, source: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" } }
+
+
+failures:
+    console::tests::listener_zero_reports_bound_port
+    console::tests::occupied_port_returns_bind_error_without_retry
+    console::tests::publish_flush_failure_preserves_source
+    console::tests::publish_handles_partial_writes
+    console::tests::publish_write_failure_preserves_source
+    console::tests::publish_writes_one_line_and_flushes
+    console::tests::startup_uses_bound_listener
+    console::web::tests::accept_failure_returns_serve_with_source
+
+test result: FAILED. 16 passed; 8 failed; 0 ignored; 0 measured; 42 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p daemar-card --lib`
