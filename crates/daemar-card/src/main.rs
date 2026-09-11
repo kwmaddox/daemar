@@ -72,6 +72,9 @@ enum Failure {
         path: PathBuf,
         source: dotenvy::Error,
     },
+    Output {
+        source: std::io::Error,
+    },
 }
 
 impl Failure {
@@ -93,6 +96,10 @@ impl Failure {
                     "cannot load the factory dotenv {}: {source}",
                     path.display()
                 ),
+            ),
+            Failure::Output { source } => (
+                "storage".to_owned(),
+                format!("cannot write command output: {source}"),
             ),
         };
         json!({ "error": { "category": category, "message": message } })
@@ -117,7 +124,11 @@ async fn main() -> ExitCode {
     match run(matches).await {
         Ok(control) => match write_success(&mut std::io::stdout().lock(), control) {
             Ok(()) => ExitCode::SUCCESS,
-            Err(_) => ExitCode::FAILURE,
+            Err(source) => {
+                let failure = Failure::Output { source };
+                eprintln!("{}", failure.to_json());
+                ExitCode::FAILURE
+            }
         },
         Err(failure) => {
             eprintln!("{}", failure.to_json());

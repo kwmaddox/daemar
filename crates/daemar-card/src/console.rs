@@ -412,11 +412,13 @@ mod web {
             .get(header::HOST)
             .and_then(|h| h.to_str().ok());
         if host.is_none()
-            || !(accepted.iter().any(|v| Some(v.as_str()) == host)
+            || !(accepted
+                .iter()
+                .any(|v| host.is_some_and(|host| v.eq_ignore_ascii_case(host)))
                 || (bound.port().get() == 80
                     && ["127.0.0.1", "localhost", "[::1]"]
                         .iter()
-                        .any(|v| Some(*v) == host)))
+                        .any(|v| host.is_some_and(|host| v.eq_ignore_ascii_case(host)))))
         {
             return Response::builder()
                 .status(StatusCode::MISDIRECTED_REQUEST)
@@ -743,7 +745,7 @@ mod web {
         #[tokio::test]
         async fn bare_loopback_hosts_are_default_port_only() {
             let fixture = fixture().await;
-            let bare_hosts = ["127.0.0.1", "localhost", "[::1]"];
+            let bare_hosts = ["127.0.0.1", "localhost", "LOCALHOST", "[::1]"];
             for host in bare_hosts {
                 let accepted = response_with_bound(
                     fixture.reader.clone(),
@@ -770,7 +772,7 @@ mod web {
         #[tokio::test]
         async fn explicit_loopback_authorities_and_controls() {
             let fixture = fixture().await;
-            for host in ["127.0.0.1:80", "localhost:80", "[::1]:80"] {
+            for host in ["127.0.0.1:80", "localhost:80", "LoCaLhOsT:80", "[::1]:80"] {
                 let accepted = response_with_bound(
                     fixture.reader.clone(),
                     LoopbackAddr::v4(Port::new(80)),
@@ -779,7 +781,12 @@ mod web {
                 .await;
                 assert_eq!(accepted.status(), StatusCode::OK, "{host}");
             }
-            for host in ["evil.test", "127.0.0.1:81"] {
+            for host in [
+                "evil.test",
+                "127.0.0.1:81",
+                "LOCALHOST:81",
+                "LOCALHOST.evil.test:80",
+            ] {
                 let rejected = response_with_bound(
                     fixture.reader.clone(),
                     LoopbackAddr::v4(Port::new(80)),
