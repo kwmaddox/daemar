@@ -173,7 +173,7 @@ impl Startup {
     #[must_use]
     /// Returns the startup object for JSON serialization.
     pub fn to_json(&self) -> serde_json::Value {
-        json!({ "url": self.url(), "db_path": self.db_path, "source": self.source.to_string() })
+        json!({ "url": self.url(), "db_path": DisplayValue(self.db_path.display()), "source": self.source.to_string() })
     }
 }
 
@@ -411,7 +411,13 @@ mod web {
             .headers()
             .get(header::HOST)
             .and_then(|h| h.to_str().ok());
-        if host.is_none() || !accepted.iter().any(|v| Some(v.as_str()) == host) {
+        if host.is_none()
+            || !(accepted.iter().any(|v| Some(v.as_str()) == host)
+                || (bound.port().get() == 80
+                    && ["127.0.0.1", "localhost", "[::1]"]
+                        .iter()
+                        .any(|v| Some(*v) == host)))
+        {
             return Response::builder()
                 .status(StatusCode::MISDIRECTED_REQUEST)
                 .body(Body::empty())
@@ -676,6 +682,24 @@ mod web {
                 .expect("response")
         }
 
+        async fn response_with_bound(
+            reader: Arc<Reader>,
+            bound: LoopbackAddr,
+            host: &str,
+        ) -> axum::response::Response {
+            router(reader, bound)
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri("/")
+                        .header(header::HOST, host)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response")
+        }
+
         async fn response(
             method: Method,
             uri: &str,
@@ -714,6 +738,56 @@ mod web {
             let result = response(Method::GET, "/", None).await;
             assert_eq!(result.status(), StatusCode::MISDIRECTED_REQUEST);
             assert!(body(result).await.is_empty());
+        }
+
+        #[tokio::test]
+        async fn bare_loopback_hosts_are_default_port_only() {
+            let fixture = fixture().await;
+            let bare_hosts = ["127.0.0.1", "localhost", "[::1]"];
+            for host in bare_hosts {
+                let accepted = response_with_bound(
+                    fixture.reader.clone(),
+                    LoopbackAddr::v4(Port::new(80)),
+                    host,
+                )
+                .await;
+                assert_eq!(accepted.status(), StatusCode::OK, "{host} at port 80");
+
+                let rejected = response_with_bound(
+                    fixture.reader.clone(),
+                    LoopbackAddr::v4(Port::new(ROUTER_FIXTURE_PORT)),
+                    host,
+                )
+                .await;
+                assert_eq!(
+                    rejected.status(),
+                    StatusCode::MISDIRECTED_REQUEST,
+                    "{host} at non-default port"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn explicit_loopback_authorities_and_controls() {
+            let fixture = fixture().await;
+            for host in ["127.0.0.1:80", "localhost:80", "[::1]:80"] {
+                let accepted = response_with_bound(
+                    fixture.reader.clone(),
+                    LoopbackAddr::v4(Port::new(80)),
+                    host,
+                )
+                .await;
+                assert_eq!(accepted.status(), StatusCode::OK, "{host}");
+            }
+            for host in ["evil.test", "127.0.0.1:81"] {
+                let rejected = response_with_bound(
+                    fixture.reader.clone(),
+                    LoopbackAddr::v4(Port::new(80)),
+                    host,
+                )
+                .await;
+                assert_eq!(rejected.status(), StatusCode::MISDIRECTED_REQUEST, "{host}");
+            }
         }
 
         #[tokio::test]
@@ -1046,7 +1120,10 @@ pub async fn serve(listener: Listener, reader: crate::Reader) -> Result<(), Erro
 #[cfg(test)]
 mod tests {
     use std::error::Error as _;
+    use std::ffi::OsString;
     use std::io::{self, Write};
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
     use std::path::PathBuf;
 
     use serde_json::json;
@@ -1105,6 +1182,24 @@ mod tests {
                 "source": "env",
             })
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_json_displays_non_utf8_path_and_matches_publication() {
+        let listener = Listener::bind(LoopbackAddr::v4(Port::EPHEMERAL))
+            .await
+            .expect("the loopback listener should bind");
+        let path = PathBuf::from(OsString::from_vec(b"cards-\xff.db".to_vec()));
+        let startup = Startup::from_listener(&listener, path, ConfigSource::Default);
+
+        let json = startup.to_json();
+        assert_eq!(json.get("db_path"), Some(&serde_json::json!("cards-�.db")));
+
+        let mut output = Vec::new();
+        publish_startup(&mut output, &startup).expect("startup publication should succeed");
+        let published: serde_json::Value = serde_json::from_slice(&output).expect("JSON line");
+        assert_eq!(published, json);
     }
 
     #[test]
