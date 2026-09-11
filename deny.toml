@@ -12,6 +12,8 @@ allow = [
     "Apache-2.0",
     "MIT",
     "Unicode-3.0",
+    # 2026-09-08: matchit 0.8.4 (via axum 0.8.9) — BSD-3-Clause dependency license.
+    "BSD-3-Clause",
     # 2026-08-28: foldhash (via hashbrown ← sqlx) — permissive, OSI-approved.
     "Zlib",
 ]

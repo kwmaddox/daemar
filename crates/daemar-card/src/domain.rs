@@ -27,6 +27,50 @@ impl CardId {
     }
 }
 
+#[cfg(test)]
+mod restart_b_tests {
+    use super::{MigrationVersion, SchemaIncompatibility};
+
+    #[test]
+    fn migration_version_and_schema_reason_displays_are_stable() {
+        let version = MigrationVersion::new(7);
+        assert_eq!(version.get(), 7);
+        assert_eq!(version.to_string(), "7");
+        assert_eq!(
+            SchemaIncompatibility::Behind {
+                applied: 1,
+                required: 3,
+                next_required: version,
+            }
+            .to_string(),
+            "database is behind (1 of 3 applied; next required migration 7)"
+        );
+        assert_eq!(
+            SchemaIncompatibility::Ahead {
+                unknown_version: version,
+            }
+            .to_string(),
+            "database is ahead (unknown migration 7)"
+        );
+        assert_eq!(
+            SchemaIncompatibility::Diverged {
+                expected: MigrationVersion::new(2),
+                found: version,
+            }
+            .to_string(),
+            "database migration history diverged (expected 2, found 7)"
+        );
+        assert_eq!(
+            SchemaIncompatibility::ChecksumMismatch { version }.to_string(),
+            "database migration 7 has a checksum mismatch"
+        );
+        assert_eq!(
+            SchemaIncompatibility::Dirty { version }.to_string(),
+            "database migration 7 is dirty"
+        );
+    }
+}
+
 impl From<String> for CardId {
     fn from(value: String) -> CardId {
         CardId(value)
@@ -674,6 +718,86 @@ pub struct CardSummary {
     pub workspace: Option<String>,
     /// Server-assigned creation time.
     pub created_at: time::OffsetDateTime,
+}
+
+/// A Card and its most recent activity for queue display.
+#[derive(Debug, Clone)]
+pub struct QueueCard {
+    /// The Card summary.
+    pub card: CardSummary,
+    /// Timestamp of the highest-sequence entry.
+    pub last_activity: time::OffsetDateTime,
+}
+
+/// A migration version recorded in the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MigrationVersion(i64);
+impl MigrationVersion {
+    /// Creates a migration version.
+    #[must_use]
+    pub const fn new(version: i64) -> Self {
+        Self(version)
+    }
+    /// Returns the numeric version.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+impl std::fmt::Display for MigrationVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Why a database migration history cannot be used by this build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaIncompatibility {
+    /// No migration history exists.
+    Uninitialized,
+    /// The database has fewer required migrations.
+    Behind {
+        /// Number of migrations applied.
+        applied: usize,
+        /// Number of migrations required.
+        required: usize,
+        /// First migration not applied.
+        next_required: MigrationVersion,
+    },
+    /// The database has an unknown migration.
+    Ahead {
+        /// First surplus migration.
+        unknown_version: MigrationVersion,
+    },
+    /// Versions differ at the same position.
+    Diverged {
+        /// Expected version.
+        expected: MigrationVersion,
+        /// Recorded version.
+        found: MigrationVersion,
+    },
+    /// A migration checksum differs.
+    ChecksumMismatch {
+        /// Version with the mismatch.
+        version: MigrationVersion,
+    },
+    /// A migration was not completed.
+    Dirty {
+        /// Version marked incomplete.
+        version: MigrationVersion,
+    },
+}
+impl std::fmt::Display for SchemaIncompatibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+        Self::Uninitialized => f.write_str("uninitialized"),
+        Self::Behind { applied, required, next_required } => write!(f, "database is behind ({applied} of {required} applied; next required migration {next_required})"),
+        Self::Ahead { unknown_version } => write!(f, "database is ahead (unknown migration {unknown_version})"),
+        Self::Diverged { expected, found } => write!(f, "database migration history diverged (expected {expected}, found {found})"),
+        Self::ChecksumMismatch { version } => write!(f, "database migration {version} has a checksum mismatch"),
+        Self::Dirty { version } => write!(f, "database migration {version} is dirty"),
+    }
+    }
 }
 
 /// A request to open a Card for a real task (S1-B1…B4).

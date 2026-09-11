@@ -7,13 +7,15 @@
 //! later frontends such as an MCP server) are thin clients over it.
 //! Behavior is specified executably in `tests/features/` (S1-B1…S1-B14).
 
+pub mod console;
 mod domain;
 mod error;
 mod storage;
 
 pub use domain::{
     Accepted, AppendEntry, CardCreatedV1, CardId, CardSummary, CreateCard, DecisionV1, Entry,
-    EntryId, EntryType, Payload, Producer, ProducerKind, CURRENT_SCHEMA_VERSION,
+    EntryId, EntryType, MigrationVersion, Payload, Producer, ProducerKind, QueueCard,
+    SchemaIncompatibility, CURRENT_SCHEMA_VERSION,
 };
 pub use error::{Error, ErrorCategory, StorageContext};
-pub use storage::Store;
+pub use storage::{Reader, Store};

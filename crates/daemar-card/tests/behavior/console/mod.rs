@@ -1,0 +1,2813 @@
+//! S3 step definitions for PER-84 (S3-B1…S3-B9): the operator reads Cards
+//! on a local Queue First console. Every scenario spawns `card serve
+//! --port 0` against its scenario-local database and drives it over raw
+//! HTTP; assertions read a parsed DOM ([`dom`]) and compare each rendered
+//! value to the durable entry it claims to render, keyed by entry ID and
+//! sequence — never by count (PER-83 oracle rules).
+//!
+//! Surface choices encoded here are provisional until the typed skeleton
+//! is approved: the `serve` flags, the startup-line members, the route
+//! shapes, the `unavailable` error category, and the markup contract in
+//! [`dom::role`] / [`dom::field`]. Each lives in one place.
+
+mod dom;
+mod http;
+
+use std::collections::HashMap;
+use std::io::ErrorKind;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
+use std::time::Duration;
+
+use cucumber::gherkin::Step;
+use cucumber::{given, then, when};
+use serde_json::Value;
+use sqlx::migrate::Migrate as _;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
+use sqlx::{ConnectOptions as _, Connection as _};
+use tempfile::TempDir;
+use url::Url;
+
+use crate::{run_card_command, CardWorld, TempDb};
+use dom::{field, role, Document, El};
+use http::{Console, Request, Response, Started};
+
+/// The embedded migration set, for fixtures that must stop short of it
+/// and for reading what a database has applied.
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+/// sqlx's default bookkeeping table.
+const MIGRATIONS_TABLE: &str = "_sqlx_migrations";
+
+/// Provisional route shapes (S3-B5/B6): the Card in the path, the entry
+/// as a query member.
+fn card_route(card: &str) -> String {
+    format!("/cards/{card}")
+}
+
+fn entry_route(card: &str, entry: &str) -> String {
+    format!("/cards/{card}?entry={entry}")
+}
+
+/// Provisional: the one stylesheet the console references (S3-B8).
+const STYLESHEET_ROUTE: &str = "/static/console.css";
+
+/// The unsafe methods S3-B8 sends to every route.
+const UNSAFE_METHODS: [&str; 4] = ["POST", "PUT", "DELETE", "PATCH"];
+
+/// Which database path a Gherkin phrase refers to (S3-B3).
+#[derive(Debug, Clone, Copy)]
+enum DbPathRef {
+    Scenario,
+    Environment,
+    Flag,
+    Dotenv,
+    IsolatedDefault,
+}
+
+impl DbPathRef {
+    fn parse(phrase: &str) -> Self {
+        match phrase {
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin phrase is a parse boundary, converts once
+            "the scenario database path" => Self::Scenario,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin phrase is a parse boundary, converts once
+            "the environment database path" => Self::Environment,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin phrase is a parse boundary, converts once
+            "the flag database path" => Self::Flag,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin phrase is a parse boundary, converts once
+            "the dotenv database path" => Self::Dotenv,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin phrase is a parse boundary, converts once
+            "that default database path" => Self::IsolatedDefault,
+            other => panic!("unrecognised database path phrase {other:?}"),
+        }
+    }
+}
+
+/// The producer-controlled field the S3-B7 outline plants the marker in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostileField {
+    Title,
+    TaskKey,
+    Workspace,
+    ProducerId,
+    DecisionSummary,
+    DecisionReason,
+    Stage,
+    StageSummary,
+    PayloadTop,
+    PayloadNested,
+    PayloadMember,
+}
+
+impl HostileField {
+    fn parse(phrase: &str) -> Self {
+        match phrase {
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "title" => Self::Title,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "task key" => Self::TaskKey,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "workspace" => Self::Workspace,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "producer identity" => Self::ProducerId,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "decision summary" => Self::DecisionSummary,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "decision reason" => Self::DecisionReason,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "stage" => Self::Stage,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "stage-event summary" => Self::StageSummary,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "payload string at the top level" => Self::PayloadTop,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "payload string nested three levels deep" => Self::PayloadNested,
+            // ast-grep-ignore: no-string-literal-dispatch -- Gherkin example text is a parse boundary, converts once
+            "payload member name" => Self::PayloadMember,
+            other => panic!("no fixture for hostile field {other:?}"),
+        }
+    }
+}
+
+/// One row of sqlx's migration bookkeeping, as the proofs compare it.
+#[derive(Debug, PartialEq, Eq)]
+struct AppliedMigration {
+    version: i64,
+    checksum: Vec<u8>,
+}
+
+/// Bytes, mode, and applied migrations of the main database file.
+#[derive(Debug, PartialEq, Eq)]
+struct FileSnapshot {
+    bytes: Vec<u8>,
+    mode: Option<u32>,
+    migrations: Vec<AppliedMigration>,
+}
+
+/// Raw `card history` output per Card plus raw `card list` output.
+#[derive(Debug, PartialEq, Eq)]
+struct RecordSnapshot {
+    histories: Vec<(String, Vec<u8>)>,
+    list: Vec<u8>,
+}
+
+/// A durable entry the scenario named for later lookup.
+#[derive(Debug, Clone)]
+struct NamedEntry {
+    card: String,
+    // ast-grep-ignore: no-stringly-typed-field -- the CLI wire string, replayed verbatim into routes
+    entry_id: String,
+    sequence: u64,
+    recorded_at: String,
+    payload: Value,
+}
+
+/// Everything the console scenarios carry between steps.
+#[derive(Debug, Default)]
+pub(crate) struct ConsoleState {
+    start: Option<Started>,
+    /// The database path the started console is expected to report.
+    expected_db: Option<String>,
+    last: Option<Response>,
+    /// Every response of the current `When`, for page-scanning steps.
+    responses: Vec<Response>,
+    /// Responses to unsafe methods (S3-B8 never-writes scenario).
+    method_responses: Vec<Response>,
+    titles: HashMap<String, String>,
+    named: HashMap<String, NamedEntry>,
+    new_entry: Option<NamedEntry>,
+    /// The (Card, sequence) whose inspector the last navigation opened.
+    inspected: Option<(String, u64)>,
+    hostile: Option<String>,
+    hostile_field: Option<HostileField>,
+    /// The entry carrying the hostile field, when it is an entry field.
+    hostile_entry: Option<NamedEntry>,
+    /// Listeners holding one numeric port on every loopback family the
+    /// host supports, so the S3-B1 failure is a real bind failure whichever
+    /// family the implementation chooses.
+    bound: Vec<TcpListener>,
+    file_snapshot: Option<FileSnapshot>,
+    record_snapshot: Option<RecordSnapshot>,
+    migrations_before: Option<Vec<AppliedMigration>>,
+    stylesheet: Option<String>,
+    /// Home and cwd for the isolated-default scenario.
+    iso: Option<(TempDir, TempDir)>,
+}
+
+// --- World helpers -----------------------------------------------------------
+
+impl CardWorld {
+    /// The console's origin as a browser would see it, the base every
+    /// reference in a page resolves against.
+    fn origin(&self) -> Url {
+        let authority = self.console().authority();
+        Url::parse(&format!("http://{authority}/"))
+            .unwrap_or_else(|error| panic!("console authority {authority}: {error}"))
+    }
+
+    fn console(&self) -> &Console {
+        self.console
+            .start
+            .as_ref()
+            .expect("the console was started")
+            .running()
+    }
+
+    fn last_response(&self) -> &Response {
+        self.console.last.as_ref().expect("a response was received")
+    }
+
+    fn last_doc(&self) -> Document {
+        Document::parse(&self.last_response().body)
+    }
+
+    fn card_titled(&self, title: &str) -> String {
+        self.console
+            .titles
+            .get(title)
+            .unwrap_or_else(|| panic!("no Card titled {title:?} in this scenario"))
+            .clone()
+    }
+
+    fn record(&mut self, response: Response) {
+        self.console.responses.push(response.clone());
+        self.console.last = Some(response);
+    }
+
+    fn get(&mut self, target: &str) -> Response {
+        let response = self.console().get(target);
+        self.record(response.clone());
+        response
+    }
+
+    fn create_titled(&mut self, title: &str, extra: &[&str]) -> String {
+        let mut args = vec!["--title", title];
+        args.extend_from_slice(extra);
+        let run = self.create_card(&args);
+        let id = run.card_id();
+        self.cards.push(id.clone());
+        self.console.titles.insert(title.to_owned(), id.clone());
+        id
+    }
+
+    fn decision_on(
+        &mut self,
+        card: &str,
+        producer: &str,
+        kind: &str,
+        summary: &str,
+        reason: &str,
+    ) -> NamedEntry {
+        let run = self.append_decision(card, producer, kind, summary, reason, &[]);
+        let sequence = run.success_json()["sequence"].as_u64().expect("sequence");
+        self.named_entry(card, sequence)
+    }
+
+    fn stage_event_on(
+        &mut self,
+        card: &str,
+        producer: &str,
+        kind: &str,
+        stage: &str,
+        summary: &str,
+        payload: Option<&str>,
+    ) -> NamedEntry {
+        let mut args = vec![
+            "append",
+            card,
+            "--entry-type",
+            "stage-event",
+            "--stage",
+            stage,
+            "--summary",
+            summary,
+            "--producer",
+            producer,
+            "--producer-kind",
+            kind,
+        ];
+        if let Some(payload) = payload {
+            args.push("--payload");
+            args.push(payload);
+        }
+        let run = self.run(&args);
+        let sequence = run.success_json()["sequence"].as_u64().expect("sequence");
+        self.named_entry(card, sequence)
+    }
+
+    /// The durable entry at `sequence`, read back through `card history`.
+    fn named_entry(&mut self, card: &str, sequence: u64) -> NamedEntry {
+        let entry = self.entry_at(card, sequence);
+        NamedEntry {
+            card: card.to_owned(),
+            entry_id: entry["entry_id"].as_str().expect("entry_id").to_owned(),
+            sequence,
+            recorded_at: entry["recorded_at"]
+                .as_str()
+                .expect("recorded_at")
+                .to_owned(),
+            payload: entry["payload"].clone(),
+        }
+    }
+
+    fn entry_at(&mut self, card: &str, sequence: u64) -> Value {
+        self.history(card)
+            .into_iter()
+            .find(|entry| entry["sequence"].as_u64() == Some(sequence))
+            .unwrap_or_else(|| panic!("no entry at sequence {sequence} on Card {card}"))
+    }
+
+    fn primary_entry_id(&mut self, sequence: u64) -> String {
+        let card = self.primary_card();
+        self.named_entry(&card, sequence).entry_id
+    }
+
+    /// Starts the console against the scenario database via `DAEMAR_DB`.
+    fn start_with_env(&mut self, args: &[&str]) {
+        let db = self.db_path();
+        let mut full = vec!["serve"];
+        full.extend_from_slice(args);
+        let started = http::start_console(|command| {
+            command.env("DAEMAR_DB", &db).args(&full);
+        });
+        self.console.expected_db = Some(db);
+        self.console.start = Some(started);
+    }
+
+    fn snapshot_record(&mut self) -> RecordSnapshot {
+        let cards = self.cards.clone();
+        let histories = cards
+            .into_iter()
+            .map(|card| {
+                let run = self.run(&["history", &card]);
+                run.success_json();
+                (card, run.output.stdout.clone())
+            })
+            .collect();
+        let list = self.run(&["list"]);
+        list.success_json();
+        RecordSnapshot {
+            histories,
+            list: list.output.stdout,
+        }
+    }
+
+    fn all_card_ids(&mut self) -> Vec<String> {
+        self.list_cards()
+            .iter()
+            .map(|card| card["card_id"].as_str().expect("card_id").to_owned())
+            .collect()
+    }
+
+    /// The card page, every entry inspector, and the queue, for every Card.
+    fn full_read_walk(&mut self) {
+        self.get("/");
+        for card in self.all_card_ids() {
+            self.get(&card_route(&card));
+            for entry in self.history(&card) {
+                let id = entry["entry_id"].as_str().expect("entry_id").to_owned();
+                self.get(&entry_route(&card, &id));
+            }
+        }
+    }
+
+    fn all_routes(&mut self) -> Vec<String> {
+        let mut routes = vec!["/".to_owned(), STYLESHEET_ROUTE.to_owned()];
+        for card in self.all_card_ids() {
+            routes.push(card_route(&card));
+            for entry in self.history(&card) {
+                let id = entry["entry_id"].as_str().expect("entry_id");
+                routes.push(entry_route(&card, id));
+            }
+        }
+        routes
+    }
+}
+
+// --- Fixture helpers --------------------------------------------------------
+
+async fn connect_writable(path: &str) -> SqliteConnection {
+    SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .connect()
+        .await
+        .unwrap_or_else(|error| panic!("open {path} for the fixture: {error}"))
+}
+
+async fn applied_migrations(path: &str) -> Vec<AppliedMigration> {
+    let mut conn = connect_writable(path).await;
+    let has_table: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?")
+            .bind(MIGRATIONS_TABLE)
+            .fetch_one(&mut conn)
+            .await
+            .expect("query sqlite_master");
+    if has_table == 0 {
+        return Vec::new();
+    }
+    conn.list_applied_migrations(MIGRATIONS_TABLE)
+        .await
+        .expect("list applied migrations")
+        .into_iter()
+        .map(|applied| AppliedMigration {
+            version: applied.version,
+            checksum: applied.checksum.into_owned(),
+        })
+        .collect()
+}
+
+async fn table_names(path: &str) -> Vec<String> {
+    let mut conn = connect_writable(path).await;
+    sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .fetch_all(&mut conn)
+        .await
+        .expect("query sqlite_master")
+}
+
+#[cfg(unix)]
+fn file_mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| meta.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn file_mode(_path: &Path) -> Option<u32> {
+    None
+}
+
+async fn snapshot_file(path: &str) -> FileSnapshot {
+    FileSnapshot {
+        bytes: std::fs::read(path).unwrap_or_else(|error| panic!("read {path}: {error}")),
+        mode: file_mode(Path::new(path)),
+        migrations: applied_migrations(path).await,
+    }
+}
+
+/// A factory home whose dotenv selects `db`.
+fn factory_home_with_dotenv(db: &str) -> TempDir {
+    let home = TempDir::new().expect("temp home");
+    let factory = home.path().join(".daemar");
+    std::fs::create_dir_all(&factory).expect("factory home");
+    std::fs::write(factory.join(".env"), format!("DAEMAR_DB={db}\n")).expect("write dotenv");
+    home
+}
+
+fn unknown_card_id() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
+/// Every stream row, keyed by the entry ID it declares.
+fn stream_rows(doc: &Document) -> Vec<El> {
+    doc.by_role(role::STREAM_ROW)
+}
+
+fn row_at(doc: &Document, sequence: u64) -> El {
+    stream_rows(doc)
+        .into_iter()
+        .find(|row| row.attr(dom::SEQUENCE_ATTR) == Some(sequence.to_string()))
+        .unwrap_or_else(|| panic!("no stream row at sequence {sequence}"))
+}
+
+fn queue_rows(doc: &Document) -> Vec<El> {
+    doc.by_role(role::QUEUE_ROW)
+}
+
+fn queue_row_for(doc: &Document, card: &str) -> El {
+    queue_rows(doc)
+        .into_iter()
+        .find(|row| row.attr(dom::CARD_ID_ATTR).as_deref() == Some(card))
+        .unwrap_or_else(|| panic!("no queue row for Card {card}"))
+}
+
+fn queue_card_ids(doc: &Document) -> Vec<String> {
+    queue_rows(doc)
+        .iter()
+        .map(|row| {
+            row.attr(dom::CARD_ID_ATTR)
+                .expect("queue row declares its Card ID")
+        })
+        .collect()
+}
+
+fn assert_no_content(doc: &Document, what: &str) {
+    for landmark in [
+        role::QUEUE,
+        role::QUEUE_ROW,
+        role::CARD_IDENTITY,
+        role::STREAM,
+        role::STREAM_ROW,
+        role::INSPECTOR,
+    ] {
+        assert!(
+            !doc.has_role(landmark),
+            "{what} must render no data-role={landmark}"
+        );
+    }
+}
+
+/// Asserts the stream renders exactly the durable entries, keyed by
+/// entry ID and sequence, in sequence order `from` through `through`.
+fn assert_stream_matches(doc: &Document, history: &[Value], from: u64, through: u64) {
+    let expected: Vec<(u64, String)> = history
+        .iter()
+        .map(|entry| {
+            (
+                entry["sequence"].as_u64().expect("sequence"),
+                entry["entry_id"].as_str().expect("entry_id").to_owned(),
+            )
+        })
+        .collect();
+    let range: Vec<u64> = (from..=through).collect();
+    assert_eq!(
+        expected.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+        range,
+        "the durable history itself is not sequences {from}..={through}"
+    );
+    let rendered: Vec<(u64, String)> = stream_rows(doc)
+        .iter()
+        .map(|row| {
+            (
+                row.attr(dom::SEQUENCE_ATTR)
+                    .and_then(|s| s.parse().ok())
+                    .expect("stream row declares its sequence"),
+                row.attr(dom::ENTRY_ID_ATTR)
+                    .expect("stream row declares its entry ID"),
+            )
+        })
+        .collect();
+    assert_eq!(rendered, expected, "stream rows differ from `card history`");
+}
+
+fn assert_row_matches_entry(row: &El, entry: &Value) {
+    assert_eq!(
+        row.field_value(field::SEQUENCE),
+        entry["sequence"].as_u64().expect("sequence").to_string()
+    );
+    assert_eq!(
+        row.field_value(field::ENTRY_TYPE),
+        entry["entry_type"].as_str().expect("entry_type")
+    );
+    assert_eq!(
+        row.field_value(field::PRODUCER_ID),
+        entry["producer"]["id"].as_str().expect("producer id")
+    );
+    assert_eq!(
+        row.field_value(field::PRODUCER_KIND),
+        entry["producer"]["kind"].as_str().expect("producer kind")
+    );
+    assert_eq!(
+        row.field_value(field::RECORDED_AT),
+        entry["recorded_at"].as_str().expect("recorded_at")
+    );
+}
+
+fn inspector_payload(doc: &Document) -> Value {
+    let inspector = doc.one_by_role(role::INSPECTOR);
+    let payload = inspector
+        .descendants_by_role(role::PAYLOAD)
+        .pop()
+        .expect("the inspector renders a payload");
+    let text = payload.text();
+    serde_json::from_str(text.trim())
+        .unwrap_or_else(|error| panic!("inspector payload is not JSON ({error}): {text}"))
+}
+
+fn last_activity(row: &El) -> String {
+    row.field_value(field::LAST_ACTIVITY)
+}
+
+fn highest_recorded_at(history: &[Value]) -> String {
+    history
+        .iter()
+        .max_by_key(|entry| entry["sequence"].as_u64().expect("sequence"))
+        .and_then(|entry| entry["recorded_at"].as_str())
+        .expect("a highest-sequence entry")
+        .to_owned()
+}
+
+/// Attributes whose values a browser resolves as URLs.
+const URL_ATTRS: [&str; 6] = ["href", "src", "action", "formaction", "poster", "data"];
+/// Elements that embed another document or object, or rebase the page:
+/// banned outright so the markup alone is the whole page.
+const EMBEDDING_TAGS: [&str; 7] = [
+    "iframe", "frame", "frameset", "object", "embed", "base", "style",
+];
+/// Attributes that embed a document, carry CSS, or fetch on their own:
+/// banned outright for the same reason.
+const EMBEDDING_ATTRS: [&str; 5] = ["srcdoc", "style", "srcset", "imagesrcset", "ping"];
+
+/// Resolves `reference` against the console's origin the way a browser
+/// would (WHATWG URL parsing) and requires the result to be plain HTTP on
+/// exactly that origin. Anything a browser could turn into a foreign fetch
+/// — a scheme-relative `//host`, an absolute URL, `javascript:`, a
+/// `data:` blob, a different port — fails; an unparsable reference fails.
+fn is_same_origin(base: &Url, reference: &str) -> bool {
+    let Ok(resolved) = base.join(reference.trim()) else {
+        return false;
+    };
+    resolved.scheme() == "http"
+        && resolved.host_str() == base.host_str()
+        && resolved.port_or_known_default() == base.port_or_known_default()
+}
+
+enum MetaRefreshTarget {
+    NotRefresh,
+    Target(String),
+    Unsupported,
+}
+
+fn meta_refresh_target(el: &El) -> MetaRefreshTarget {
+    if el.tag() != "meta" {
+        return MetaRefreshTarget::NotRefresh;
+    }
+    let Some(http_equiv) = el
+        .attrs()
+        .into_iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("http-equiv"))
+        .map(|(_, value)| value)
+    else {
+        return MetaRefreshTarget::NotRefresh;
+    };
+    if !http_equiv.eq_ignore_ascii_case("refresh") {
+        return MetaRefreshTarget::NotRefresh;
+    }
+    let Some(content) = el.attr("content") else {
+        return MetaRefreshTarget::Unsupported;
+    };
+    let Some((_, target)) = content.split_once(';') else {
+        return MetaRefreshTarget::Unsupported;
+    };
+    let target = target.trim();
+    let Some(token) = target.get(..3) else {
+        return MetaRefreshTarget::Unsupported;
+    };
+    if !token.eq_ignore_ascii_case("url") {
+        return MetaRefreshTarget::Unsupported;
+    }
+    let Some(target) = target.get(3..).map(str::trim_start) else {
+        return MetaRefreshTarget::Unsupported;
+    };
+    let Some(target) = target.strip_prefix('=').map(str::trim) else {
+        return MetaRefreshTarget::Unsupported;
+    };
+    let target = target
+        .strip_prefix('\'')
+        .and_then(|target| target.strip_suffix('\''))
+        .or_else(|| {
+            target
+                .strip_prefix('"')
+                .and_then(|target| target.strip_suffix('"'))
+        })
+        .unwrap_or(target);
+    if target.is_empty() {
+        MetaRefreshTarget::Unsupported
+    } else {
+        MetaRefreshTarget::Target(target.to_owned())
+    }
+}
+
+fn assert_document_urls_same_origin(base: &Url, doc: &Document) {
+    for el in doc.elements() {
+        for (name, value) in el.attrs() {
+            if URL_ATTRS.contains(&name.to_ascii_lowercase().as_str()) {
+                assert!(
+                    is_same_origin(base, &value),
+                    "<{} {name}={value:?}> resolves off the console origin {base}",
+                    el.tag()
+                );
+            }
+        }
+        match meta_refresh_target(&el) {
+            MetaRefreshTarget::NotRefresh => {}
+            MetaRefreshTarget::Target(target) => {
+                assert!(
+                    is_same_origin(base, &target),
+                    "<meta refresh={target:?}> resolves off the console origin {base}"
+                );
+            }
+            MetaRefreshTarget::Unsupported => {
+                panic!("<meta http-equiv=refresh> has unsupported or unresolved refresh content");
+            }
+        }
+    }
+}
+
+fn check_same_origin_oracle_fixtures(base: &Url) {
+    let foreign = Document::parse(
+        r#"<html><head><meta http-equiv="refresh" content="30;url=https://foreign.example/"></head></html>"#,
+    );
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_document_urls_same_origin(base, &foreign);
+    }));
+    assert!(
+        rejected.is_err(),
+        "foreign meta refresh passed the origin oracle"
+    );
+
+    let foreign_comma = Document::parse(
+        r#"<html><head><meta http-equiv="refresh" content="30,url=https://foreign.example/"></head></html>"#,
+    );
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_document_urls_same_origin(base, &foreign_comma);
+    }));
+    assert!(
+        rejected.is_err(),
+        "foreign comma meta refresh passed the origin oracle"
+    );
+
+    for (label, html) in [
+        (
+            "foreign bare target",
+            r#"<html><head><meta http-equiv="refresh" content="30;https://foreign.example/"></head><body></body></html>"#,
+        ),
+        (
+            "foreign comma bare target",
+            r#"<html><head><meta http-equiv="refresh" content="30,https://foreign.example/"></head><body></body></html>"#,
+        ),
+        (
+            "local comma url target",
+            r#"<html><head><meta http-equiv="refresh" content="30,url=/cards/local"></head><body></body></html>"#,
+        ),
+        (
+            "local bare target",
+            r#"<html><head><meta http-equiv="refresh" content="30;/cards/local"></head><body></body></html>"#,
+        ),
+        (
+            "missing refresh content",
+            r#"<html><head><meta http-equiv="refresh"></head><body></body></html>"#,
+        ),
+        (
+            "empty refresh content",
+            r#"<html><head><meta http-equiv="refresh" content=""></head><body></body></html>"#,
+        ),
+    ] {
+        let doc = Document::parse(html);
+        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_document_urls_same_origin(base, &doc);
+        }));
+        assert!(
+            rejected.is_err(),
+            "{label} meta refresh passed the origin oracle"
+        );
+    }
+
+    for html in [
+        r#"<link rel="stylesheet" href="/static/console.css">"#,
+        r#"<meta HTTP-EQUIV="ReFrEsH" content=" 30 ; URL = '/cards/local' ">"#,
+        r#"<meta name="description" content="https://foreign.example/">"#,
+    ] {
+        assert_document_urls_same_origin(base, &Document::parse(html));
+    }
+}
+
+// --- S3-B1: discoverable, one startup line, structured bind failure -----
+
+#[then("the command succeeds")]
+fn command_succeeds(w: &mut CardWorld) {
+    let run = w.last_run();
+    assert!(
+        run.output.status.success(),
+        "expected success\n{}",
+        run.describe()
+    );
+}
+
+#[then(expr = "the help text lists the subcommand {string}")]
+fn help_lists_subcommand(w: &mut CardWorld, name: String) {
+    let stdout = String::from_utf8_lossy(&w.last_run().output.stdout).into_owned();
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(name.as_str())),
+        "help text does not list {name:?}:\n{stdout}"
+    );
+}
+
+#[when(expr = "the console is started with {string}")]
+fn start_with_args(w: &mut CardWorld, args: String) {
+    let split: Vec<&str> = args.split_whitespace().collect();
+    w.start_with_env(&split);
+}
+
+#[then(expr = "the startup line is one JSON object carrying {string}, {string}, and {string}")]
+fn startup_line_members(w: &mut CardWorld, a: String, b: String, c: String) {
+    let startup = &w.console().startup;
+    let object = startup
+        .as_object()
+        .unwrap_or_else(|| panic!("startup line is not a JSON object: {startup}"));
+    for member in [a, b, c] {
+        assert!(
+            object.get(&member).is_some_and(Value::is_string),
+            "startup line lacks string member {member:?}: {startup}"
+        );
+    }
+}
+
+#[then(
+    regex = r#"^the startup line's "([^"]*)" is (the scenario database path|the environment database path|the flag database path|the dotenv database path|that default database path)$"#
+)]
+fn startup_member_is_db_path(w: &mut CardWorld, member: String, which: String) {
+    let expected = match DbPathRef::parse(&which) {
+        DbPathRef::Flag => w.flag_db_path(),
+        DbPathRef::Dotenv => w.dotenv_db.as_ref().expect("a dotenv database").db.clone(),
+        DbPathRef::IsolatedDefault => w
+            .console
+            .expected_db
+            .clone()
+            .expect("the isolated default path"),
+        DbPathRef::Scenario | DbPathRef::Environment => w.db_path(),
+    };
+    let actual = w.console().startup[&member].as_str().map(str::to_owned);
+    assert_eq!(
+        actual.as_deref(),
+        Some(expected.as_str()),
+        "startup {member}"
+    );
+}
+
+#[then(expr = "the startup line's {string} is {string}")]
+fn startup_member_is(w: &mut CardWorld, member: String, expected: String) {
+    let actual = w.console().startup[&member].as_str().map(str::to_owned);
+    assert_eq!(
+        actual.as_deref(),
+        Some(expected.as_str()),
+        "startup {member}"
+    );
+}
+
+#[then(expr = "the startup line's {string} names a loopback host and a nonzero port")]
+fn startup_url_loopback(w: &mut CardWorld, member: String) {
+    let url = w.console().startup[&member]
+        .as_str()
+        .expect("url member")
+        .to_owned();
+    let (host, port) = http::split_authority(&url);
+    assert!(
+        http::loopback_ip(&host).is_loopback(),
+        "reported host {host} is not loopback"
+    );
+    assert_ne!(port, 0, "reported port must be the bound port, not 0");
+    assert_eq!(port, w.console().port);
+}
+
+/// Occupies one numeric port on both loopback families. The implementation
+/// may choose either family (S3-B2 pins loopback, not IPv4), so a fixture
+/// holding only 127.0.0.1 would let a conforming `::1` listener bind and turn
+/// the failure scenario into a false rejection. A host without IPv6
+/// loopback yields the IPv4 listener alone.
+fn occupy_loopback_port() -> Vec<TcpListener> {
+    for _attempt in 0..64 {
+        let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an IPv4 loopback port");
+        let port = v4.local_addr().expect("local addr").port();
+        match TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
+            Ok(v6) => return vec![v4, v6],
+            Err(error) if error.kind() == ErrorKind::AddrInUse => {}
+            Err(_) => return vec![v4],
+        }
+    }
+    panic!("could not find one port free on both loopback families")
+}
+
+#[given("a socket already bound on a loopback port")]
+fn socket_already_bound(w: &mut CardWorld) {
+    w.console.bound = occupy_loopback_port();
+}
+
+#[when("the console is started on that port")]
+fn start_on_bound_port(w: &mut CardWorld) {
+    let port = w
+        .console
+        .bound
+        .first()
+        .expect("a bound socket")
+        .local_addr()
+        .expect("local addr")
+        .port()
+        .to_string();
+    w.start_with_env(&["--port", &port]);
+}
+
+#[then(expr = "the console exits with error category {string}")]
+fn console_exits_with_category(w: &mut CardWorld, category: String) {
+    let run = w
+        .console
+        .start
+        .as_ref()
+        .expect("the console was started")
+        .exited();
+    let error = run.error_json();
+    assert_eq!(
+        error["category"].as_str(),
+        Some(category.as_str()),
+        "unexpected error: {error}"
+    );
+}
+
+fn exit_message(w: &CardWorld) -> String {
+    let run = w
+        .console
+        .start
+        .as_ref()
+        .expect("the console was started")
+        .exited();
+    run.error_json()["message"]
+        .as_str()
+        .expect("error message")
+        .to_owned()
+}
+
+#[then("the error names the port")]
+fn error_names_port(w: &mut CardWorld) {
+    let port = w
+        .console
+        .bound
+        .first()
+        .expect("a bound socket")
+        .local_addr()
+        .expect("local addr")
+        .port()
+        .to_string();
+    let message = exit_message(w);
+    assert!(
+        message.contains(&port),
+        "error does not name port {port}: {message}"
+    );
+}
+
+#[then("no startup line was printed")]
+fn no_startup_line(w: &mut CardWorld) {
+    let run = w
+        .console
+        .start
+        .as_ref()
+        .expect("the console was started")
+        .exited();
+    assert!(
+        run.output.stdout.is_empty(),
+        "stdout must be empty on a failed start: {:?}",
+        String::from_utf8_lossy(&run.output.stdout)
+    );
+}
+
+// --- S3-B2: loopback only, Host authority ----------------------------------
+
+#[given("the console is running")]
+fn console_is_running(w: &mut CardWorld) {
+    w.start_with_env(&["--port", "0"]);
+    w.console();
+    let snapshot = w.snapshot_record();
+    w.console.record_snapshot = Some(snapshot);
+}
+
+#[then("the startup line's host is a loopback address")]
+fn startup_host_loopback(w: &mut CardWorld) {
+    let host = w.console().host.clone();
+    assert!(
+        http::loopback_ip(&host).is_loopback(),
+        "host {host} is not loopback"
+    );
+}
+
+#[then("a connection to the console's port through a non-loopback interface address is refused")]
+fn non_loopback_refused(w: &mut CardWorld) {
+    let ip = http::non_loopback_local_ip();
+    let addr = SocketAddr::new(ip, w.console().port);
+    let attempt = TcpStream::connect_timeout(&addr, Duration::from_secs(3));
+    assert!(
+        attempt.is_err(),
+        "a connection through {addr} was accepted; the console is not loopback-only"
+    );
+}
+
+#[then("a connection to the console's port through loopback succeeds")]
+fn loopback_accepted(w: &mut CardWorld) {
+    let addr = w.console().connect_addr();
+    TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+        .unwrap_or_else(|error| panic!("loopback connection to {addr} failed: {error}"));
+}
+
+fn host_value(w: &CardWorld, spelled: &str) -> String {
+    let port = w.console().port.to_string();
+    if spelled == "<empty>" {
+        return String::new();
+    }
+    spelled.replace("<bound port>", &port)
+}
+
+#[when(expr = "the queue page is requested with Host {string} and the bound port")]
+fn queue_with_host_and_port(w: &mut CardWorld, host: String) {
+    let authority = format!("{host}:{}", w.console().port);
+    let response = w.console().send(&Request {
+        method: "GET".to_owned(),
+        target: "/".to_owned(),
+        host: authority,
+    });
+    w.record(response);
+}
+
+#[when(expr = "the queue page is requested with Host {string}")]
+fn queue_with_host(w: &mut CardWorld, host: String) {
+    let host = host_value(w, &host);
+    let response = w.console().send(&Request {
+        method: "GET".to_owned(),
+        target: "/".to_owned(),
+        host,
+    });
+    w.record(response);
+}
+
+#[then(expr = "the response status is {int}")]
+fn response_status(w: &mut CardWorld, status: u16) {
+    let response = w.last_response();
+    assert_eq!(response.status, status, "{}", response.describe());
+}
+
+#[then("the response body renders no queue and no Card content")]
+fn body_no_content(w: &mut CardWorld) {
+    assert_no_content(&w.last_doc(), "the rejection body");
+}
+
+// --- S3-B3: database resolution, no creation, no migration, untouched --
+
+#[given("an open Card in the flag database")]
+fn open_card_in_flag_db(w: &mut CardWorld) {
+    let flag_db = TempDb::new();
+    let run = run_card_command(|command| {
+        command.args([
+            "create",
+            "--db",
+            &flag_db.db,
+            "--title",
+            "Flag card",
+            "--producer",
+            "test-operator",
+            "--producer-kind",
+            "operator",
+        ]);
+    });
+    run.success_json();
+    w.flag_db = Some(flag_db);
+}
+
+#[given("an open Card in the environment database")]
+fn open_card_in_env_db(w: &mut CardWorld) {
+    w.create_titled("Environment card", &[]);
+}
+
+#[when(expr = "the console is started with {string} naming the flag database")]
+fn start_with_flag_db(w: &mut CardWorld, flag: String) {
+    let flag_db = w.flag_db_path();
+    let env_db = w.db_path();
+    let started = http::start_console(|command| {
+        command
+            .env("DAEMAR_DB", &env_db)
+            .args(["serve", "--port", "0", &flag, &flag_db]);
+    });
+    w.console.expected_db = Some(flag_db);
+    w.console.start = Some(started);
+}
+
+#[then("the queue shows exactly the Cards of the flag database")]
+fn queue_shows_flag_cards(w: &mut CardWorld) {
+    let flag_db = w.flag_db_path();
+    let run = run_card_command(|command| {
+        command.args(["list", "--db", &flag_db]);
+    });
+    let expected: Vec<String> = run.success_json()["cards"]
+        .as_array()
+        .expect("cards")
+        .iter()
+        .map(|card| card["card_id"].as_str().expect("card_id").to_owned())
+        .collect();
+    assert!(!expected.is_empty(), "the flag database holds a Card");
+    w.get("/");
+    assert_eq!(queue_card_ids(&w.last_doc()), expected);
+}
+
+#[given(expr = "an open Card titled {string} in the environment database")]
+fn titled_in_env_db(w: &mut CardWorld, title: String) {
+    w.create_titled(&title, &[]);
+}
+
+#[given(expr = "an open Card titled {string} in a factory-home dotenv database")]
+fn titled_in_dotenv_db(w: &mut CardWorld, title: String) {
+    let external = TempDb::new();
+    let home = factory_home_with_dotenv(&external.db);
+    let run = run_card_command(|command| {
+        command
+            .env("HOME", home.path())
+            .env_remove("DAEMAR_DB")
+            .args([
+                "create",
+                "--title",
+                &title,
+                "--producer",
+                "test-operator",
+                "--producer-kind",
+                "operator",
+            ]);
+    });
+    w.console.titles.insert(title, run.card_id());
+    w.fake_home = Some(home);
+    w.dotenv_db = Some(external);
+}
+
+#[when("the console is started with DAEMAR_DB set and the factory-home dotenv present")]
+fn start_env_over_dotenv(w: &mut CardWorld) {
+    let env_db = w.db_path();
+    let home = w
+        .fake_home
+        .as_ref()
+        .expect("a factory home")
+        .path()
+        .to_path_buf();
+    let started = http::start_console(|command| {
+        command
+            .env("HOME", &home)
+            .env("DAEMAR_DB", &env_db)
+            .args(["serve", "--port", "0"]);
+    });
+    w.console.expected_db = Some(env_db);
+    w.console.start = Some(started);
+}
+
+#[then(expr = "the queue lists the Card titled {string} and not the Card titled {string}")]
+fn queue_lists_one_not_other(w: &mut CardWorld, wanted: String, unwanted: String) {
+    let wanted = w.card_titled(&wanted);
+    let unwanted = w.card_titled(&unwanted);
+    w.get("/");
+    let ids = queue_card_ids(&w.last_doc());
+    assert!(ids.contains(&wanted), "queue lacks {wanted}: {ids:?}");
+    assert!(!ids.contains(&unwanted), "queue shows {unwanted}: {ids:?}");
+}
+
+#[when("the console is started with no --db and no DAEMAR_DB and the factory-home dotenv present")]
+fn start_dotenv_only(w: &mut CardWorld) {
+    let home = w
+        .fake_home
+        .as_ref()
+        .expect("a factory home")
+        .path()
+        .to_path_buf();
+    let dotenv_db = w.dotenv_db.as_ref().expect("a dotenv database").db.clone();
+    let started = http::start_console(|command| {
+        command
+            .env("HOME", &home)
+            .env_remove("DAEMAR_DB")
+            .args(["serve", "--port", "0"]);
+    });
+    w.console.expected_db = Some(dotenv_db);
+    w.console.start = Some(started);
+}
+
+#[then(expr = "the queue lists the Card titled {string} and no other")]
+fn queue_lists_only(w: &mut CardWorld, title: String) {
+    let id = w.card_titled(&title);
+    w.get("/");
+    assert_eq!(queue_card_ids(&w.last_doc()), vec![id]);
+}
+
+#[given(expr = "an open Card titled {string} in an isolated factory home's default database")]
+fn titled_in_isolated_default(w: &mut CardWorld, title: String) {
+    let home = TempDir::new().expect("temp home");
+    let cwd = TempDir::new().expect("temp cwd");
+    let run = run_card_command(|command| {
+        command
+            .env("HOME", home.path())
+            .env_remove("DAEMAR_DB")
+            .current_dir(cwd.path())
+            .args([
+                "create",
+                "--title",
+                &title,
+                "--producer",
+                "test-operator",
+                "--producer-kind",
+                "operator",
+            ]);
+    });
+    w.console.titles.insert(title, run.card_id());
+    let default_db = home
+        .path()
+        .join(".daemar")
+        .join("daemar.db")
+        .to_str()
+        .expect("utf-8 path")
+        .to_owned();
+    assert!(
+        Path::new(&default_db).exists(),
+        "the default database was created by create"
+    );
+    w.console.expected_db = Some(default_db);
+    w.console.iso = Some((home, cwd));
+}
+
+#[when("the console is started in that isolated factory home with no configuration")]
+fn start_isolated_default(w: &mut CardWorld) {
+    let (home, cwd) = w.console.iso.as_ref().expect("an isolated home");
+    let (home, cwd) = (home.path().to_path_buf(), cwd.path().to_path_buf());
+    let started = http::start_console(|command| {
+        command
+            .env("HOME", &home)
+            .env_remove("DAEMAR_DB")
+            .current_dir(&cwd)
+            .args(["serve", "--port", "0"]);
+    });
+    w.console.start = Some(started);
+}
+
+#[given("no database file exists at the scenario database path")]
+fn no_db_file(w: &mut CardWorld) {
+    let db = w.db_path();
+    assert!(
+        !Path::new(&db).exists(),
+        "fresh scenario path must not exist yet"
+    );
+}
+
+#[then("the error names the scenario database path")]
+fn error_names_db_path(w: &mut CardWorld) {
+    let db = w.db_path();
+    let message = exit_message(w);
+    assert!(message.contains(&db), "error does not name {db}: {message}");
+}
+
+#[then("no database file exists at the scenario database path")]
+fn still_no_db_file(w: &mut CardWorld) {
+    let db = w.db_path();
+    assert!(
+        !Path::new(&db).exists(),
+        "serve must not create the main database file at {db}"
+    );
+}
+
+#[given("an empty SQLite database file at the scenario database path")]
+async fn empty_sqlite_file(w: &mut CardWorld) {
+    let db = w.db_path();
+    let mut conn = connect_writable(&db).await;
+    // A real SQLite header with no schema at all: a table created and
+    // dropped inside one connection leaves the file valid and empty.
+    sqlx::raw_sql("CREATE TABLE scratch (x INTEGER); DROP TABLE scratch;")
+        .execute(&mut conn)
+        .await
+        .expect("write an empty SQLite file");
+    conn.close().await.expect("close");
+    assert!(
+        table_names(&db).await.is_empty(),
+        "fixture must carry no tables"
+    );
+}
+
+#[then("the database file at the scenario database path carries no Card schema")]
+async fn no_card_schema(w: &mut CardWorld) {
+    let db = w.db_path();
+    let tables = table_names(&db).await;
+    for forbidden in ["cards", "card_entries", MIGRATIONS_TABLE] {
+        assert!(
+            !tables.iter().any(|t| t == forbidden),
+            "serve applied schema: table {forbidden} exists ({tables:?})"
+        );
+    }
+}
+
+#[given("a database at the scenario database path with only the first migration applied")]
+async fn behind_schema_db(w: &mut CardWorld) {
+    // "Behind" means short of the embedded set: every migration but the
+    // last is applied through sqlx's own bookkeeping. With a single
+    // migration in the set that is the bookkeeping table alone, which
+    // is still a database sqlx recognises as needing migration.
+    let db = w.db_path();
+    let mut conn = connect_writable(&db).await;
+    conn.ensure_migrations_table(MIGRATIONS_TABLE)
+        .await
+        .expect("bookkeeping table");
+    let count = MIGRATOR.iter().count();
+    for migration in MIGRATOR.iter().take(count.saturating_sub(1)) {
+        conn.apply(MIGRATIONS_TABLE, migration)
+            .await
+            .expect("apply a leading migration");
+    }
+    conn.close().await.expect("close");
+    let applied = applied_migrations(&db).await;
+    assert_eq!(
+        applied.len(),
+        count.saturating_sub(1),
+        "fixture must be one migration short"
+    );
+    w.console.migrations_before = Some(applied);
+}
+
+#[then("the database's applied migrations are unchanged")]
+async fn migrations_unchanged(w: &mut CardWorld) {
+    let db = w.db_path();
+    let after = applied_migrations(&db).await;
+    let before = w
+        .console
+        .migrations_before
+        .as_ref()
+        .expect("migrations were recorded");
+    assert_eq!(&after, before, "serve advanced the schema");
+}
+
+#[given(regex = r"^an open Card with (\d+) appended (?:decision|decisions)$")]
+fn open_card_with_decisions(w: &mut CardWorld, count: usize) {
+    let id = w.create_titled("Dogfood card", &[]);
+    for n in 0..count {
+        let summary = format!("decision {}", n + 1);
+        w.decision_on(&id, "claude", "agent", &summary, "spec fixture");
+    }
+}
+
+#[given("the main database file's bytes, permissions, and applied migrations are recorded")]
+async fn record_main_file(w: &mut CardWorld) {
+    let db = w.db_path();
+    w.console.file_snapshot = Some(snapshot_file(&db).await);
+}
+
+#[when("the queue page, the Card page, and every entry inspector are requested")]
+fn walk_primary_card(w: &mut CardWorld) {
+    let card = w.primary_card();
+    w.get("/");
+    w.get(&card_route(&card));
+    for entry in w.history(&card) {
+        let id = entry["entry_id"].as_str().expect("entry_id").to_owned();
+        w.get(&entry_route(&card, &id));
+    }
+}
+
+#[then("the main database file's bytes, permissions, and applied migrations are unchanged")]
+async fn main_file_unchanged(w: &mut CardWorld) {
+    let db = w.db_path();
+    let before = w.console.file_snapshot.take().expect("file snapshot");
+    let after = snapshot_file(&db).await;
+    assert_eq!(before.mode, after.mode, "main file permissions changed");
+    assert_eq!(
+        before.migrations, after.migrations,
+        "applied migrations changed"
+    );
+    assert!(
+        before.bytes == after.bytes,
+        "main database file bytes changed"
+    );
+}
+
+// --- S3-B4: the queue -------------------------------------------------------
+
+/// `a Card titled "T"` followed by any of: `with task key "K"`, `with no
+/// task key`, `and workspace "W"` / `with workspace "W"`, `and N appended
+/// decision(s)` / `stage event(s)`, `and no further entries`.
+#[given(regex = r#"^a Card titled "([^"]*)"(.*)$"#)]
+fn card_titled_with(w: &mut CardWorld, title: String, rest: String) {
+    let mut extra: Vec<String> = Vec::new();
+    let mut appended: Option<(usize, bool)> = None;
+    let mut remainder: &str = rest.trim();
+    while !remainder.is_empty() {
+        let clause = remainder;
+        if let Some(after) = clause.strip_prefix("with task key \"") {
+            let (key, tail) = after.split_once('"').expect("closing quote");
+            extra.push("--task-key".to_owned());
+            extra.push(key.to_owned());
+            remainder = tail.trim();
+        } else if let Some(tail) = clause.strip_prefix("with no task key") {
+            remainder = tail.trim();
+        } else if let Some(tail) = clause.strip_prefix("and no further entries") {
+            remainder = tail.trim();
+        } else if let Some(after) = clause
+            .strip_prefix("and workspace \"")
+            .or_else(|| clause.strip_prefix("with workspace \""))
+        {
+            let (workspace, tail) = after.split_once('"').expect("closing quote");
+            extra.push("--workspace".to_owned());
+            extra.push(workspace.to_owned());
+            remainder = tail.trim();
+        } else if let Some(after) = clause
+            .strip_prefix("and ")
+            .or_else(|| clause.strip_prefix("with "))
+        {
+            let mut words = after.split_whitespace();
+            let count: usize = words
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("unrecognised clause: {clause:?}"));
+            assert_eq!(
+                words.next(),
+                Some("appended"),
+                "unrecognised clause: {clause:?}"
+            );
+            let kind = words.next().unwrap_or_default();
+            let is_stage = kind.starts_with("stage");
+            appended = Some((count, is_stage));
+            remainder = "";
+        } else {
+            panic!("unrecognised clause: {clause:?}");
+        }
+    }
+    let borrowed: Vec<&str> = extra.iter().map(String::as_str).collect();
+    let id = w.create_titled(&title, &borrowed);
+    if let Some((count, is_stage)) = appended {
+        for n in 0..count {
+            let summary = format!("{title} entry {}", n + 1);
+            if is_stage {
+                w.stage_event_on(&id, "claude", "agent", "code", &summary, None);
+            } else {
+                w.decision_on(&id, "claude", "agent", &summary, "spec fixture");
+            }
+        }
+    }
+}
+
+#[when("the queue page is requested")]
+fn queue_requested(w: &mut CardWorld) {
+    w.get("/");
+}
+
+#[given("the queue page was requested")]
+fn queue_was_requested(w: &mut CardWorld) {
+    w.get("/");
+}
+
+#[when("the queue page is requested again")]
+fn queue_requested_again(w: &mut CardWorld) {
+    w.get("/");
+}
+
+#[then("the queue lists the Cards in the order `card list` returns them")]
+fn queue_in_list_order(w: &mut CardWorld) {
+    let expected = w.all_card_ids();
+    assert!(expected.len() > 1, "the scenario holds several Cards");
+    assert_eq!(queue_card_ids(&w.last_doc()), expected);
+}
+
+#[then(
+    expr = "the queue row for the Card titled {string} shows task key {string} and title {string}"
+)]
+fn queue_row_shows(w: &mut CardWorld, card: String, key: String, title: String) {
+    let id = w.card_titled(&card);
+    let doc = w.last_doc();
+    let row = queue_row_for(&doc, &id);
+    assert_eq!(row.field_value(field::TASK_KEY), key);
+    assert_eq!(row.field_value(field::TITLE), title);
+}
+
+#[then(
+    expr = "the queue row for the Card titled {string} shows the task key as absent and title {string}"
+)]
+fn queue_row_key_absent(w: &mut CardWorld, card: String, title: String) {
+    let id = w.card_titled(&card);
+    let doc = w.last_doc();
+    let row = queue_row_for(&doc, &id);
+    let rendered = row.field(field::TASK_KEY).map(|el| el.value());
+    assert!(
+        rendered.as_deref().is_none_or(str::is_empty),
+        "absent task key rendered as {rendered:?}"
+    );
+    assert_eq!(row.field_value(field::TITLE), title);
+}
+
+#[then(
+    "the queue row for each Card shows last activity equal to the recorded_at of that Card's highest-sequence entry"
+)]
+fn queue_last_activity_all(w: &mut CardWorld) {
+    let doc = w.last_doc();
+    for card in w.all_card_ids() {
+        let history = w.history(&card);
+        let row = queue_row_for(&doc, &card);
+        assert_eq!(
+            last_activity(&row),
+            highest_recorded_at(&history),
+            "last activity of Card {card}"
+        );
+    }
+}
+
+#[then(
+    expr = "the queue row for the Card titled {string} shows last activity equal to its card-created entry's recorded_at"
+)]
+fn queue_last_activity_created(w: &mut CardWorld, title: String) {
+    let id = w.card_titled(&title);
+    let created = w.entry_at(&id, 1);
+    assert_eq!(created["entry_type"].as_str(), Some("card-created"));
+    let doc = w.last_doc();
+    assert_eq!(
+        last_activity(&queue_row_for(&doc, &id)),
+        created["recorded_at"].as_str().expect("recorded_at")
+    );
+}
+
+#[given("a migrated database with no Cards")]
+fn migrated_empty_db(w: &mut CardWorld) {
+    let cards = w.list_cards();
+    assert!(cards.is_empty(), "fresh scenario database must be empty");
+}
+
+#[then("the queue pane states that there are no Cards")]
+fn queue_states_empty(w: &mut CardWorld) {
+    let doc = w.last_doc();
+    let queue = doc.one_by_role(role::QUEUE);
+    let empty = queue
+        .descendants_by_role(role::QUEUE_EMPTY)
+        .pop()
+        .expect("an explicit empty state inside the queue");
+    let text = empty.text().to_ascii_lowercase();
+    assert!(
+        text.contains("no cards"),
+        "empty state must say there are no Cards: {text:?}"
+    );
+}
+
+#[then("the queue lists no Card rows")]
+fn queue_no_rows(w: &mut CardWorld) {
+    assert!(queue_rows(&w.last_doc()).is_empty());
+}
+
+#[when("a producer appends a decision to the Card through the CLI")]
+fn cli_appends_decision(w: &mut CardWorld) {
+    let card = w.primary_card();
+    let entry = w.decision_on(
+        &card,
+        "codex",
+        "agent",
+        "Late decision",
+        "appended while serving",
+    );
+    w.console.new_entry = Some(entry);
+}
+
+#[then("the queue row for that Card shows last activity equal to the new entry's recorded_at")]
+fn queue_last_activity_new(w: &mut CardWorld) {
+    let entry = w.console.new_entry.clone().expect("a new entry");
+    let doc = w.last_doc();
+    assert_eq!(
+        last_activity(&queue_row_for(&doc, &entry.card)),
+        entry.recorded_at
+    );
+}
+
+// --- S3-B5: identity and stream ---------------------------------------------
+
+#[given(
+    expr = "producer {string} of kind {string} appended a decision with summary {string} and reason {string}"
+)]
+fn given_decision(
+    w: &mut CardWorld,
+    producer: String,
+    kind: String,
+    summary: String,
+    reason: String,
+) {
+    let card = w.primary_card();
+    let entry = w.decision_on(&card, &producer, &kind, &summary, &reason);
+    w.console.named.insert(summary, entry);
+}
+
+#[given(
+    expr = "producer {string} of kind {string} recorded a stage event with stage {string} and summary {string}"
+)]
+fn given_stage_event(
+    w: &mut CardWorld,
+    producer: String,
+    kind: String,
+    stage: String,
+    summary: String,
+) {
+    let card = w.primary_card();
+    let entry = w.stage_event_on(&card, &producer, &kind, &stage, &summary, None);
+    w.console.named.insert(summary, entry);
+}
+
+#[given(
+    expr = "producer {string} of kind {string} recorded a stage event with stage {string} and summary {string} and payload:"
+)]
+fn given_stage_event_payload(
+    w: &mut CardWorld,
+    #[step] step: &Step,
+    producer: String,
+    kind: String,
+    stage: String,
+    summary: String,
+) {
+    let payload = step
+        .docstring
+        .as_ref()
+        .expect("a payload docstring")
+        .trim()
+        .to_owned();
+    let card = w.primary_card();
+    let entry = w.stage_event_on(&card, &producer, &kind, &stage, &summary, Some(&payload));
+    w.console.named.insert(summary, entry);
+}
+
+#[when("the Card page is requested")]
+fn card_page_requested(w: &mut CardWorld) {
+    let card = w.primary_card();
+    w.get(&card_route(&card));
+}
+
+#[when("the Card page is requested again")]
+fn card_page_requested_again(w: &mut CardWorld) {
+    let card = w.primary_card();
+    w.get(&card_route(&card));
+}
+
+#[then(
+    expr = "the Card identity shows the Card ID, task key {string}, workspace {string}, title {string}, and the created timestamp from `card list`"
+)]
+fn identity_shows(w: &mut CardWorld, key: String, workspace: String, title: String) {
+    let card = w.primary_card();
+    let listed = w
+        .list_cards()
+        .into_iter()
+        .find(|c| c["card_id"].as_str() == Some(card.as_str()))
+        .expect("the Card is listed");
+    let doc = w.last_doc();
+    let identity = doc.one_by_role(role::CARD_IDENTITY);
+    assert_eq!(identity.field_value(field::CARD_ID), card);
+    assert_eq!(identity.field_value(field::TASK_KEY), key);
+    assert_eq!(identity.field_value(field::WORKSPACE), workspace);
+    assert_eq!(identity.field_value(field::TITLE), title);
+    assert_eq!(
+        identity.field_value(field::CREATED_AT),
+        listed["created_at"].as_str().expect("created_at")
+    );
+}
+
+#[then(
+    expr = "the stream shows exactly one row per entry of `card history`, in sequence order {int} through {int}"
+)]
+fn stream_matches_history(w: &mut CardWorld, from: u64, through: u64) {
+    let card = w.primary_card();
+    let history = w.history(&card);
+    assert_stream_matches(&w.last_doc(), &history, from, through);
+}
+
+#[then(
+    "every stream row shows the sequence, entry type, producer identity, producer kind, and recorded_at of the entry it renders"
+)]
+fn rows_match_entries(w: &mut CardWorld) {
+    let card = w.primary_card();
+    let history = w.history(&card);
+    let doc = w.last_doc();
+    let rows = stream_rows(&doc);
+    assert!(!rows.is_empty(), "the stream renders rows");
+    for row in rows {
+        let id = row.attr(dom::ENTRY_ID_ATTR).expect("entry ID on the row");
+        let entry = history
+            .iter()
+            .find(|e| e["entry_id"].as_str() == Some(id.as_str()))
+            .unwrap_or_else(|| panic!("row renders an entry history lacks: {id}"));
+        assert_row_matches_entry(&row, entry);
+    }
+}
+
+#[then(expr = "the row at sequence {int} summarizes as the title {string}")]
+fn row_summarizes_title(w: &mut CardWorld, sequence: u64, title: String) {
+    let doc = w.last_doc();
+    assert_eq!(row_at(&doc, sequence).field_value(field::SUMMARY), title);
+}
+
+#[then(expr = "the row at sequence {int} summarizes as {string}")]
+fn row_summarizes(w: &mut CardWorld, sequence: u64, summary: String) {
+    let doc = w.last_doc();
+    assert_eq!(row_at(&doc, sequence).field_value(field::SUMMARY), summary);
+}
+
+#[then(expr = "the row at sequence {int} summarizes as stage {string} and summary {string}")]
+fn row_summarizes_stage(w: &mut CardWorld, sequence: u64, stage: String, summary: String) {
+    let doc = w.last_doc();
+    let row = row_at(&doc, sequence);
+    assert_eq!(row.field_value(field::STAGE), stage);
+    assert_eq!(row.field_value(field::SUMMARY), summary);
+}
+
+#[then("every stream row is labeled reported")]
+fn rows_labeled_reported(w: &mut CardWorld) {
+    let doc = w.last_doc();
+    let rows = stream_rows(&doc);
+    assert!(!rows.is_empty(), "the stream renders rows");
+    for row in rows {
+        assert_eq!(
+            row.field_value(field::PROVENANCE).to_ascii_lowercase(),
+            "reported",
+            "row {:?}",
+            row.attr(dom::SEQUENCE_ATTR)
+        );
+    }
+}
+
+#[then("nothing on the page denotes verified")]
+fn nothing_verified(w: &mut CardWorld) {
+    let doc = w.last_doc();
+    let text = doc.text().to_ascii_lowercase();
+    assert!(!text.contains("verified"), "the page denotes verified");
+    for el in doc.elements() {
+        for (name, value) in el.attrs() {
+            assert!(
+                !value.to_ascii_lowercase().contains("verified"),
+                "attribute {name} denotes verified: {value}"
+            );
+        }
+    }
+}
+
+#[then(expr = "the queue row for the Card titled {string} links to {string} for that Card")]
+fn queue_row_links(w: &mut CardWorld, title: String, pattern: String) {
+    let id = w.card_titled(&title);
+    let expected = pattern.replace("{card_id}", &id);
+    let doc = w.last_doc();
+    let links = queue_row_for(&doc, &id).links();
+    assert_eq!(links, vec![expected], "queue row links");
+}
+
+#[then("following that link renders the Card page for that Card")]
+fn follow_queue_link(w: &mut CardWorld) {
+    let doc = w.last_doc();
+    let rows = queue_rows(&doc);
+    let href = rows
+        .first()
+        .and_then(|row| row.links().pop())
+        .expect("a queue link");
+    let id = href.trim_start_matches("/cards/").to_owned();
+    let response = w.get(&href);
+    assert_eq!(response.status, 200, "{}", response.describe());
+    let doc = w.last_doc();
+    assert_eq!(
+        doc.one_by_role(role::CARD_IDENTITY)
+            .field_value(field::CARD_ID),
+        id
+    );
+}
+
+#[when(expr = "the Card page for the Card titled {string} is requested")]
+fn card_page_for_title(w: &mut CardWorld, title: String) {
+    let id = w.card_titled(&title);
+    w.get(&card_route(&id));
+}
+
+#[then("the queue lists both Cards")]
+fn queue_lists_both(w: &mut CardWorld) {
+    assert_eq!(w.cards.len(), 2, "the scenario holds two Cards");
+    let ids = queue_card_ids(&w.last_doc());
+    for card in &w.cards {
+        assert!(ids.contains(card), "queue lacks {card}: {ids:?}");
+    }
+}
+
+#[then("the queue still lists both Cards")]
+fn queue_still_lists_both(w: &mut CardWorld) {
+    queue_lists_both(w);
+}
+
+#[then(expr = "the queue marks the Card titled {string} as selected and no other")]
+fn queue_marks_selected(w: &mut CardWorld, title: String) {
+    let id = w.card_titled(&title);
+    let doc = w.last_doc();
+    let selected: Vec<String> = queue_rows(&doc)
+        .iter()
+        .filter(|row| row.attr(dom::SELECTED_ATTR).as_deref() == Some(dom::SELECTED_VALUE))
+        .map(|row| row.attr(dom::CARD_ID_ATTR).expect("card id"))
+        .collect();
+    assert_eq!(selected, vec![id]);
+}
+
+// --- S3-B6: the inspector ---------------------------------------------------
+
+#[when(expr = "the stream row at sequence {int} is followed to its inspector link")]
+fn follow_inspector_link(w: &mut CardWorld, sequence: u64) {
+    let card = w.primary_card();
+    let doc = w.last_doc();
+    let row = row_at(&doc, sequence);
+    let link = row
+        .descendants_by_role(role::INSPECT)
+        .pop()
+        .and_then(|a| a.attr("href"))
+        .unwrap_or_else(|| panic!("row {sequence} carries no inspector link"));
+    w.get(&link);
+    w.console.inspected = Some((card, sequence));
+}
+
+fn inspected_entry(w: &mut CardWorld) -> Value {
+    let (card, sequence) = w
+        .console
+        .inspected
+        .clone()
+        .expect("an inspector was opened");
+    w.entry_at(&card, sequence)
+}
+
+#[then(
+    expr = "the inspector shows the entry ID, Card ID, sequence {int}, schema version, entry type {string}, producer {string} of kind {string}, and recorded_at of that entry"
+)]
+fn inspector_shows_envelope(
+    w: &mut CardWorld,
+    sequence: u64,
+    entry_type: String,
+    producer: String,
+    kind: String,
+) {
+    let entry = inspected_entry(w);
+    assert_eq!(entry["sequence"].as_u64(), Some(sequence));
+    let doc = w.last_doc();
+    let inspector = doc.one_by_role(role::INSPECTOR);
+    assert_eq!(
+        inspector.field_value(field::ENTRY_ID),
+        entry["entry_id"].as_str().expect("entry_id")
+    );
+    assert_eq!(
+        inspector.field_value(field::CARD_ID),
+        entry["card_id"].as_str().expect("card_id")
+    );
+    assert_eq!(inspector.field_value(field::SEQUENCE), sequence.to_string());
+    assert_eq!(
+        inspector.field_value(field::SCHEMA_VERSION),
+        entry["schema_version"]
+            .as_u64()
+            .expect("schema_version")
+            .to_string()
+    );
+    assert_eq!(inspector.field_value(field::ENTRY_TYPE), entry_type);
+    assert_eq!(entry["entry_type"].as_str(), Some(entry_type.as_str()));
+    assert_eq!(inspector.field_value(field::PRODUCER_ID), producer);
+    assert_eq!(inspector.field_value(field::PRODUCER_KIND), kind);
+    assert_eq!(entry["producer"]["id"].as_str(), Some(producer.as_str()));
+    assert_eq!(entry["producer"]["kind"].as_str(), Some(kind.as_str()));
+    assert_eq!(
+        inspector.field_value(field::RECORDED_AT),
+        entry["recorded_at"].as_str().expect("recorded_at")
+    );
+}
+
+#[then("the inspector payload is JSON-equal to the payload `card history` returns for that entry")]
+fn inspector_payload_equal(w: &mut CardWorld) {
+    let entry = inspected_entry(w);
+    // Member presence, not indexing: an absent `payload` must not collapse
+    // to JSON null and pass against a rendered `null`.
+    let expected = entry
+        .get("payload")
+        .expect("history carries a payload member for this entry");
+    let rendered = inspector_payload(&w.last_doc());
+    assert_eq!(
+        &rendered, expected,
+        "inspector payload differs from history"
+    );
+}
+
+#[then(expr = "the inspector payload text contains {string}")]
+fn inspector_payload_contains(w: &mut CardWorld, needle: String) {
+    let doc = w.last_doc();
+    let text = doc
+        .one_by_role(role::INSPECTOR)
+        .descendants_by_role(role::PAYLOAD)
+        .pop()
+        .expect("a payload")
+        .text();
+    assert!(
+        text.contains(&needle),
+        "payload text lacks {needle:?}: {text}"
+    );
+}
+
+#[then("the queue and the Card identity remain on the page")]
+fn queue_and_identity_remain(w: &mut CardWorld) {
+    let card = w.primary_card();
+    let doc = w.last_doc();
+    queue_row_for(&doc, &card);
+    assert_eq!(
+        doc.one_by_role(role::CARD_IDENTITY)
+            .field_value(field::CARD_ID),
+        card
+    );
+}
+
+#[then("the stream still shows every row")]
+fn stream_still_every_row(w: &mut CardWorld) {
+    let card = w.primary_card();
+    let history = w.history(&card);
+    let last = u64::try_from(history.len()).expect("history length fits");
+    assert_stream_matches(&w.last_doc(), &history, 1, last);
+}
+
+#[then(
+    expr = "the stream row at sequence {int} links to {string} for that Card with a query member naming that entry's ID"
+)]
+fn row_links_to_entry(w: &mut CardWorld, sequence: u64, pattern: String) {
+    let card = w.primary_card();
+    let entry_id = w.primary_entry_id(sequence);
+    let doc = w.last_doc();
+    let href = row_at(&doc, sequence)
+        .descendants_by_role(role::INSPECT)
+        .pop()
+        .and_then(|a| a.attr("href"))
+        .expect("an inspector link");
+    let (path, query) = href.split_once('?').expect("a query member");
+    assert_eq!(path, pattern.replace("{card_id}", &card));
+    assert_eq!(query, format!("entry={entry_id}"));
+}
+
+#[given(
+    expr = "producer {string} of kind {string} appended a decision to the Card titled {string} with summary {string}"
+)]
+fn decision_on_titled(
+    w: &mut CardWorld,
+    producer: String,
+    kind: String,
+    title: String,
+    summary: String,
+) {
+    let card = w.card_titled(&title);
+    let entry = w.decision_on(&card, &producer, &kind, &summary, "named decision");
+    w.console.named.insert(summary, entry);
+}
+
+#[when(
+    expr = "the Card page for the Card titled {string} is requested with the entry ID of the {string} decision"
+)]
+fn card_page_with_foreign_entry(w: &mut CardWorld, title: String, summary: String) {
+    let card = w.card_titled(&title);
+    let entry = w
+        .console
+        .named
+        .get(&summary)
+        .expect("a named decision")
+        .clone();
+    assert_ne!(entry.card, card, "the entry must belong to another Card");
+    w.get(&entry_route(&card, &entry.entry_id));
+}
+
+#[then("no inspector is shown")]
+fn no_inspector(w: &mut CardWorld) {
+    let doc = w.last_doc();
+    assert!(!doc.has_role(role::INSPECTOR), "an inspector is rendered");
+    assert!(!doc.has_role(role::PAYLOAD), "a payload is rendered");
+}
+
+#[then(expr = "the page shows no field of the {string} decision")]
+fn no_field_of_decision(w: &mut CardWorld, summary: String) {
+    let entry = w
+        .console
+        .named
+        .get(&summary)
+        .expect("a named decision")
+        .clone();
+    let body = &w.last_response().body;
+    for (name, value) in [
+        ("entry ID", entry.entry_id.clone()),
+        ("summary", summary.clone()),
+        (
+            "reason",
+            entry.payload["reason"].as_str().expect("reason").to_owned(),
+        ),
+    ] {
+        assert!(
+            !body.contains(&value),
+            "the page leaks the foreign entry's {name}: {value}"
+        );
+    }
+}
+
+#[then(
+    expr = "the inspector shows {string} as the summary and {string} as the reason, not exchanged"
+)]
+fn inspector_summary_reason(w: &mut CardWorld, summary: String, reason: String) {
+    let entry = inspected_entry(w);
+    assert_eq!(entry["payload"]["summary"].as_str(), Some(summary.as_str()));
+    assert_eq!(entry["payload"]["reason"].as_str(), Some(reason.as_str()));
+    let doc = w.last_doc();
+    let inspector = doc.one_by_role(role::INSPECTOR);
+    assert_eq!(inspector.field_value(field::SUMMARY), summary);
+    assert_eq!(inspector.field_value(field::REASON), reason);
+}
+
+// --- S3-B7: hostile content -------------------------------------------------
+
+/// Would create an `<img>` with an event handler, a `<script>`, and a
+/// `<style>` if any sink interpreted it. Each carries a `hostile-` id so
+/// its presence is distinguishable from the console's own markup.
+const HOSTILE_MARKUP: &str = r#"<img id="hostile-img" src="x" onerror="hostile(1)"><script id="hostile-script">hostile(2)</script><style id="hostile-style">*{display:none}</style>"#;
+/// Would close an attribute and add an event handler if a sink placed
+/// producer text inside an attribute value.
+const HOSTILE_ATTRIBUTE: &str = r#""' onmouseover="hostile(3)"#;
+
+#[given(
+    "a hostile marker that would create an element, an attribute, a script, and a style if interpreted"
+)]
+fn hostile_markup(w: &mut CardWorld) {
+    w.console.hostile = Some(HOSTILE_MARKUP.to_owned());
+}
+
+#[given("a hostile marker that would break out of an attribute if interpreted")]
+fn hostile_attribute(w: &mut CardWorld) {
+    w.console.hostile = Some(HOSTILE_ATTRIBUTE.to_owned());
+}
+
+#[given(regex = r"^a Card whose (.+) is the hostile marker$")]
+fn card_with_hostile_field(w: &mut CardWorld, which: String) {
+    let marker = w.console.hostile.clone().expect("a hostile marker");
+    let deep = serde_json::json!({ "outer": { "middle": { "inner": marker } } }).to_string();
+    let top = serde_json::json!({ "text": marker }).to_string();
+    let member = serde_json::json!({ marker.clone(): "value" }).to_string();
+    let which = HostileField::parse(&which);
+    let entry = match which {
+        HostileField::Title => {
+            w.create_titled(&marker, &[]);
+            None
+        }
+        HostileField::TaskKey => {
+            w.create_titled("Hostile task key", &["--task-key", &marker]);
+            None
+        }
+        HostileField::Workspace => {
+            w.create_titled("Hostile workspace", &["--workspace", &marker]);
+            None
+        }
+        HostileField::ProducerId => {
+            let card = w.create_titled("Hostile producer", &[]);
+            Some(w.decision_on(&card, &marker, "agent", "plain", "plain"))
+        }
+        HostileField::DecisionSummary => {
+            let card = w.create_titled("Hostile summary", &[]);
+            Some(w.decision_on(&card, "claude", "agent", &marker, "plain"))
+        }
+        HostileField::DecisionReason => {
+            let card = w.create_titled("Hostile reason", &[]);
+            Some(w.decision_on(&card, "claude", "agent", "plain", &marker))
+        }
+        HostileField::Stage => {
+            let card = w.create_titled("Hostile stage", &[]);
+            Some(w.stage_event_on(&card, "claude", "agent", &marker, "plain", None))
+        }
+        HostileField::StageSummary => {
+            let card = w.create_titled("Hostile event summary", &[]);
+            Some(w.stage_event_on(&card, "claude", "agent", "code", &marker, None))
+        }
+        HostileField::PayloadTop => {
+            let card = w.create_titled("Hostile payload", &[]);
+            Some(w.stage_event_on(&card, "claude", "agent", "code", "plain", Some(&top)))
+        }
+        HostileField::PayloadNested => {
+            let card = w.create_titled("Hostile nested payload", &[]);
+            Some(w.stage_event_on(&card, "claude", "agent", "code", "plain", Some(&deep)))
+        }
+        HostileField::PayloadMember => {
+            let card = w.create_titled("Hostile member name", &[]);
+            Some(w.stage_event_on(&card, "claude", "agent", "code", "plain", Some(&member)))
+        }
+    };
+    w.console.hostile_field = Some(which);
+    w.console.hostile_entry = entry;
+}
+
+#[when(regex = r"^every page that renders that (.+) is requested$")]
+async fn request_hostile_pages(w: &mut CardWorld, which: String) {
+    assert_eq!(w.console.hostile_field, Some(HostileField::parse(&which)));
+    let card = w.primary_card();
+    w.console.responses.clear();
+    w.get("/");
+    w.get(&card_route(&card));
+    let entry = match w.console.hostile_entry.clone() {
+        Some(entry) => entry,
+        None => w.named_entry(&card, 1),
+    };
+    w.get(&entry_route(&card, &entry.entry_id));
+    if w.console.hostile_field == Some(HostileField::Title) {
+        let missing = w.get(&card_route(&unknown_card_id()));
+        assert_eq!(missing.status, 404, "{}", missing.describe());
+        let missing_doc = Document::parse(&missing.body);
+        assert!(
+            error_text(&missing_doc).contains("card")
+                && error_text(&missing_doc).contains("not found"),
+            "404 error text: {:?}",
+            error_text(&missing_doc)
+        );
+        assert_no_partial_card_content(&missing_doc, "404 error page");
+        queue_row_for(&missing_doc, &card);
+
+        corrupt_payload(w, 1).await;
+        let corrupt = w.get(&card_route(&card));
+        assert_eq!(corrupt.status, 500, "{}", corrupt.describe());
+        let corrupt_doc = Document::parse(&corrupt.body);
+        assert!(
+            error_text(&corrupt_doc).contains("storage failed"),
+            "500 error text: {:?}",
+            error_text(&corrupt_doc)
+        );
+        assert_no_partial_card_content(&corrupt_doc, "500 error page");
+        queue_row_for(&corrupt_doc, &card);
+    }
+}
+
+/// The sinks a hostile field reaches, as (page index, role, field) where
+/// page 0 is the queue, 1 the Card page, 2 the inspector.
+fn hostile_sinks(which: HostileField) -> Vec<(usize, &'static str, &'static str)> {
+    match which {
+        HostileField::Title => vec![
+            (0, role::QUEUE_ROW, field::TITLE),
+            (1, role::CARD_IDENTITY, field::TITLE),
+            (1, role::STREAM_ROW, field::SUMMARY),
+            (2, role::INSPECTOR, field::TITLE),
+            (2, role::PAYLOAD, ""),
+        ],
+        HostileField::TaskKey => vec![
+            (0, role::QUEUE_ROW, field::TASK_KEY),
+            (1, role::CARD_IDENTITY, field::TASK_KEY),
+            (2, role::PAYLOAD, ""),
+        ],
+        HostileField::Workspace => vec![
+            (1, role::CARD_IDENTITY, field::WORKSPACE),
+            (2, role::PAYLOAD, ""),
+        ],
+        HostileField::ProducerId => vec![
+            (1, role::STREAM_ROW, field::PRODUCER_ID),
+            (2, role::INSPECTOR, field::PRODUCER_ID),
+        ],
+        HostileField::DecisionSummary => vec![
+            (1, role::STREAM_ROW, field::SUMMARY),
+            (2, role::INSPECTOR, field::SUMMARY),
+            (2, role::PAYLOAD, ""),
+        ],
+        // A stage event's summary and stage are typed fields, not payload
+        // members: `card history` carries no `payload` member for a stage
+        // event recorded without one, so the inspector renders no payload.
+        HostileField::StageSummary => vec![
+            (1, role::STREAM_ROW, field::SUMMARY),
+            (2, role::INSPECTOR, field::SUMMARY),
+        ],
+        HostileField::DecisionReason => {
+            vec![(2, role::INSPECTOR, field::REASON), (2, role::PAYLOAD, "")]
+        }
+        HostileField::Stage => vec![
+            (1, role::STREAM_ROW, field::STAGE),
+            (2, role::INSPECTOR, field::STAGE),
+        ],
+        HostileField::PayloadTop | HostileField::PayloadNested | HostileField::PayloadMember => {
+            vec![(2, role::PAYLOAD, "")]
+        }
+    }
+}
+
+/// The marker as it appears in JSON text: serde escapes `"` but leaves
+/// `<`, `>`, and `'` alone, so an inspector payload sink shows the
+/// JSON-escaped spelling.
+fn json_spelling(marker: &str) -> String {
+    let quoted = serde_json::to_string(marker).expect("a string serialises");
+    quoted
+        .trim_start_matches('"')
+        .trim_end_matches('"')
+        .to_owned()
+}
+
+fn assert_no_partial_card_content(doc: &Document, page: &str) {
+    for landmark in [
+        role::CARD_IDENTITY,
+        role::STREAM,
+        role::STREAM_ROW,
+        role::INSPECTOR,
+        role::PAYLOAD,
+    ] {
+        assert!(
+            !doc.has_role(landmark),
+            "{page} rendered data-role={landmark}"
+        );
+    }
+}
+
+fn assert_error_title(doc: &Document, card: &str, marker: &str, page: &str) {
+    let row = queue_row_for(doc, card);
+    assert_eq!(
+        row.field_value(field::TITLE),
+        marker,
+        "{page}: queue title was not escaped text"
+    );
+    assert_no_partial_card_content(doc, page);
+}
+
+fn check_error_title_oracle_fixtures() {
+    let card = "card-1";
+    let marker = r#"Hostile <img src=x onerror="hostile()">"#;
+    let escaped = Document::parse(
+        r#"<div data-role="queue-row" data-card-id="card-1"><span data-field="title">Hostile &lt;img src=x onerror=&quot;hostile()&quot;&gt;</span></div>"#,
+    );
+    assert_error_title(&escaped, card, marker, "escaped fixture");
+
+    let raw = Document::parse(
+        r#"<div data-role="queue-row" data-card-id="card-1"><span data-field="title">Hostile <img src=x onerror="hostile()"></span></div>"#,
+    );
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_error_title(&raw, card, marker, "raw fixture");
+    }));
+    assert!(
+        rejected.is_err(),
+        "raw hostile title passed the error oracle"
+    );
+
+    let absent = Document::parse(
+        r#"<div data-role="queue-row" data-card-id="card-1"><span>Hostile text</span></div>"#,
+    );
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_error_title(&absent, card, marker, "absent-title fixture");
+    }));
+    assert!(
+        rejected.is_err(),
+        "absent title sink passed the error oracle"
+    );
+}
+
+fn assert_marker_created_nothing(doc: &Document, page: &str) {
+    for el in doc.elements() {
+        let tag = el.tag();
+        assert_ne!(tag, "script", "{page}: a script element exists");
+        if let Some(id) = el.attr("id") {
+            assert!(
+                !id.starts_with("hostile-"),
+                "{page}: marker created <{tag} id={id}>"
+            );
+        }
+        for (name, value) in el.attrs() {
+            assert!(
+                !name.starts_with("on"),
+                "{page}: marker created handler attribute {name}=\"{value}\""
+            );
+            assert!(
+                !value.contains("hostile("),
+                "{page}: marker landed in attribute {name}=\"{value}\""
+            );
+        }
+    }
+}
+
+#[then("at every sink the hostile marker appears as text and nothing else")]
+fn marker_text_at_every_sink(w: &mut CardWorld) {
+    let marker = w.console.hostile.clone().expect("a hostile marker");
+    let which = w.console.hostile_field.expect("a hostile field");
+    let entry_sequence = w
+        .console
+        .hostile_entry
+        .as_ref()
+        .map_or(1, |entry| entry.sequence);
+    let docs: Vec<Document> = w
+        .console
+        .responses
+        .iter()
+        .map(|response| Document::parse(&response.body))
+        .collect();
+    assert_eq!(docs.len(), if which == HostileField::Title { 5 } else { 3 });
+    for response in w.console.responses.iter().take(3) {
+        assert_eq!(response.status, 200, "{}", response.describe());
+    }
+    if which == HostileField::Title {
+        let card = w.primary_card();
+        let marker = w.console.hostile.as_ref().expect("a hostile marker");
+        check_error_title_oracle_fixtures();
+        assert_eq!(
+            w.console.responses[3].status,
+            404,
+            "{}",
+            w.console.responses[3].describe()
+        );
+        assert_eq!(
+            w.console.responses[4].status,
+            500,
+            "{}",
+            w.console.responses[4].describe()
+        );
+        assert_error_title(&docs[3], &card, marker, "404 error page");
+        assert_error_title(&docs[4], &card, marker, "500 error page");
+    }
+    for (page, landmark, field_name) in hostile_sinks(which) {
+        let doc = docs.get(page).expect("three pages were requested");
+        let holder = if landmark == role::STREAM_ROW {
+            row_at(doc, entry_sequence)
+        } else {
+            doc.one_by_role(landmark)
+        };
+        let (sink, expected) = if field_name.is_empty() {
+            (holder.clone(), json_spelling(&marker))
+        } else {
+            (
+                holder.field(field_name).unwrap_or_else(|| {
+                    panic!("page {page}: {landmark} renders no field {field_name}")
+                }),
+                marker.clone(),
+            )
+        };
+        let text = sink.text();
+        assert!(
+            text.contains(&expected),
+            "page {page}: sink {landmark}/{field_name} does not carry the marker as text: {text:?}"
+        );
+        for created in sink.descendants() {
+            let tag = created.tag();
+            assert!(
+                !matches!(tag.as_str(), "img" | "script" | "style"),
+                "page {page}: sink {landmark}/{field_name} interpreted the marker as <{tag}>"
+            );
+        }
+    }
+}
+
+#[then("no page contains an element, attribute, script, or style the marker would have created")]
+fn marker_created_nothing_anywhere(w: &mut CardWorld) {
+    for response in &w.console.responses {
+        assert_marker_created_nothing(&Document::parse(&response.body), &response.target);
+    }
+}
+
+#[when("the queue page and the Card page are requested")]
+fn queue_and_card_requested(w: &mut CardWorld) {
+    let card = w.primary_card();
+    w.console.responses.clear();
+    w.get("/");
+    w.get(&card_route(&card));
+}
+
+#[then(
+    expr = "every link on those pages targets a {string} path built from a Card ID and, at most, an entry ID query member"
+)]
+fn links_built_from_ids(w: &mut CardWorld, prefix: String) {
+    let cards = w.all_card_ids();
+    let mut entries: Vec<String> = Vec::new();
+    for card in &cards {
+        for entry in w.history(card) {
+            entries.push(entry["entry_id"].as_str().expect("entry_id").to_owned());
+        }
+    }
+    let mut seen = 0;
+    for response in &w.console.responses {
+        let doc = Document::parse(&response.body);
+        for anchor in doc.by_tag("a") {
+            let href = anchor.attr("href").expect("anchors carry an href");
+            seen += 1;
+            let rest = href.strip_prefix(&prefix).unwrap_or_else(|| {
+                panic!("{}: link {href:?} is not under {prefix}", response.target)
+            });
+            let (card, query) = rest.split_once('?').unwrap_or((rest, ""));
+            assert!(
+                cards.iter().any(|c| c == card),
+                "link names an unknown Card: {href}"
+            );
+            if !query.is_empty() {
+                let entry = query.strip_prefix("entry=").unwrap_or_else(|| {
+                    panic!("link carries a query that is not an entry member: {href}")
+                });
+                assert!(
+                    entries.iter().any(|e| e == entry),
+                    "link names an unknown entry: {href}"
+                );
+            }
+        }
+    }
+    assert!(seen > 0, "the pages carry links");
+}
+
+#[then("no attribute value on those pages contains the hostile marker")]
+fn no_attribute_carries_marker(w: &mut CardWorld) {
+    let marker = w.console.hostile.clone().expect("a hostile marker");
+    for response in &w.console.responses {
+        let doc = Document::parse(&response.body);
+        for el in doc.elements() {
+            for (name, value) in el.attrs() {
+                assert!(
+                    !value.contains(&marker) && !value.contains("hostile("),
+                    "{}: attribute {name} carries producer text: {value:?}",
+                    response.target
+                );
+                assert!(
+                    !name.starts_with("on"),
+                    "{}: handler attribute {name}",
+                    response.target
+                );
+            }
+        }
+    }
+}
+
+// --- S3-B8: read-only, derived-state-free, script-free ----------------------
+
+fn substitute_route(w: &mut CardWorld, route: &str) -> String {
+    let card = w.primary_card();
+    let mut target = route.replace("{card_id}", &card);
+    if target.contains("{entry_id}") {
+        let entry = w.primary_entry_id(2);
+        target = target.replace("{entry_id}", &entry);
+    }
+    target
+}
+
+#[when(expr = "{string} is sent to {string}")]
+fn unsafe_method_sent(w: &mut CardWorld, method: String, route: String) {
+    let target = substitute_route(w, &route);
+    let response = w.console().send(&Request {
+        method,
+        target,
+        host: w.console().authority(),
+    });
+    w.record(response);
+}
+
+#[then("the Card history is byte-for-byte unchanged")]
+fn history_unchanged(w: &mut CardWorld) {
+    let before = w
+        .console
+        .record_snapshot
+        .take()
+        .expect("history recorded at start");
+    let after = w.snapshot_record();
+    assert!(before == after, "the record changed under the console");
+    w.console.record_snapshot = Some(before);
+}
+
+#[given(expr = "the Card page was requested and showed rows at sequences {int} through {int}")]
+fn card_page_showed_rows(w: &mut CardWorld, from: u64, through: u64) {
+    let card = w.primary_card();
+    let history = w.history(&card);
+    w.get(&card_route(&card));
+    assert_stream_matches(&w.last_doc(), &history, from, through);
+}
+
+#[when(
+    expr = "producer {string} of kind {string} records a stage event through the CLI with stage {string} and summary {string}"
+)]
+fn cli_records_stage_event(
+    w: &mut CardWorld,
+    producer: String,
+    kind: String,
+    stage: String,
+    summary: String,
+) {
+    let card = w.primary_card();
+    let entry = w.stage_event_on(&card, &producer, &kind, &stage, &summary, None);
+    w.console.new_entry = Some(entry);
+}
+
+#[then("exactly one stream row carries the new entry's entry ID")]
+fn one_row_carries_new_entry(w: &mut CardWorld) {
+    let entry = w.console.new_entry.clone().expect("a new entry");
+    let doc = w.last_doc();
+    let matching = stream_rows(&doc)
+        .iter()
+        .filter(|row| row.attr(dom::ENTRY_ID_ATTR).as_deref() == Some(entry.entry_id.as_str()))
+        .count();
+    assert_eq!(matching, 1, "rows carrying entry {}", entry.entry_id);
+}
+
+#[when(
+    "the queue page, the Card page, the entry inspector, a 404 page, and a 421 response are requested"
+)]
+fn request_scan_pages(w: &mut CardWorld) {
+    let card = w.primary_card();
+    let entry = w.primary_entry_id(2);
+    w.console.responses.clear();
+    w.get("/");
+    w.get(&card_route(&card));
+    w.get(&entry_route(&card, &entry));
+    let missing = w.get(&card_route(&unknown_card_id()));
+    assert_eq!(missing.status, 404, "{}", missing.describe());
+    let foreign = w.console().send(&Request {
+        method: "GET".to_owned(),
+        target: "/".to_owned(),
+        host: "evil.example".to_owned(),
+    });
+    assert_eq!(foreign.status, 421, "{}", foreign.describe());
+    w.record(foreign);
+}
+
+#[then("no response body contains a script element")]
+fn no_script_elements(w: &mut CardWorld) {
+    for response in &w.console.responses {
+        let doc = Document::parse(&response.body);
+        assert!(
+            doc.by_tag("script").is_empty(),
+            "{}: script element",
+            response.target
+        );
+    }
+}
+
+#[then("no response body contains an inline event handler attribute")]
+fn no_inline_handlers(w: &mut CardWorld) {
+    for response in &w.console.responses {
+        let doc = Document::parse(&response.body);
+        for el in doc.elements() {
+            for (name, _) in el.attrs() {
+                assert!(
+                    !name.starts_with("on"),
+                    "{}: <{}> carries handler {name}",
+                    response.target,
+                    el.tag()
+                );
+            }
+        }
+    }
+}
+
+#[then("no response body contains an embedded document, a base element, or inline CSS")]
+fn no_embedding(w: &mut CardWorld) {
+    for response in &w.console.responses {
+        let doc = Document::parse(&response.body);
+        for el in doc.elements() {
+            let tag = el.tag();
+            assert!(
+                !EMBEDDING_TAGS.contains(&tag.as_str()),
+                "{}: <{tag}> embeds or rebases the page",
+                response.target
+            );
+            for (name, _) in el.attrs() {
+                assert!(
+                    !EMBEDDING_ATTRS.contains(&name.to_ascii_lowercase().as_str()),
+                    "{}: <{tag} {name}> embeds, styles, or fetches",
+                    response.target
+                );
+            }
+        }
+    }
+}
+
+#[then("every URL referenced from any response body is same-origin")]
+fn urls_same_origin(w: &mut CardWorld) {
+    let base = w.origin();
+    check_same_origin_oracle_fixtures(&base);
+    for response in &w.console.responses {
+        let doc = Document::parse(&response.body);
+        assert_document_urls_same_origin(&base, &doc);
+    }
+}
+
+#[then("the only referenced asset is one stylesheet at a local path")]
+fn one_local_stylesheet(w: &mut CardWorld) {
+    // With embedding banned above, the assets a page can still fetch are
+    // `src` on any element and `href` on a `<link>`.
+    let mut assets: Vec<(String, String)> = Vec::new();
+    for response in &w.console.responses {
+        let doc = Document::parse(&response.body);
+        for el in doc.elements() {
+            let tag = el.tag();
+            let found = if tag == "link" {
+                el.attr("href").map(|href| {
+                    let rel = el.attr("rel").unwrap_or_default();
+                    (format!("link rel={rel}"), href)
+                })
+            } else {
+                el.attr("src").map(|src| (format!("<{tag} src>"), src))
+            };
+            if let Some(found) = found {
+                if !assets.contains(&found) {
+                    assets.push(found);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        assets.len(),
+        1,
+        "exactly one asset may be referenced, found {assets:?}"
+    );
+    let (kind, href) = assets.pop().expect("one asset");
+    assert_eq!(
+        kind, "link rel=stylesheet",
+        "the one asset must be a stylesheet"
+    );
+    let base = w.origin();
+    assert!(
+        href.starts_with('/') && is_same_origin(&base, &href),
+        "stylesheet must be a local path on the console origin: {href}"
+    );
+    w.console.stylesheet = Some(href);
+}
+
+#[then(expr = "requesting that stylesheet returns {int} with a CSS content type")]
+fn stylesheet_served(w: &mut CardWorld, status: u16) {
+    let href = w.console.stylesheet.clone().expect("a stylesheet path");
+    let response = w.get(&href);
+    assert_eq!(response.status, status, "{}", response.describe());
+    let content_type = response.header("content-type").unwrap_or_default();
+    assert!(
+        content_type.starts_with("text/css"),
+        "stylesheet content type: {content_type:?}"
+    );
+    // The stylesheet is ours: a policy on its text, not a CSS parser.
+    // No url(), no @import, and no escapes that could spell either.
+    let lower = response.body.to_ascii_lowercase();
+    for banned in ["url(", "@import", "\\"] {
+        assert!(
+            !lower.contains(banned),
+            "the stylesheet contains {banned:?}; it may fetch nothing"
+        );
+    }
+}
+
+#[given("the histories and list are recorded")]
+fn record_histories(w: &mut CardWorld) {
+    let snapshot = w.snapshot_record();
+    w.console.record_snapshot = Some(snapshot);
+}
+
+#[when("the queue page, every Card page, and every entry inspector are requested")]
+fn walk_every_card(w: &mut CardWorld) {
+    w.console.responses.clear();
+    w.full_read_walk();
+    for response in &w.console.responses {
+        assert_eq!(response.status, 200, "{}", response.describe());
+    }
+}
+
+#[when(
+    "every unsafe method is sent to every route, including the stylesheet and the entry-query form"
+)]
+fn every_unsafe_method_everywhere(w: &mut CardWorld) {
+    let routes = w.all_routes();
+    assert!(
+        routes.iter().any(|r| r == STYLESHEET_ROUTE)
+            && routes.iter().any(|r| r.contains("?entry=")),
+        "routes cover the stylesheet and the entry query"
+    );
+    w.console.method_responses.clear();
+    for route in routes {
+        for method in UNSAFE_METHODS {
+            let response = w.console().send(&Request {
+                method: method.to_owned(),
+                target: route.clone(),
+                host: w.console().authority(),
+            });
+            w.console.method_responses.push(response);
+        }
+    }
+}
+
+#[then(expr = "every one of those responses has status {int}")]
+fn every_method_response_status(w: &mut CardWorld, status: u16) {
+    assert!(
+        !w.console.method_responses.is_empty(),
+        "unsafe methods were sent"
+    );
+    for response in &w.console.method_responses {
+        assert_eq!(response.status, status, "{}", response.describe());
+    }
+}
+
+#[then("the histories and list are byte-for-byte unchanged")]
+fn histories_unchanged(w: &mut CardWorld) {
+    history_unchanged(w);
+}
+
+// --- S3-B9: not found, malformed, corrupt -----------------------------------
+
+#[when("the Card page for an unknown Card ID is requested")]
+fn unknown_card_requested(w: &mut CardWorld) {
+    w.get(&card_route(&unknown_card_id()));
+}
+
+fn error_text(doc: &Document) -> String {
+    doc.one_by_role(role::ERROR).text().to_ascii_lowercase()
+}
+
+#[then("the page says the Card was not found")]
+fn says_card_not_found(w: &mut CardWorld) {
+    let text = error_text(&w.last_doc());
+    assert!(
+        text.contains("card") && text.contains("not found"),
+        "error text: {text:?}"
+    );
+}
+
+#[then(expr = "the queue still lists the Card titled {string}")]
+fn queue_still_lists_titled(w: &mut CardWorld, title: String) {
+    let id = w.card_titled(&title);
+    let doc = w.last_doc();
+    queue_row_for(&doc, &id);
+}
+
+#[then("no Card identity or stream is shown")]
+fn no_identity_or_stream(w: &mut CardWorld) {
+    let doc = w.last_doc();
+    for landmark in [
+        role::CARD_IDENTITY,
+        role::STREAM,
+        role::STREAM_ROW,
+        role::INSPECTOR,
+    ] {
+        assert!(!doc.has_role(landmark), "data-role={landmark} is rendered");
+    }
+}
+
+#[when("the Card page is requested with an unknown entry ID")]
+fn card_page_unknown_entry(w: &mut CardWorld) {
+    let card = w.primary_card();
+    w.get(&entry_route(&card, &unknown_card_id()));
+}
+
+#[then("the page says the entry was not found")]
+fn says_entry_not_found(w: &mut CardWorld) {
+    let text = error_text(&w.last_doc());
+    assert!(
+        text.contains("entry") && text.contains("not found"),
+        "error text: {text:?}"
+    );
+}
+
+#[then("the queue still lists that Card")]
+fn queue_still_lists_primary(w: &mut CardWorld) {
+    let card = w.primary_card();
+    let doc = w.last_doc();
+    queue_row_for(&doc, &card);
+}
+
+#[when(expr = "the Card page for the path segment {string} is requested")]
+fn card_page_for_segment(w: &mut CardWorld, segment: String) {
+    w.get(&card_route(&segment));
+}
+
+#[given(
+    expr = "the payload of the entry at sequence {int} is corrupted in storage to invalid JSON"
+)]
+async fn corrupt_payload(w: &mut CardWorld, sequence: u64) {
+    let card = w.primary_card();
+    let db = w.db_path();
+    let mut conn = connect_writable(&db).await;
+    let changed =
+        sqlx::query("UPDATE card_entries SET payload = ? WHERE card_id = ? AND sequence = ?")
+            .bind("{not json")
+            .bind(&card)
+            .bind(i64::try_from(sequence).expect("sequence fits"))
+            .execute(&mut conn)
+            .await
+            .expect("corrupt the payload")
+            .rows_affected();
+    conn.close().await.expect("close");
+    assert_eq!(changed, 1, "exactly one row corrupted");
+}
+
+#[then("the page says storage failed")]
+fn says_storage_failed(w: &mut CardWorld) {
+    let text = error_text(&w.last_doc());
+    assert!(text.contains("storage failed"), "error text: {text:?}");
+}
+
+#[then("the page shows no stream rows and no inspector")]
+fn no_rows_no_inspector(w: &mut CardWorld) {
+    let doc = w.last_doc();
+    assert!(
+        stream_rows(&doc).is_empty(),
+        "stream rows rendered on a 500"
+    );
+    assert!(
+        !doc.has_role(role::INSPECTOR),
+        "an inspector rendered on a 500"
+    );
+    assert!(!doc.has_role(role::PAYLOAD), "a payload rendered on a 500");
+}
+
+#[then("the page shows no fabricated default in place of the corrupt payload")]
+fn no_fabricated_default(w: &mut CardWorld) {
+    let doc = w.last_doc();
+    let text = doc.text();
+    for fabricated in ["{}", "null", "{not json"] {
+        assert!(
+            !text.contains(fabricated),
+            "the page shows {fabricated:?} where the corrupt payload was"
+        );
+    }
+    assert!(!doc.has_role(role::PAYLOAD), "a payload rendered on a 500");
+}
+
+#[given(
+    expr = "the recorded_at of the card-created entry of the Card titled {string} is corrupted in storage to a non-timestamp"
+)]
+async fn corrupt_recorded_at(w: &mut CardWorld, title: String) {
+    let card = w.card_titled(&title);
+    let db = w.db_path();
+    let mut conn = connect_writable(&db).await;
+    let changed = sqlx::query(
+        "UPDATE card_entries SET recorded_at = ? WHERE card_id = ? AND sequence = 1 AND entry_type = ?",
+    )
+    .bind("not-a-timestamp")
+    .bind(&card)
+    .bind("card-created")
+    .execute(&mut conn)
+    .await
+    .expect("corrupt recorded_at")
+    .rows_affected();
+    conn.close().await.expect("close");
+    assert_eq!(changed, 1, "exactly one row corrupted");
+}
+
+#[then("the page renders no queue and no Card content")]
+fn page_no_content(w: &mut CardWorld) {
+    assert_no_content(&w.last_doc(), "the 500 page");
+}
+
+#[then(expr = "the page shows no row for the Card titled {string}")]
+fn no_row_for_titled(w: &mut CardWorld, title: String) {
+    let id = w.card_titled(&title);
+    let doc = w.last_doc();
+    assert!(
+        !queue_rows(&doc)
+            .iter()
+            .any(|row| row.attr(dom::CARD_ID_ATTR).as_deref() == Some(id.as_str())),
+        "a queue row for {id} rendered"
+    );
+    assert!(
+        !w.last_response().body.contains(&id),
+        "the page names Card {id}"
+    );
+}
