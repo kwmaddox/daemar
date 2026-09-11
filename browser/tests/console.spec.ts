@@ -153,6 +153,7 @@ test.describe("S3-B4/B5 the operator can read the queue and the stream", () => {
       const history = world.fixture.history(world.card);
       const rows = page.locator(byRole(role.streamRow));
       await expect(rows).toHaveCount(history.length);
+      await expect(rows.first()).toHaveCSS("border-bottom-width", "1px");
       // S3-B5: every row shows sequence, entry type, producer identity,
       // producer kind, recorded_at, and the reported label.
       for (const entry of history) {

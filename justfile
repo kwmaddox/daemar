@@ -27,8 +27,8 @@ prototype-card-console:
 # pre-commit; the Rust behavior suite stays the gate.
 browser:
     cargo build -p daemar-card --bin card
-    cd browser && npx playwright test
+    cd browser && ./node_modules/.bin/playwright test
 
 # One-time per-clone setup for `just browser`: Node packages and Chromium.
 browser-install:
-    cd browser && npm ci && npx playwright install chromium
+    cd browser && npm ci && ./node_modules/.bin/playwright install chromium

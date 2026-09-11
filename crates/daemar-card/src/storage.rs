@@ -40,10 +40,24 @@ impl Reader {
     /// # Errors
     /// Returns a typed missing, schema, or storage error.
     pub async fn open_existing(path: &Path) -> Result<Reader, Error> {
-        if !path.is_file() {
-            return Err(Error::DatabaseMissing {
-                path: path.to_owned(),
-            });
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(Error::DatabaseMissing {
+                    path: path.to_owned(),
+                });
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Error::DatabaseMissing {
+                    path: path.to_owned(),
+                });
+            }
+            Err(source) => {
+                return Err(Error::Storage {
+                    context: StorageContext::OpenReadOnly,
+                    source: sqlx::Error::Io(source),
+                });
+            }
         }
         let options = SqliteConnectOptions::new()
             .filename(path)
@@ -1015,6 +1029,46 @@ mod store_seam_tests {
             before_metadata.permissions().readonly()
         );
         assert_eq!(after_metadata.len(), before_metadata.len());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reader_reports_metadata_permission_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let sealed = dir.path().join("sealed");
+        std::fs::create_dir(&sealed).expect("sealed directory");
+        let path = sealed.join("daemar.db");
+        let store = Store::open(&path).await.expect("store");
+        drop(store);
+
+        let mut permissions = std::fs::metadata(&sealed)
+            .expect("sealed metadata")
+            .permissions();
+        permissions.set_mode(0o000);
+        std::fs::set_permissions(&sealed, permissions).expect("seal directory");
+        let metadata_error = std::fs::metadata(&path).expect_err("metadata must be denied");
+        let result = Reader::open_existing(&path).await;
+
+        let restored = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&sealed, restored).expect("restore directory permissions");
+        assert_eq!(metadata_error.kind(), std::io::ErrorKind::PermissionDenied);
+
+        match result {
+            Err(Error::Storage {
+                context: StorageContext::OpenReadOnly,
+                source,
+            }) => {
+                if let sqlx::Error::Io(source) = source {
+                    assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+                } else {
+                    panic!("expected IO source");
+                }
+            }
+            Ok(_) => panic!("expected metadata storage error, got a reader"),
+            Err(other) => panic!("expected metadata storage error, got {other:?}"),
+        }
     }
 
     #[tokio::test]
